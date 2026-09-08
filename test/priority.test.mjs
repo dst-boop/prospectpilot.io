@@ -1,0 +1,2 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {highPriorityLeadIds} from '../generated/worker.mjs';
+test('high priority requires 55 and selects at most the top fifth',()=>{assert.equal(highPriorityLeadIds([{id:'low',priority_score:54}]).size,0);assert.deepEqual([...highPriorityLeadIds([{id:'eligible',priority_score:55}])],['eligible']);const leads=Array.from({length:10},(_,i)=>({id:String(i),priority_score:55+i}));assert.deepEqual([...highPriorityLeadIds(leads)],['9','8']);});

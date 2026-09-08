@@ -1,0 +1,34 @@
+import {createServer} from 'node:http';
+import {readFileSync} from 'node:fs';
+import {initializeApp,applicationDefault} from 'firebase-admin/app';
+import {getAuth} from 'firebase-admin/auth';
+import pg from 'pg';
+import worker from './generated/worker.mjs';
+import {createDatabase} from './database.mjs';
+import {createHandler} from './handler.mjs';
+import {createNativeResearch,publicGet} from './native-research.mjs';
+import {createResearchJobs} from './research-jobs.mjs';
+import {createWarnService} from './warn.mjs';
+import {createLinkedIn} from './linkedin.mjs';
+import {createHttpHandler,shutdown} from './http-server.mjs';
+import {createResearchLab} from './research-lab.mjs';
+import {createLabSources} from './lab-sources.mjs';
+
+for(const key of ['GOOGLE_CLOUD_PROJECT','OWNER_EMAIL','PGHOST','PGDATABASE','PGUSER','PGPASSWORD'])if(!process.env[key])throw Error('Missing '+key);
+const positive=(key,fallback,max)=>{const value=Number(process.env[key]??fallback);if(!Number.isSafeInteger(value)||value<1||value>max)throw new Error('Invalid '+key);return value;};
+// Preserve large identifiers rather than silently rounding PostgreSQL BIGINT values.
+pg.types.setTypeParser(20,value=>{const n=Number(value);return Number.isSafeInteger(n)?n:value;});
+initializeApp({credential:applicationDefault(),projectId:process.env.GOOGLE_CLOUD_PROJECT});
+const pool=new pg.Pool({max:positive('PGPOOL_MAX',5,20),connectionTimeoutMillis:10_000,idleTimeoutMillis:30_000,statement_timeout:30_000,idle_in_transaction_session_timeout:15_000,options:'-c lock_timeout=5000',application_name:'prospectpilot'});
+pool.on('error',error=>console.error(JSON.stringify({event:'idle_database_connection_failed',code:error.code||'unknown'})));
+const origins=(process.env.APP_ORIGINS||'https://prospectpilot.io,https://www.prospectpilot.io,https://lead-qualifier-505002.web.app,https://lead-qualifier-505002.firebaseapp.com').split(',').map(value=>value.trim()).filter(Boolean);
+const linkedin=createLinkedIn({pool,origins,page:readFileSync(new URL('linkedin.html',import.meta.url),'utf8'),script:readFileSync(new URL('linkedin-client.js',import.meta.url),'utf8'),config:{clientId:process.env.LINKEDIN_CLIENT_ID,clientSecret:process.env.LINKEDIN_CLIENT_SECRET,redirectUri:process.env.LINKEDIN_REDIRECT_URI,encryptionKey:process.env.LINKEDIN_TOKEN_KEY}});
+const warn=createWarnService({get:publicGet});
+const researchJobs=createResearchJobs({pool,dispatch:async()=>{const token=await applicationDefault().getAccessToken();const response=await fetch('https://run.googleapis.com/v2/projects/'+process.env.GOOGLE_CLOUD_PROJECT+'/locations/us-central1/jobs/prospectpilot-research:run',{method:'POST',headers:{Authorization:'Bearer '+token.access_token,'Content-Type':'application/json'},body:'{}',signal:AbortSignal.timeout(10000)});await response.body?.cancel();return response.ok;}});
+const labSources=createLabSources({warn,searchKey:process.env.BRAVE_SEARCH_API_KEY||'',searchCostMicros:process.env.BRAVE_QUERY_COST_MICROS===undefined?null:Number(process.env.BRAVE_QUERY_COST_MICROS)});
+const lab=createResearchLab({pool,sources:labSources,dispatch:async()=>{const token=await applicationDefault().getAccessToken();const region=process.env.GOOGLE_CLOUD_REGION||'us-central1';const response=await fetch('https://run.googleapis.com/v2/projects/'+process.env.GOOGLE_CLOUD_PROJECT+'/locations/'+region+'/jobs/prospectpilot-research:run',{method:'POST',headers:{Authorization:'Bearer '+token.access_token,'Content-Type':'application/json'},body:'{}',signal:AbortSignal.timeout(10000)});await response.body?.cancel();return response.ok;}});
+const handler=createHandler({releaseId:process.env.PROSPECTPILOT_RELEASE_ID||'',lab,labPage:readFileSync(new URL('lab.html',import.meta.url),'utf8'),labScript:readFileSync(new URL('lab-client.js',import.meta.url),'utf8'),labStyle:readFileSync(new URL('lab.css',import.meta.url),'utf8'),researchJobs,warn,warnPage:readFileSync(new URL('warn.html',import.meta.url),'utf8'),warnScript:readFileSync(new URL('warn-client.js',import.meta.url),'utf8'),nativeResearch:createNativeResearch({warn}),linkedin,auth:getAuth(),db:createDatabase(pool),worker,ownerEmail:process.env.OWNER_EMAIL,origins,providerKey:process.env.PROVIDER_ENCRYPTION_KEY||'',loginHtml:readFileSync(new URL('login.html',import.meta.url),'utf8'),loginScript:readFileSync(new URL('generated/login.js',import.meta.url),'utf8')});
+const server=createServer({headersTimeout:15_000,requestTimeout:60_000,keepAliveTimeout:5_000},createHttpHandler(handler,{maxInflight:positive('MAX_INFLIGHT',40,200)}));
+server.listen(positive('PORT',8080,65535),'0.0.0.0');
+let stopping=false;
+process.on('SIGTERM',()=>{if(stopping)return;stopping=true;void shutdown(server,pool).then(()=>process.exit(0)).catch(()=>process.exit(1));});

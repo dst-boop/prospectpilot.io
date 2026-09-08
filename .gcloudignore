@@ -1,0 +1,11 @@
+.gcloudignore
+.git
+.git/**
+node_modules
+node_modules/**
+.env
+.env.*
+*.sh
+*.zip
+*.tar.gz
+*.md
