@@ -12,10 +12,12 @@ RELEASE_ID="${IMAGE##*:}"
 gcloud run services describe "$SERVICE" --project="$PROJECT" --region="$REGION" >/dev/null
 gcloud run jobs describe "$JOB" --project="$PROJECT" --region="$REGION" >/dev/null
 PREVIOUS_IMAGE="$(gcloud run services describe "$SERVICE" --project="$PROJECT" --region="$REGION" --format='value(spec.template.spec.containers[0].image)')"
+CLOUD_SQL_INSTANCES="$(gcloud run services describe "$SERVICE" --project="$PROJECT" --region="$REGION" --format=json | python3 -c 'import json,sys; print(json.load(sys.stdin)["spec"]["template"]["metadata"]["annotations"].get("run.googleapis.com/cloudsql-instances", ""))')"
+test -n "$CLOUD_SQL_INSTANCES"
 printf 'Rollback image: %s\n' "$PREVIOUS_IMAGE"
 # Docker's test stage must pass before an image is published.
 gcloud builds submit . --project="$PROJECT" --region="$REGION" --config=cloudbuild.yaml --substitutions="_IMAGE=$IMAGE" --service-account="projects/$PROJECT/serviceAccounts/$BUILDER"
-gcloud run jobs update "$JOB" --project="$PROJECT" --region="$REGION" --image="$IMAGE" --tasks=1 --parallelism=1 --max-retries=0 --task-timeout=180s
+gcloud run jobs update "$JOB" --project="$PROJECT" --region="$REGION" --image="$IMAGE" --set-cloudsql-instances="$CLOUD_SQL_INSTANCES" --tasks=1 --parallelism=1 --max-retries=0 --task-timeout=180s
 gcloud run jobs execute "$JOB" --project="$PROJECT" --region="$REGION" --wait
 if [[ "${REFRESH_PLAN_CATALOG:-0}" == "1" ]]; then
   PROJECT="$PROJECT" REGION="$REGION" IMAGE="$IMAGE" bash setup-plan-catalog.sh

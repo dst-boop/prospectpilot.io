@@ -18,7 +18,9 @@ p=json.load(open(os.path.join(sys.argv[3],'template.json')))
 p['metadata']={'name':'prospectpilot-research'}
 p.pop('status',None)
 t=p['spec']['template']
-t.pop('metadata',None)
+annotations=t.get('metadata',{}).get('annotations',{})
+cloud_sql=annotations.get('run.googleapis.com/cloudsql-instances')
+t['metadata']={'annotations':{'run.googleapis.com/cloudsql-instances':cloud_sql}} if cloud_sql else {}
 t['spec']['taskCount']=1
 t['spec']['parallelism']=1
 task=t['spec']['template']
