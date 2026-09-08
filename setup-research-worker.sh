@@ -3,6 +3,11 @@ set -euo pipefail
 cd "$(dirname "$0")"
 PROJECT="${PROJECT:-lead-qualifier-505002}"
 REGION="${REGION:-us-central1}"
+# Fail clearly instead of hiding an interactive API-enable prompt in a redirected lookup.
+if ! gcloud services list --enabled --project="$PROJECT" --filter='name:cloudscheduler.googleapis.com' --format='value(name)' --quiet | grep -q cloudscheduler.googleapis.com; then
+  printf 'Cloud Scheduler API must be enabled for project %s before configuring recovery.\n' "$PROJECT" >&2
+  exit 1
+fi
 # Temporary job configuration can contain environment values; restrict and remove it.
 umask 077
 WORK_DIR="$(mktemp -d)"
@@ -47,7 +52,7 @@ APP_ID="$(gcloud run services describe prospectpilot --project="$PROJECT" --regi
 test -n "$APP_ID"
 gcloud run jobs add-iam-policy-binding prospectpilot-research --project="$PROJECT" --region="$REGION" --member="serviceAccount:$APP_ID" --role=roles/run.invoker
 # Recovery scheduler reuses the same least-privilege execution identity.
-if gcloud scheduler jobs describe prospectpilot-research-recovery --location="$REGION" --project="$PROJECT" >/dev/null 2>&1; then
+if gcloud scheduler jobs describe prospectpilot-research-recovery --location="$REGION" --project="$PROJECT" --quiet >/dev/null 2>&1; then
  ACTION=update
 else
  ACTION=create

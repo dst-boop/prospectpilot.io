@@ -4,7 +4,7 @@ ProspectPilot uses People Data Labs for professional contact search and enrichme
 
 ## ZoomInfo without API access
 
-The selected source is ZoomInfo through CSV exports from the user's account. Use **Import ZoomInfo CSV**, select the exported file, retain or customize the source label, and choose a destination list. No API keys or paid API requests are needed to import, search, organize, inspect or export these contacts.
+The selected source is ZoomInfo through CSV exports from the user's account. Use **Import ZoomInfo CSV**, upload the exported file or paste CSV text, retain or customize the source label, and choose a destination list. Preview first to review row-level issues without saving. Add the actual source observation date when known. See SOURCE-QUALITY.md for source history and quality reports. No API keys or paid API requests are needed to import, search, organize, inspect or export these contacts.
 
 Supported headers include First Name / Contact First Name, Last Name / Contact Last Name, Company Name, Job Title, Email Address / Contact Email, Direct Phone / Direct Phone Number, LinkedIn Contact Profile URL, Contact Country/State/City, Company Website, Primary Industry and Management Level. Include only one alias for each mapped field. Company location is not mapped to contact location. Unmapped columns are ignored. N/A, Not Available, -- and - placeholders become blank in ZoomInfo mode. The current phone field accepts US direct numbers.
 
@@ -32,7 +32,7 @@ Use the existing release process after configuration. Migrations 008 and 009 mus
 
 1. Set professional filters and choose **Find new contacts**. Review the maximum record count, destination list and cost ceiling. Results are inserted into your directory with their provider provenance; duplicate and conflicting identities are counted.
 2. Select contacts and choose **Enrich selected**. An existing email or LinkedIn profile is required for precise identity matching. Missing fields can be added; existing identifiers and suppressions are preserved. Phone results remain provider-reported and unverified.
-3. Select contacts and choose **Verify emails**. Hunter's valid, invalid, catch-all and unknown outcomes remain distinct. A verification badge expires after 30 days and is refreshed before filtering or exporting. Verification is not a guarantee of delivery or authorization to contact.
+3. Select contacts and choose **Verify emails**. Hunter's valid, invalid, catch-all and unknown outcomes remain distinct. A verification badge expires after 30 days and is refreshed before filtering or exporting. A current valid check for the same address is reused without sending another provider request. Verification is not a guarantee of delivery or authorization to contact.
 4. Review progress in the jobs panel, then export or organize the contacts into lists. The page can close while the durable worker processes tasks.
 
 ## Costs, recovery and limits
