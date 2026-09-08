@@ -24,7 +24,7 @@ See [SOURCE-QUALITY.md](SOURCE-QUALITY.md) for interpretation and [PROVIDER-SETU
 
 ## Validation
 
-136 Node tests and 6 Python tests pass. The production build and whitespace checks pass. A local browser test used only fictional data and verified the paste/preview/import workflow: one new contact, one duplicate with a differing title, one rejected bad email, ignored verification claims and an old source-date flag. The final browser check also verified per-source coverage, historical reports and the downloaded row-report CSV. A 5,000-row synthetic PGlite benchmark completed in 662 ms using 56 queries; this is not a production latency claim. A later-batch failure rolls back the full import.
+140 Node tests and 6 Python tests pass. The production build and whitespace checks pass. A local browser test used only fictional data and verified the paste/preview/import workflow: one new contact, one duplicate with a differing title, one rejected bad email, ignored verification claims and an old source-date flag. The final browser check also verified per-source coverage, historical reports and the downloaded row-report CSV. A 5,000-row synthetic PGlite benchmark completed in 662 ms using 56 queries; this is not a production latency claim. A later-batch failure rolls back the full import.
 
 Earlier production testing verified Google login, a two-contact fictional import, list membership, export, suppression-aware export, saved-search restoration and the verified-email filter. Those two fictional records remain in the owner's QA list.
 
@@ -40,6 +40,8 @@ The repository work is on `codex/contact-workspace` in [draft PR #4](https://git
 ## Additional source checks
 
 DNS domain checks now run through durable jobs without paid data-provider credits. Domain-level results stay separate from mailbox verification, preserve observation times and can avoid paid requests after recent definitive failures. Local browser testing verified a completed synthetic domain job with a zero reservation; a live DNS-only lookup of example.com correctly returned null MX. No email was sent.
+
+Production domain-job testing completed both fictional contacts with a $0 reservation. Their `.invalid` domains were identified as special-use and were not queried; neither address acquired a valid-mailbox badge.
 
 Employer-plan selection uses the latest filing before applying termination/location filters, missing distribution indicators remain unknown, and blank plan numbers are rejected. Migrations 010 and 011 add the latest-filing index and domain-check job action. Source/review/suppression filters and compact directory responses are included. Release `review-20260908205751-26103`, revision `prospectpilot-00010-rqh`, is live; Cloud Build 83da899d-a844-4e41-89e8-84f3952fce76 and GitHub run 34277742223 passed.
 

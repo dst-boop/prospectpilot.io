@@ -19,3 +19,9 @@ test('robots denials, unrelated search pages and provider failures remain visibl
 test('WARN results always remain employer-level context and never emit individual layoffs',async()=>{
   const sources=createLabSources({warn:{research:async()=>({status:'matched',records:[{scope:'company',excerpt:'Employer notice'}]})}});const r=await sources.run('warn',{company:'Example'});assert.deepEqual(r.candidates,[]);assert.equal(r.scope,'employer');
 });
+
+test('public pages use applicable robots groups and query restrictions',async()=>{
+ let reads=0;const get=async url=>String(url).endsWith('/robots.txt')?response('User-agent: OtherBot\nDisallow: /\nUser-agent: *\nDisallow: /*?private=',url,'text/plain'):(reads++,response('<title>Example Company</title>',url,'text/html'));
+ const sources=createLabSources({get});await sources.run('public_web',{company:'Example Company',website:'https://example.org/team'});assert.equal(reads,1);
+ const blocked=await sources.run('public_web',{company:'Example Company',website:'https://example.org/team?private=yes'});assert.equal(reads,1);assert.equal(blocked.status,'partial');
+});
