@@ -46,9 +46,10 @@ def normalize(row, schedule=None, short=False):
     def get(long, sf):
         return row.get(sf if short else long, '').strip()
     ein = re.sub(r'\D', '', get('SPONS_DFE_EIN', 'SF_SPONS_EIN'))
-    pn = get('SPONS_DFE_PN', 'SF_PLAN_NUM').zfill(3)
+    raw_pn = get('SPONS_DFE_PN', 'SF_PLAN_NUM')
+    pn = raw_pn.zfill(3)
     period = date(get('FORM_PLAN_YEAR_BEGIN_DATE', 'SF_PLAN_YEAR_BEGIN_DATE'))
-    if not re.fullmatch(r'\d{9}', ein) or not re.fullmatch(r'\d{3}', pn) or not period:
+    if not re.fullmatch(r'\d{9}', ein) or not raw_pn or not re.fullmatch(r'\d{3}', pn) or pn == '000' or not period:
         return None
     assets = number(row.get('SF_NET_ASSETS_EOY_AMT')) if short else number((schedule or {}).get('NET_ASSETS_EOY_AMT'))
     balances = number(row.get(prefix + 'PARTCP_ACCOUNT_BAL_CNT'))
@@ -69,7 +70,7 @@ def normalize(row, schedule=None, short=False):
         'participants_with_balances': balances, 'average_account_balance': average,
         'separated_future_benefits': number(row.get('RTD_SEP_PARTCP_FUT_CNT')) if not short else None,
         'in_service_distributions_reported': {'1': True, '2': False}.get(row.get('SF_IN_SERVICE_DISTRIB_IND')) if short else None,
-        'all_assets_distributed': (row.get('SF_ALL_PLAN_AST_DISTRIB_IND') if short else (schedule or {}).get('ALL_PLAN_AST_DISTRIB_IND')) == '1',
+        'all_assets_distributed': {'1': True, '2': False}.get(row.get('SF_ALL_PLAN_AST_DISTRIB_IND') if short else (schedule or {}).get('ALL_PLAN_AST_DISTRIB_IND')),
         'source_url': SOURCE, 'scope': 'employer_plan', 'individual_balance': None,
     }
 

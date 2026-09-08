@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {hash,nameKey} from './lead-quality.mjs';
 import {normalizeContact,contactIdentities,identityLookupKeys,searchFilters} from './prospect-workspace.mjs';
 import {CONTACT_ALIASES} from './prospect-data-quality.mjs';
+import {DOMAIN_CHECK_STATUSES,DOMAIN_CHECK_LABELS,recentDomainFailure} from './prospect-domain-check.mjs';
 const fail=(status,message)=>Object.assign(Error(message),{status});
 const sig=contact=>hash(JSON.stringify(['first_name','last_name','company','email','linkedin_url'].map(k=>contact[k]||'')));
 const terminal=['completed','failed','skipped','needs_attention'];
@@ -11,14 +12,14 @@ export function providerJobConfig(env=process.env){
  const read=(key,fallback=null)=>{const value=env[key];if(value===undefined||value==='')return fallback;const n=Number(value);if(!Number.isSafeInteger(n)||n<0||n>1000000000)throw Error('Invalid '+key);return n;};
  return {dailyBudgetMicros:read('PROSPECT_DAILY_BUDGET_MICROS',0),prices:{search:read('PDL_SEARCH_RECORD_COST_MICROS'),enrich:read('PDL_ENRICH_COST_MICROS'),verify:read('HUNTER_VERIFY_COST_MICROS')}};
 }
-export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,prices:{}},dispatch=async()=>false,pacingMs={pdl:6100,hunter:250}}){
- const capabilities={search:'search',enrich:'enrichment',verify:'email_verification'};
- const quote=(action,size=1)=>{const price=config.prices[action];if(!Number.isSafeInteger(price)||price<0)throw fail(503,'Configure a per-request or per-record price before using this provider.');return price*size;};
- const ready=action=>providers.readiness[capabilities[action]]===true&&Number.isSafeInteger(config.prices[action])&&config.prices[action]>=0;
- async function summary(user){const charges=(await pool.query(`SELECT COALESCE(sum(reserved_micros),0) AS reserved FROM prospect_charges WHERE user_id=$1 AND reserved_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,[user.uid])).rows[0];return {providers:providers.readiness,prices:config.prices,daily_budget_micros:config.dailyBudgetMicros,reserved_today_micros:Number(charges.reserved),actions:Object.fromEntries(Object.keys(capabilities).map(a=>[a,ready(a)])),cost_basis:'Reserved maximum at configured prices, not actual provider billing. The daily cap is shared by this deployment.'};}
+export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,prices:{}},dispatch=async()=>false,pacingMs={pdl:6100,hunter:250,dns:100}}){
+ const capabilities={search:'search',enrich:'enrichment',verify:'email_verification',check_domain:'domain_check'};
+ const quote=(action,size=1)=>{if(action==='check_domain')return 0;const price=config.prices[action];if(!Number.isSafeInteger(price)||price<0)throw fail(503,'Configure a per-request or per-record price before using this provider.');return price*size;};
+ const ready=action=>providers.readiness[capabilities[action]]===true&&(action==='check_domain'||Number.isSafeInteger(config.prices[action])&&config.prices[action]>=0);
+ async function summary(user){const charges=(await pool.query(`SELECT COALESCE(sum(reserved_micros),0) AS reserved FROM prospect_charges WHERE user_id=$1 AND reserved_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,[user.uid])).rows[0];return {providers:providers.readiness,prices:{...config.prices,check_domain:0},daily_budget_micros:config.dailyBudgetMicros,reserved_today_micros:Number(charges.reserved),actions:Object.fromEntries(Object.keys(capabilities).map(a=>[a,ready(a)])),cost_basis:'Reserved maximum at configured prices, not actual provider billing. The daily cap is shared by this deployment.'};}
  async function enqueue(user,input){
   if(!input||typeof input!=='object'||Array.isArray(input))throw fail(422,'Provide a provider job object.');
-  const action=input.action;if(!Object.hasOwn(capabilities,action))throw fail(422,'Choose search, enrich or verify.');
+  const action=input.action;if(!Object.hasOwn(capabilities,action))throw fail(422,'Choose search, enrich, verify or check_domain.');
   const key=String(input.idempotency_key||'');if(!/^[a-zA-Z0-9_-]{8,100}$/.test(key))throw fail(422,'A stable request key is required.');
   let payloads=[];
   if(action==='search'){
@@ -40,7 +41,7 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
    const id=randomUUID();await c.query('INSERT INTO prospect_jobs(id,user_id,action,idempotency_key,input_hash,max_cost_micros) VALUES($1,$2,$3,$4,$5,$6)',[id,user.uid,action,key,inputHash,ceiling]);
    for(const payload of payloads){
     const active=payload.contact_id&&(await c.query("SELECT id FROM prospect_tasks WHERE user_id=$1 AND contact_id=$2 AND action=$3 AND status IN ('pending','running','waiting')",[user.uid,payload.contact_id,action])).rows.length;
-    await c.query('INSERT INTO prospect_tasks(id,job_id,user_id,action,provider,contact_id,payload,status,result) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9::jsonb)',[randomUUID(),id,user.uid,action,action==='verify'?'hunter':'pdl',payload.contact_id||null,JSON.stringify(payload),active?'skipped':'pending',JSON.stringify(active?{message:'A matching operation is already active for this contact.'}:{})]);
+    await c.query('INSERT INTO prospect_tasks(id,job_id,user_id,action,provider,contact_id,payload,status,result) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9::jsonb)',[randomUUID(),id,user.uid,action,action==='check_domain'?'dns':action==='verify'?'hunter':'pdl',payload.contact_id||null,JSON.stringify(payload),active?'skipped':'pending',JSON.stringify(active?{message:'A matching operation is already active for this contact.'}:{})]);
    }
    return {id,replayed:false};
   });
@@ -56,6 +57,8 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   let contact;if(task.contact_id){contact=(await c.query('SELECT payload FROM prospect_contacts WHERE id=$1 AND user_id=$2',[task.contact_id,task.user_id])).rows[0]?.payload;}
   const skip=!ready(task.action)?'Provider is no longer configured.':quote(task.action,task.action==='search'?task.payload.filters.size:1)>task.payload.quote?'Configured price increased; launch a new job with a current quote.':task.action!=='search'&&(!contact||contact.suppressed||sig(contact)!==task.payload.signature)?'Contact is missing, suppressed, or changed.':task.action==='verify'&&!contact.email?'This contact has no email to verify.':task.action==='enrich'&&!contact.email&&!contact.linkedin_url?'An email or LinkedIn profile is needed for identity matching.':null;
   if(skip){await finish(c,task,'skipped',{message:skip});return {skipped:true};}
+  if(task.action==='check_domain'&&!contact.email){await finish(c,task,'skipped',{message:'This contact has no email domain to check.'});return {skipped:true};}
+  if(task.action==='verify'&&recentDomainFailure(contact)){await finish(c,task,'skipped',{message:'A recent domain check found no mail route. Review the email domain before paying for verification; no provider request was sent.'});return {skipped:true};}
   if(task.action==='verify'&&contact.email_status==='valid'&&contact.email_verification?.email===contact.email){
    const checked=Date.parse(contact.email_verification.checked_at),age=Date.now()-checked;
    if(Number.isFinite(checked)&&age>=0&&age<30*86400000){await finish(c,task,'skipped',{message:'A current valid email check already exists. No provider request or new reservation was made.'});return {skipped:true};}
@@ -63,7 +66,7 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   const charge=(await c.query('SELECT * FROM prospect_charges WHERE task_id=$1',[task.id])).rows[0];
   if(!charge){
    const spent=Number((await c.query("SELECT COALESCE(sum(reserved_micros),0) AS n FROM prospect_charges WHERE reserved_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'")).rows[0].n);
-   if(spent+task.payload.quote>config.dailyBudgetMicros){await finish(c,task,'skipped',{message:'The shared daily provider budget is exhausted. No request was sent.'});return {skipped:true};}
+   if(task.payload.quote>0&&spent+task.payload.quote>config.dailyBudgetMicros){await finish(c,task,'skipped',{message:'The shared daily provider budget is exhausted. No request was sent.'});return {skipped:true};}
    await c.query('INSERT INTO prospect_charges(task_id,user_id,provider,reserved_micros) VALUES($1,$2,$3,$4)',[task.id,task.user_id,task.provider,task.payload.quote]);
   }
   await c.query("INSERT INTO prospect_provider_pacing(provider,next_call_at) VALUES($1,now()+($2*interval '1 millisecond')) ON CONFLICT(provider) DO UPDATE SET next_call_at=EXCLUDED.next_call_at",[task.provider,pacingMs[task.provider]??6100]);
@@ -96,7 +99,11 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   const contact={...row.payload};
   if(result.suppressed){contact.suppressed=true;await c.query('UPDATE prospect_contacts SET payload=$1::jsonb,updated_at=now() WHERE id=$2',[JSON.stringify(contact),task.contact_id]);await finish(c,task,'skipped',{message:'Provider reported a suppression; the contact is now suppressed.'});return;}
   if(result.not_found||result.conflict){await finish(c,task,'skipped',{message:result.conflict?'Provider identity conflict; existing data preserved.':'No matching provider record.'});return;}
-  if(task.action==='verify'){
+  if(task.action==='check_domain'){
+   if(result.email!==contact.email||result.domain!==contact.email.split('@')[1]||!DOMAIN_CHECK_STATUSES.includes(result.status)||!Number.isFinite(Date.parse(result.checked_at)))throw fail(502,'Invalid domain-check result.');
+   contact.email_domain_check={domain:result.domain,status:result.status,checked_at:result.checked_at,provider:'dns',label:DOMAIN_CHECK_LABELS[result.status],mx_hosts:result.mx_hosts||[]};
+   if(contact.email_status==='valid'&&recentDomainFailure(contact)&&Date.parse(result.checked_at)>Date.parse(contact.email_verification?.checked_at))contact.email_status='unverified';
+  }else if(task.action==='verify'){
    if(result.email!==contact.email||!['valid','invalid','catch_all','unknown'].includes(result.status))throw fail(502,'Invalid verifier result.');
    contact.email_status=result.status;contact.email_verification={provider:result.provider,provider_status:result.provider_status,checked_at:result.checked_at,email:result.email};
   }else{
@@ -113,9 +120,9 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
    Object.assign(contact,prospective);if(!row.payload.email&&contact.email)contact.email_status='unverified';if(!row.payload.phone&&contact.phone)contact.phone_status='unverified';contact.enrichment={provider:'pdl',checked_at:result.checked_at,match_likelihood:result.match_likelihood||null};
   }
   await c.query('UPDATE prospect_contacts SET payload=$1::jsonb,identity_keys=$2::jsonb,updated_at=now() WHERE id=$3',[JSON.stringify(contact),JSON.stringify(contactIdentities(contact)),task.contact_id]);
-  await finish(c,task,'completed',{message:task.action==='verify'?`Email verification: ${result.status}.`:'Provider enrichment saved; imported phone information remains unverified.'});
+  await finish(c,task,'completed',{message:task.action==='check_domain'?`Domain check: ${DOMAIN_CHECK_LABELS[result.status]}. This does not verify the individual mailbox.`:task.action==='verify'?`Email verification: ${result.status}.`:'Provider enrichment saved; imported phone information remains unverified.'});
  });}
- async function tick(){const task=await claim();if(!task)return false;if(task.skipped)return true;try{const result=await(task.action==='search'?providers.search(task.payload.filters):task.action==='enrich'?providers.enrich(task.contact):providers.verifyEmail(task.contact));await apply(task,result);}catch{await tx(pool,c=>finish(c,task,'needs_attention',{message:'Provider request or result processing failed. Reserved cost retained; automatic retry disabled. Review provider billing before launching another job.'}));}return true;}
+ async function tick(){const task=await claim();if(!task)return false;if(task.skipped)return true;try{const result=await(task.action==='search'?providers.search(task.payload.filters):task.action==='enrich'?providers.enrich(task.contact):task.action==='check_domain'?providers.checkDomain(task.contact):providers.verifyEmail(task.contact));await apply(task,result);}catch{await tx(pool,c=>finish(c,task,'needs_attention',{message:'Provider request or result processing failed. Reserved cost retained; automatic retry disabled. Review provider billing before launching another job.'}));}return true;}
  async function jobs(user,id){const rows=(await pool.query(`SELECT j.*,count(t.id)::int AS total,count(t.id) FILTER(WHERE t.status=ANY($2::text[]))::int AS finished,COALESCE(sum(c.reserved_micros),0) AS reserved_micros FROM prospect_jobs j LEFT JOIN prospect_tasks t ON t.job_id=j.id LEFT JOIN prospect_charges c ON c.task_id=t.id WHERE j.user_id=$1 AND ($3::text IS NULL OR j.id=$3) GROUP BY j.id ORDER BY j.created_at DESC LIMIT 30`,[user.uid,terminal,id||null])).rows;
   if(id&&!rows.length)throw fail(404,'Job not found.');if(id)return {job:rows[0],tasks:(await pool.query('SELECT id,contact_id,action,status,attempts,result,completed_at FROM prospect_tasks WHERE job_id=$1 ORDER BY created_at,id',[id])).rows};return {jobs:rows};
  }

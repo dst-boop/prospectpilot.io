@@ -13,6 +13,8 @@ Imported status columns do not establish independent verification. Existing veri
 The following API integrations are optional alternatives; ZoomInfo CSV usage does not require PDL or Hunter credentials. Live API enrichment or independent verification still requires a configured API provider.
 ## Server and worker configuration
 
+**Check email domains** works without PDL/Hunter credentials or paid data-provider credits. It checks DNS mail-routing information only, in a durable job. Normal application hosting costs still apply. A domain check cannot mark an individual mailbox valid. Missing domains, explicit null MX and absent mail routes remain distinct from transient lookup failures and A/AAAA fallback. Recent definitive failures avoid a paid verification request for 15 minutes; cached positive DNS results retain their original check time.
+
 Configure the same values on **both** the authenticated `prospectpilot` Cloud Run service and the `prospectpilot-research` job. Use Secret Manager references for API keys. Never commit keys, put them in URLs presented to users, or paste them into this documentation.
 
 | Variable | Meaning |

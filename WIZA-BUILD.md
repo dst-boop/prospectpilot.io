@@ -2,7 +2,7 @@
 
 ## Production and scope
 
-The contact workspace is deployed at https://prospectpilot.io. The prior verified release is `review-20260908063507-41`, Cloud Run revision `prospectpilot-00008-r2z`. The September 8 data-quality update described below is prepared locally; its deployment must be verified before changing this status.
+The contact workspace is deployed at https://prospectpilot.io. The source-quality release `review-20260908203511-11107`, Cloud Run revision `prospectpilot-00009-8pr`, is verified live. Cloud Build 51e996fe-f530-4595-ab15-5af224ef17d5 and GitHub run 34275517806 passed. Production preview/import matched the two existing fictional contacts, rejected a malformed row and kept the directory at two contacts.
 
 The user selected ZoomInfo without API access. Authorized CSV exports are the primary acquisition workflow. Optional People Data Labs search/enrichment and Hunter verification adapters are implemented, but licensed credentials and contract prices are not configured. No real provider accuracy, volume or billing claims have been established.
 
@@ -24,7 +24,7 @@ See [SOURCE-QUALITY.md](SOURCE-QUALITY.md) for interpretation and [PROVIDER-SETU
 
 ## Validation
 
-127 Node tests and 3 Python tests pass. The production build and whitespace checks pass. A local browser test used only fictional data and verified the paste/preview/import workflow: one new contact, one duplicate with a differing title, one rejected bad email, ignored verification claims and an old source-date flag. The final browser check also verified per-source coverage, historical reports and the downloaded row-report CSV. A 5,000-row synthetic PGlite benchmark completed in 662 ms using 56 queries; this is not a production latency claim. A later-batch failure rolls back the full import.
+135 Node tests and 4 Python tests pass. The production build and whitespace checks pass. A local browser test used only fictional data and verified the paste/preview/import workflow: one new contact, one duplicate with a differing title, one rejected bad email, ignored verification claims and an old source-date flag. The final browser check also verified per-source coverage, historical reports and the downloaded row-report CSV. A 5,000-row synthetic PGlite benchmark completed in 662 ms using 56 queries; this is not a production latency claim. A later-batch failure rolls back the full import.
 
 Earlier production testing verified Google login, a two-contact fictional import, list membership, export, suppression-aware export, saved-search restoration and the verified-email filter. Those two fictional records remain in the owner's QA list.
 
@@ -36,3 +36,9 @@ Earlier production testing verified Google login, a two-contact fictional import
 - Source costs must include subscription/export charges and labor; current API reservations are conservative estimates, not invoices.
 
 The repository work is on `codex/contact-workspace` in [draft PR #4](https://github.com/dst-boop/prospectpilot.io/pull/4). The broader Wiza-style goal is not complete merely because local tests or deployment pass.
+
+## Additional source checks — next release
+
+DNS domain checks now run through durable jobs without paid data-provider credits. Domain-level results stay separate from mailbox verification, preserve observation times and can avoid paid requests after recent definitive failures. Local browser testing verified a completed synthetic domain job with a zero reservation; a live DNS-only lookup of example.com correctly returned null MX. No email was sent.
+
+Employer-plan selection uses the latest filing before applying termination/location filters, missing distribution indicators remain unknown, and blank plan numbers are rejected. Migrations 010 and 011 add the latest-filing index and domain-check job action. Source/review/suppression filters and compact directory responses are included. This additional release has not yet been deployed.

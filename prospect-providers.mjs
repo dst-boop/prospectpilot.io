@@ -1,5 +1,6 @@
 import {emailAddress,phoneNumber,linkedinURL,nameKey} from './lead-quality.mjs';
 import {normalizeContact,stateName} from './prospect-data-quality.mjs';
+import {createDomainChecker} from './prospect-domain-check.mjs';
 const fail=(status,message)=>Object.assign(Error(message),{status});
 const fields='id,first_name,last_name,job_title,job_company_name,job_company_website,job_company_industry,job_title_levels,location_country,location_region,location_locality,linkedin_url,work_email,phone_numbers';
 const normalizeProfile=value=>linkedinURL(value&&!/^https?:/.test(value)?'https://'+value:value);
@@ -12,7 +13,7 @@ export function professionalRecord(raw){
 }
 // Retain only professional fields. Financial, household, birth and demographic
 // fields are neither requested nor persisted, even if a provider sends extras.
-export function createProspectProviders({pdlKey='',hunterKey='',fetcher=fetch,now=()=>new Date()}={}){
+export function createProspectProviders({pdlKey='',hunterKey='',fetcher=fetch,now=()=>new Date(),domainChecker=createDomainChecker()}={}){
  async function request(url,options={}){
   let response;try{response=await fetcher(url,{...options,redirect:'error',signal:AbortSignal.timeout(30000)});}catch{throw fail(502,'Provider request could not be completed; billing outcome may be unknown.');}
   if(response.status===202){await response.body?.cancel();return {pending:true};}
@@ -69,5 +70,5 @@ export function createProspectProviders({pdlKey='',hunterKey='',fetcher=fetch,no
   if(!status)throw fail(502,'Verifier returned an unsupported status.');
   return {email,status,provider_status:data.status,provider:'hunter',checked_at:now().toISOString()};
  }
- return {readiness:{search:!!pdlKey,enrichment:!!pdlKey,email_verification:!!hunterKey},search,enrich,verifyEmail};
+ return {readiness:{search:!!pdlKey,enrichment:!!pdlKey,email_verification:!!hunterKey,domain_check:true},search,enrich,verifyEmail,checkDomain:domainChecker};
 }

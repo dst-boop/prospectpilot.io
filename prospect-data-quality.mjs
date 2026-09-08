@@ -81,7 +81,7 @@ export function parseContactCSV(input) {
   const csv = input.replace(/^\uFEFF/, '');
   const records = [];
   let cells = [], cell = '', state = 'start', line = 1, rowLine = 1;
-  const endCell = () => { cells.push(cell); cell = ''; state = 'start'; };
+  const endCell = () => { cells.push(cell); if(cells.length>500)throw fail(`CSV line ${rowLine} exceeds 500 columns.`); cell = ''; state = 'start'; };
   const endRow = () => {
     endCell();
     if (cells.some(value => value.trim())) records.push({cells, row: rowLine});
@@ -108,6 +108,7 @@ export function parseContactCSV(input) {
   if (records.length < 2) throw fail('Include headers and 1–5,000 rows.');
   const headers = records.shift().cells;
   if (headers.some(header => !header.trim())) throw fail('Every CSV column needs a header.');
+  if (headers.some(header => header.length>200)) throw fail('CSV headers must be no longer than 200 characters.');
   const known = headers.map(header => CONTACT_COLUMNS.get(columnKey(header))).filter(Boolean);
   if (new Set(known).size !== known.length || new Set(headers.map(columnKey)).size !== headers.length) throw fail('Duplicate CSV columns.');
   if (!known.includes('first_name') || !known.includes('last_name')) throw fail('Include First Name and Last Name columns.');
@@ -120,6 +121,7 @@ export function contactQuality(contact, now = new Date()) {
   if (sharedMailbox(contact.email)) issues.push({code: 'shared_mailbox', message: 'Shared mailbox; individual ownership is not established.'});
   if (contact.email && /@(?:[^@]+\.)?(?:example\.(?:com|net|org)|invalid|test)$/i.test(contact.email)) issues.push({code: 'test_address', message: 'Reserved example or test email domain.'});
   if (contact.email && contact.email_status !== 'valid') issues.push({code: 'email_not_verified', message: 'Email has no current valid verification.'});
+  if (contact.email_domain_check?.domain===String(contact.email||'').split('@')[1]&&['no_domain','null_mx','no_mail_route'].includes(contact.email_domain_check?.status)) issues.push({code:'domain_mail_issue',message:'The last domain check found no mail route. Review its date and the email domain.'});
   if (!contact.company) issues.push({code: 'missing_company', message: 'Company is missing.'});
   if (!contact.country) issues.push({code: 'missing_country', message: 'Contact country is missing.'});
   const seen = contact.source_observed_at;
