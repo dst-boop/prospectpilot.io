@@ -19,6 +19,10 @@ test('known Wisconsin header repair and omitted unused trailing fields preserve 
  const wi=parseWarn('Company,City,Affected Workers,Notice Received,Original Notice Type / Update Type,Layoff Begin Date,NAICS Description,CountyWorkforce Development Area\nExample,City,12,20260102,Closure,2026-03-01,Industry,Example County,Region','WI');assert.equal(wi.events[0].county,'Example County');assert.equal(wi.schema_notes.length,1);assert.equal(wi.malformed_rows,0);
  const shorter=parseWarn('Company,Notice Date,Unused Notes\nExample,2026-01-01','IA');assert.equal(shorter.events.length,1);assert.equal(shorter.malformed_rows,0);
 });
+
+test('implausible source years remain raw review notes and cannot drive chronology',()=>{
+ const r=parseWarn('Company,Notice Date,Effective Date\nExample,2108-11-01,3030-08-23','RI',Date.UTC(2026,8,8)).events[0];assert.equal(r.notice_date,null);assert.equal(r.effective_date,null);assert.equal(r.notice_date_note,'2108-11-01');assert.equal(r.date_note,'3030-08-23');assert.deepEqual(r.quality_flags,['implausible_notice_date','implausible_effective_date']);
+});
 test('current NY schema preserves distinct dates and duplicate worker columns',()=>{const r=parseWarn(csv,'NY');assert.equal(r.events.length,1);assert.equal(r.events[0].employer,'Example Consulting, LLC');assert.equal(r.events[0].notice_date,'2026-07-01');assert.equal(r.events[0].effective_date,'2026-09-30');assert.equal(r.events[0].workers,42);assert.equal(r.events[0].county,'Albany');});
 test('Maryland headerless format is recognized; date ranges are not guessed',()=>{const r=parseWarn('\n08/31/2026,459510,Example Consulting,Albany,Albany County,136,10/31/2026 - 11/30/2026,Plant Closure','MD');assert.equal(r.events[0].notice_date,'2026-08-31');assert.equal(r.events[0].effective_date,null);assert.ok(r.events[0].date_note.includes('11/30'));assert.equal(dateValue('2026-02-30'),null);assert.throws(()=>parseWarn('Strange,Columns\nA,B','NY'),/employer/);});
 test('feed service queries, caches, reports missing coverage and matches employer without individual inference',async()=>{
