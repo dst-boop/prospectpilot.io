@@ -52,7 +52,7 @@ const handle=async request=>{
   if(!['GET','HEAD'].includes(request.method)&&request.headers.get('origin')!==origin)return new Response('Origin rejected.',{status:403});
   const headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"};
   try{
-    if(url.pathname==='/api/me')return Response.json(user,{headers});
+    if(url.pathname==='/api/me'||url.pathname==='/api/prospect/me')return Response.json(user,{headers});
     if(url.pathname.startsWith('/api/prospect/')){const result=await prospect.route(request,user);return result instanceof Response?result:Response.json(result,{headers});}
     if(url.pathname.startsWith('/api/lab/')){const result=await lab.route(request,user);return result instanceof Response?result:Response.json(result,{headers});}
     if(assets.has(url.pathname)){const [type,body]=assets.get(url.pathname);return new Response(body,{headers:{...headers,'Content-Type':type}});}

@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {hash,nameKey} from './lead-quality.mjs';
-import {normalizeContact,contactIdentities,searchFilters} from './prospect-workspace.mjs';
+import {normalizeContact,contactIdentities,identityLookupKeys,searchFilters} from './prospect-workspace.mjs';
+import {CONTACT_ALIASES} from './prospect-data-quality.mjs';
 const fail=(status,message)=>Object.assign(Error(message),{status});
 const sig=contact=>hash(JSON.stringify(['first_name','last_name','company','email','linkedin_url'].map(k=>contact[k]||'')));
 const terminal=['completed','failed','skipped','needs_attention'];
@@ -16,6 +17,7 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
  const ready=action=>providers.readiness[capabilities[action]]===true&&Number.isSafeInteger(config.prices[action])&&config.prices[action]>=0;
  async function summary(user){const charges=(await pool.query(`SELECT COALESCE(sum(reserved_micros),0) AS reserved FROM prospect_charges WHERE user_id=$1 AND reserved_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,[user.uid])).rows[0];return {providers:providers.readiness,prices:config.prices,daily_budget_micros:config.dailyBudgetMicros,reserved_today_micros:Number(charges.reserved),actions:Object.fromEntries(Object.keys(capabilities).map(a=>[a,ready(a)])),cost_basis:'Reserved maximum at configured prices, not actual provider billing. The daily cap is shared by this deployment.'};}
  async function enqueue(user,input){
+  if(!input||typeof input!=='object'||Array.isArray(input))throw fail(422,'Provide a provider job object.');
   const action=input.action;if(!Object.hasOwn(capabilities,action))throw fail(422,'Choose search, enrich or verify.');
   const key=String(input.idempotency_key||'');if(!/^[a-zA-Z0-9_-]{8,100}$/.test(key))throw fail(422,'A stable request key is required.');
   let payloads=[];
@@ -54,6 +56,10 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   let contact;if(task.contact_id){contact=(await c.query('SELECT payload FROM prospect_contacts WHERE id=$1 AND user_id=$2',[task.contact_id,task.user_id])).rows[0]?.payload;}
   const skip=!ready(task.action)?'Provider is no longer configured.':quote(task.action,task.action==='search'?task.payload.filters.size:1)>task.payload.quote?'Configured price increased; launch a new job with a current quote.':task.action!=='search'&&(!contact||contact.suppressed||sig(contact)!==task.payload.signature)?'Contact is missing, suppressed, or changed.':task.action==='verify'&&!contact.email?'This contact has no email to verify.':task.action==='enrich'&&!contact.email&&!contact.linkedin_url?'An email or LinkedIn profile is needed for identity matching.':null;
   if(skip){await finish(c,task,'skipped',{message:skip});return {skipped:true};}
+  if(task.action==='verify'&&contact.email_status==='valid'&&contact.email_verification?.email===contact.email){
+   const checked=Date.parse(contact.email_verification.checked_at),age=Date.now()-checked;
+   if(Number.isFinite(checked)&&age>=0&&age<30*86400000){await finish(c,task,'skipped',{message:'A current valid email check already exists. No provider request or new reservation was made.'});return {skipped:true};}
+  }
   const charge=(await c.query('SELECT * FROM prospect_charges WHERE task_id=$1',[task.id])).rows[0];
   if(!charge){
    const spent=Number((await c.query("SELECT COALESCE(sum(reserved_micros),0) AS n FROM prospect_charges WHERE reserved_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'")).rows[0].n);
@@ -65,13 +71,18 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
  });}
  async function saveSearch(c,task,result){
   await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`prospect:${task.user_id}`]);
-  let added=0,duplicates=0,conflicts=0,rejected=0;const contact_ids=[];
+  let added=0,duplicates=0,conflicts=0,rejected=result.rejected||0;const contact_ids=[];
   // A list deleted while the request ran cannot make paid results disappear.
   const listId=task.payload.list_id&&(await c.query('SELECT id FROM prospect_lists WHERE id=$1 AND user_id=$2',[task.payload.list_id,task.user_id])).rows[0]?.id;
   for(const raw of result.contacts){let contact;try{contact=normalizeContact(raw,'People Data Labs');}catch{rejected++;continue;}const keys=contactIdentities(contact);if(!keys.length){rejected++;continue;}
-   const matches=(await c.query('SELECT id,payload FROM prospect_contacts WHERE user_id=$1 AND identity_keys ?| $2::text[]',[task.user_id,keys])).rows;
+   const matches=(await c.query('SELECT id,payload FROM prospect_contacts WHERE user_id=$1 AND identity_keys ?| $2::text[] FOR UPDATE',[task.user_id,identityLookupKeys(contact)])).rows;
    if(matches.length>1||matches.some(r=>['first_name','last_name'].some(k=>nameKey(r.payload[k])!==nameKey(contact[k]))||['email','linkedin_url'].some(k=>r.payload[k]&&contact[k]&&r.payload[k]!==contact[k]))){conflicts++;continue;}
-   let id=matches[0]?.id;if(id){duplicates++;}else{id=randomUUID();contact={...contact,source_kind:'provider',provider_id:raw.provider_id};await c.query('INSERT INTO prospect_contacts(id,user_id,payload,identity_keys) VALUES($1,$2,$3::jsonb,$4::jsonb)',[id,task.user_id,JSON.stringify(contact),JSON.stringify(keys)]);added++;}
+   const evidence={source:'People Data Labs',kind:'provider',job_id:task.job_id,imported_at:result.checked_at||new Date().toISOString(),observed_at:null,provider_id:raw.provider_id||null};
+   let id=matches[0]?.id;if(id){duplicates++;
+    const old=matches[0].payload,differing=['title','company','country','state','city','phone'].filter(key=>old[key]&&contact[key]&&nameKey(old[key])!==nameKey(contact[key]));
+    const updated={...old,last_seen_at:evidence.imported_at,source_history:[...(old.source_history||[]),{...evidence,differing_fields:differing}].slice(-20)};
+    await c.query('UPDATE prospect_contacts SET payload=$1::jsonb,updated_at=now() WHERE id=$2 AND user_id=$3',[JSON.stringify(updated),id,task.user_id]);
+   }else{id=randomUUID();contact={...contact,source_kind:'provider',provider_id:raw.provider_id,source_observed_at:null,last_seen_at:evidence.imported_at,source_history:[evidence],field_sources:Object.fromEntries(Object.keys(CONTACT_ALIASES).filter(key=>contact[key]).map(key=>[key,evidence]))};await c.query('INSERT INTO prospect_contacts(id,user_id,payload,identity_keys) VALUES($1,$2,$3::jsonb,$4::jsonb)',[id,task.user_id,JSON.stringify(contact),JSON.stringify(keys)]);added++;}
    contact_ids.push(id);if(listId)await c.query('INSERT INTO prospect_list_members(list_id,contact_id) VALUES($1,$2) ON CONFLICT DO NOTHING',[listId,id]);
   }return {added,duplicates,conflicts,rejected,contact_ids,total:result.total,retrieved:result.retrieved,scroll_token:result.scroll_token||'',filters:task.payload.filters,message:result.errors?.join(' ')||''};
  }
@@ -95,7 +106,11 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
    await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`prospect:${task.user_id}`]);
    const collision=(await c.query('SELECT id FROM prospect_contacts WHERE user_id=$1 AND id<>$2 AND identity_keys ?| $3::text[]',[task.user_id,task.contact_id,contactIdentities(prospective)])).rows;
    if(collision.length){await finish(c,task,'skipped',{message:'Enriched identifiers match another contact. Review the identity before merging.'});return;}
-   Object.assign(contact,prospective);if(!row.payload.email&&contact.email)contact.email_status='unverified';if(!row.payload.phone&&contact.phone)contact.phone_status='unverified';contact.enrichment={provider:'pdl',checked_at:result.checked_at};
+   const evidence={source:'People Data Labs',kind:'provider',job_id:task.job_id,imported_at:result.checked_at||new Date().toISOString(),observed_at:null,match_likelihood:result.match_likelihood||null};
+   const differing=['title','company','country','state','city','phone'].filter(key=>contact[key]&&candidate[key]&&nameKey(contact[key])!==nameKey(candidate[key]));
+   prospective.field_sources={...(contact.field_sources||{})};for(const key of Object.keys(CONTACT_ALIASES))if(!contact[key]&&candidate[key])prospective.field_sources[key]=evidence;
+   prospective.source_history=[...(contact.source_history||[]),{...evidence,differing_fields:differing}].slice(-20);prospective.last_seen_at=evidence.imported_at;
+   Object.assign(contact,prospective);if(!row.payload.email&&contact.email)contact.email_status='unverified';if(!row.payload.phone&&contact.phone)contact.phone_status='unverified';contact.enrichment={provider:'pdl',checked_at:result.checked_at,match_likelihood:result.match_likelihood||null};
   }
   await c.query('UPDATE prospect_contacts SET payload=$1::jsonb,identity_keys=$2::jsonb,updated_at=now() WHERE id=$3',[JSON.stringify(contact),JSON.stringify(contactIdentities(contact)),task.contact_id]);
   await finish(c,task,'completed',{message:task.action==='verify'?`Email verification: ${result.status}.`:'Provider enrichment saved; imported phone information remains unverified.'});

@@ -1,61 +1,38 @@
-# Wiza-style ProspectPilot — active build
+# ProspectPilot contact workspace
 
-Goal: create an application like Wiza, centered on professional contact search, list building, email and phone enrichment, verification and exports. The existing retirement Research Lab remains a separate workflow. This goal is not complete merely because local tests pass.
+## Production and scope
 
-## Current implementation
+The contact workspace is deployed at https://prospectpilot.io. The prior verified release is `review-20260908063507-41`, Cloud Run revision `prospectpilot-00008-r2z`. The September 8 data-quality update described below is prepared locally; its deployment must be verified before changing this status.
 
-- Authenticated `/prospect` workspace with professional contact search by name, title, company, location, industry, seniority, email status and contact availability.
-- PostgreSQL storage for contacts, lists and membership, saved searches and import history; migration 008.
-- CSV acquisition with deduplication, identity-conflict rejection, source labels, suppression preservation and no imported verification claims.
-- List creation, add/remove members, saved filters, pagination and suppression-aware CSV export.
-- Production root routes to the contact workspace; Research Lab remains at `/lab`.
-- Loopback synthetic demonstration includes the new workspace, using the actual database and API code.
-- Initial People Data Labs search/enrichment and Hunter email-verification adapters are implemented and contract-tested with mocked provider responses. They are wired to durable provider jobs; live provider calls remain untested. Official references: https://docs.peopledatalabs.com/docs/reference-person-search-api and https://hunter.io/api-documentation.
+The user selected ZoomInfo without API access. Authorized CSV exports are the primary acquisition workflow. Optional People Data Labs search/enrichment and Hunter verification adapters are implemented, but licensed credentials and contract prices are not configured. No real provider accuracy, volume or billing claims have been established.
 
-## Required work before completion
+Public Google and email/password signup are implemented with verified Firebase identities. Google login was tested in production. Real email verification and password-reset delivery still need a delivery test. User data is isolated by Firebase UID; legacy administrative routes remain owner-restricted.
 
-- Connect a real professional-contact search/enrichment provider, including phone enrichment, with server-side credentials and precise identity matching. Never imply the local directory is a proprietary global database.
-- Implement email verification through a real provider, preserving catch-all/unknown/invalid states and freshness.
-- Durable bulk jobs, idempotency, progress, conservative cost reservations and interruption handling are implemented and tested. Validate the deployed worker and real billing behavior before completion.
-- Provider setup/readiness and enrichment actions are implemented. Supply licensed provider configuration in both the service and worker; see PROVIDER-SETUP.md.
-- Validate the complete search → list → enrich → verify → export journey, including failures and access isolation.
-- Review whether browser capture and CRM integration are required to satisfy the user's intended Wiza workflow; implement requested capabilities without extracting session cookies or private-profile data.
-- Publish updated repository changes and verify production deployment when its environment is available. Do not treat the synthetic demonstration as deployment or real-data verification.
+## September 8 data-quality improvements
 
-## External dependencies
+- Strict CSV parsing, physical row numbers, normalized US locations, placeholder handling and explicit rejected/ignored fields.
+- Upload or paste CSV, preview without writes, commit-time identity rechecks and downloadable row reports.
+- Source observation dates separated from import/provider retrieval dates; source history and field origins retained.
+- Source import outcomes and current email-verification coverage by original source. No fabricated source accuracy scores.
+- Shared-mailbox and namesake protections; legacy US location spellings remain searchable and deduplicate correctly.
+- Provider response validation rejects missing/out-of-range identity confidence and malformed professional fields. Rejected provider rows count toward results.
+- Pending, catch-all, invalid and unknown verifier states remain distinct. Current valid checks skip redundant requests and reservations.
+- Saved import reports open as historical read-only reports. Source history and field origins are visible in contact details.
+- Deployment preflight gives an explicit missing-Scheduler-API error instead of hiding an interactive prompt.
 
-Provider API access has been requested from the user (provider name only; secrets belong in configuration). There is no evidence yet of licensed contact-search or verification credentials in this workspace. Lack of credentials does not block building adapters, jobs, setup UX, and automated contract tests.
+See [SOURCE-QUALITY.md](SOURCE-QUALITY.md) for interpretation and [PROVIDER-SETUP.md](PROVIDER-SETUP.md) for server configuration.
 
-## Product reference
+## Validation
 
-[Wiza Prospect overview](https://help.wiza.co/en/articles/8839911-wiza-prospect-overview): professional database search, targeted contact/company lists and bulk enrichment.
-[Wiza lists workflow](https://help.wiza.co/en/articles/9211271-mastering-your-lists-page): CSV acquisition, list management and exports.
+127 Node tests and 3 Python tests pass. The production build and whitespace checks pass. A local browser test used only fictional data and verified the paste/preview/import workflow: one new contact, one duplicate with a differing title, one rejected bad email, ignored verification claims and an old source-date flag. The final browser check also verified per-source coverage, historical reports and the downloaded row-report CSV. A 5,000-row synthetic PGlite benchmark completed in 662 ms using 56 queries; this is not a production latency claim. A later-batch failure rolls back the full import.
 
-## Verified progress — 2026-09-08
+Earlier production testing verified Google login, a two-contact fictional import, list membership, export, suppression-aware export, saved-search restoration and the verified-email filter. Those two fictional records remain in the owner's QA list.
 
-- Migration 009, durable provider jobs, budget reservations, readiness UI and worker integration are implemented. Provider failures keep their reservation and are not blindly replayed.
-- Lists can be renamed and deleted through the UI. Deleting a list preserves contacts and clears its scope from saved searches. Saved searches can be deleted from the sidebar.
-- Older overlapping directory requests cannot overwrite newer filter results. Provider pagination preserves opaque tokens up to 5,000 characters instead of truncating at 250.
-- Email checks expire after 30 days or on missing/mismatched/future evidence before status filtering and CSV export.
-- `pnpm test`: 105 passing tests. `pnpm build` and `git diff --check` pass.
-- Browser verified against a fresh synthetic demo on port 8089: list rename, queued verification, completed job, contact status update, and cost display. No real provider request or real spending occurred.
-- Existing port 8088 demo was left running with its previous in-memory data. The updated demo serves port 8089; revalidate process status before using it in a later turn.
-- Contact detail views show source, list membership, verification history and enrichment timestamps. Suppression can be set or removed in the UI; owner isolation and suppression-aware exports are tested. Browser verified the detail view and suppression toggle.
-- Production deployment and live licensed provider verification are still outstanding. The overall goal remains active.
+## Remaining external validation
 
-## Release readiness
+- Actual ZoomInfo export layout and licensed source quality on a user-supplied sample.
+- Live PDL/Hunter identity accuracy, coverage, credit usage and worker results after licensed configuration.
+- Real email-verification/password-reset message delivery for public signup.
+- Source costs must include subscription/export charges and labor; current API reservations are conservative estimates, not invoices.
 
-- [Draft PR #4](https://github.com/dst-boop/prospectpilot.io/pull/4) contains the contact workspace. GitHub run 34191164569 passed all checks, including the production Docker image, for commit 5388ec2.
-- Four additional transport tests cover contact pages/assets, signed-session ownership, cross-site write rejection, error redaction, CSV headers and version identity.
-- `/version` now reports whether the contact workspace is registered. The release script requires that marker as well as the Research Lab version and exact release ID.
-- Local preflight found no PDL/Hunter keys, Google application-default credentials, Google credential-path setting, or gcloud configuration. Live provider testing and deployment require an authenticated deployment environment and the configuration described in PROVIDER-SETUP.md. No secrets were read or printed.
-
-## Source clarification
-
-The user selected ZoomInfo with no API access. ZoomInfo CSV imports are now the primary acquisition workflow and do not depend on PDL/Hunter credentials. The import preset includes professional-field aliases and blank-placeholder handling, while preserving deduplication, suppression and unverified status for imported data. Optional API adapters remain available. Automated ZoomInfo sourcing is not implemented; validate the exact layout using a user-supplied export and measure manual/export costs separately. Cloud deployment still requires an authenticated environment.
-
-## Public account creation
-
-The user requires any visitor to be able to create an account. The login UI now supports Google signup, email/password signup, email verification, sign-in and password reset. The session endpoint accepts any verified Google/password identity and derives ownership from the verified Firebase UID. Existing legacy administration remains restricted to OWNER_EMAIL, preventing public signup from exposing older administrative tools. Public account access, cross-user isolation and legacy-route restrictions are covered by tests.
-
-Deployment must enable Email/Password in Firebase Authentication in addition to Google, verify authorized site domains, and test email verification/reset delivery. The Google Cloud browser is still waiting for the owner's passkey confirmation. No real account was created and no authentication settings were changed during implementation.
+The repository work is on `codex/contact-workspace` in [draft PR #4](https://github.com/dst-boop/prospectpilot.io/pull/4). The broader Wiza-style goal is not complete merely because local tests or deployment pass.

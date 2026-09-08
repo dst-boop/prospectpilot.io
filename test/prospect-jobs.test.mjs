@@ -15,9 +15,18 @@ test('imported contacts can be enriched, verified and exported without overwriti
 async function fixture(fn,overrides={}){const db=new PGlite();try{for(const name of ['008-prospect-workspace','009-prospect-jobs'])await db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};let calls=0;const providers={readiness:{search:true,enrichment:true,email_verification:true},search:async()=>{calls++;return {contacts:[record],retrieved:1,total:1,scroll_token:'page-2'};},enrich:async()=>{calls++;return {contact:record,checked_at:new Date().toISOString()};},verifyEmail:async c=>{calls++;return {email:c.email,status:'valid',provider_status:'valid',provider:'hunter',checked_at:new Date().toISOString()};},...overrides};const config={dailyBudgetMicros:100000,prices:{search:1000,enrich:2000,verify:1000}};const jobs=createProspectJobs({pool,providers,config,pacingMs:{pdl:0,hunter:0}});const app=createProspectWorkspace({pool,jobs});await fn({db,app,jobs,providers,config,calls:()=>calls});}finally{await db.close();}}
 test('provider search to list to verification to export works with recorded cost and isolation',()=>fixture(async({app,jobs,calls})=>{
  const list=await app.createList(user,{name:'Prospects'});const input={action:'search',filters:{company:'Example'},size:10,list_id:list.id,idempotency_key:'search-001',max_cost_micros:10000};const job=await jobs.enqueue(user,input);assert.equal((await jobs.enqueue(user,input)).id,job.id);assert.equal(await jobs.tick(),true);assert.equal(calls(),1);
- const c=(await app.search(user,{list_id:list.id})).contacts[0];assert.equal(c.source_kind,'provider');assert.equal(c.email_status,'unverified');
+ const c=(await app.search(user,{list_id:list.id})).contacts[0];assert.equal(c.source_kind,'provider');assert.equal(c.email_status,'unverified');assert.equal(c.source_history[0].source,'People Data Labs');assert.equal(c.source_observed_at,null);assert.equal(c.field_sources.email.kind,'provider');
  const verify=await jobs.enqueue(user,{action:'verify',ids:[c.id],max_cost_micros:1000,idempotency_key:'verify-001'});await jobs.tick();assert.equal((await app.search(user)).contacts[0].email_status,'valid');assert.equal((await jobs.jobs(user,verify.id)).tasks[0].status,'completed');assert.equal((await jobs.summary(user)).reserved_today_micros,11000);
  assert.match(await (await app.exportCSV(user,{ids:[c.id]})).text(),/valid/);await assert.rejects(jobs.jobs(other,job.id),{status:404});await assert.rejects(jobs.enqueue(other,{action:'verify',ids:[c.id],max_cost_micros:1000,idempotency_key:'verify-002'}),{status:404});assert.equal((await jobs.jobs(other)).jobs.length,0);
+}));
+test('provider rejection counts and enrichment field sources remain visible',()=>fixture(async({app,jobs,providers})=>{
+ providers.search=async()=>({contacts:[record],retrieved:3,rejected:2,total:3});
+ const search=await jobs.enqueue(user,{action:'search',filters:{company:'Example'},size:3,idempotency_key:'quality-search',max_cost_micros:3000});await jobs.tick();
+ const result=(await jobs.jobs(user,search.id)).tasks[0].result;assert.equal(result.rejected,2);assert.equal(result.added,1);
+ await app.importCSV(user,{csv:'First Name,Last Name,Email\nTaylor,Sample,taylor@example.com'});const c=(await app.search(user,{q:'Taylor'})).contacts[0];
+ providers.enrich=async()=>({contact:{first_name:'Taylor',last_name:'Sample',email:c.email,company:'Sample Business'},checked_at:new Date().toISOString(),match_likelihood:9});
+ await jobs.enqueue(user,{action:'enrich',ids:[c.id],idempotency_key:'quality-enrich',max_cost_micros:2000});await jobs.tick();
+ const enriched=(await app.search(user,{q:'Taylor'})).contacts[0];assert.equal(enriched.field_sources.company.kind,'provider');assert.equal(enriched.field_sources.email.kind,'import');assert.equal(enriched.source_observed_at,null);assert.equal(enriched.enrichment.match_likelihood,9);
 }));
 test('daily caps and explicit ceilings prevent requests, active tasks deduplicate, changed requests conflict',()=>fixture(async({app,jobs,config,calls})=>{
  await assert.rejects(jobs.enqueue(user,{action:'search',filters:{company:'Example'},size:10,max_cost_micros:9999,idempotency_key:'too-small-1'}),{status:422});
@@ -35,4 +44,11 @@ test('suppression and identity changes during a request prevent stale result app
 }));
 test('provider failures retain reserved costs without automatic retry or error-secret exposure',()=>fixture(async({jobs,providers})=>{
  providers.search=async()=>{throw Error('secret credential');};const job=await jobs.enqueue(user,{action:'search',filters:{company:'Example'},size:1,max_cost_micros:1000,idempotency_key:'failure-001'});await jobs.tick();assert.equal(await jobs.tick(),false);const result=await jobs.jobs(user,job.id);assert.equal(result.tasks[0].status,'needs_attention');assert.ok(!JSON.stringify(result).includes('secret credential'));assert.equal((await jobs.summary(user)).reserved_today_micros,1000);
+}));
+test('repeat valid verification skips provider cost but expired checks can run again',()=>fixture(async({db,app,jobs,calls})=>{
+ await app.importCSV(user,{csv:'First Name,Last Name,Email\nJamie,Rivera,jamie@example.com'});const contact=(await app.search(user)).contacts[0];
+ for(const key of ['first-valid','repeat-valid']){const job=await jobs.enqueue(user,{action:'verify',ids:[contact.id],max_cost_micros:1000,idempotency_key:key});await jobs.tick();if(key==='repeat-valid')assert.equal((await jobs.jobs(user,job.id)).tasks[0].status,'skipped');}
+ assert.equal(calls(),1);assert.equal((await jobs.summary(user)).reserved_today_micros,1000);
+ await db.query("UPDATE prospect_contacts SET payload=jsonb_set(payload,'{email_verification,checked_at}',$1::jsonb) WHERE id=$2",[JSON.stringify(new Date(Date.now()-31*86400000).toISOString()),contact.id]);
+ await jobs.enqueue(user,{action:'verify',ids:[contact.id],max_cost_micros:1000,idempotency_key:'expired-valid'});await jobs.tick();assert.equal(calls(),2);
 }));
