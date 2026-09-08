@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {normalizeLead, mergeLead, isUsableStoredLead} from './generated/worker.mjs';
-import {assessLead, candidateKeys, leadIdentity, validateObservation, nameKey, US_STATES, researchCSV, hash} from './lead-quality.mjs';
+import {assessLead, candidateKeys, leadIdentity, validateObservation, nameKey, US_STATES, researchCSV, hash, QUALITY_VERSION} from './lead-quality.mjs';
 import {matchPlans, selectEmployers} from './plan-catalog.mjs';
 import {SOURCE_CATALOG} from './source-catalog.mjs';
 import {csvRows} from './warn.mjs';
@@ -43,10 +43,10 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
   async function observations(user,id,client=pool) {return (await client.query('SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows.map(r=>parse(r.payload));}
   async function evaluate(user,lead,client=pool) {
     const quality=assessLead(lead,await observations(user,lead.id,client),{now:now(),plans:await matchPlans(client,lead)});
-    await client.query(`INSERT INTO lab_qualification(lead_id,user_id,status,score,identity_signature,first_verified_at)
-      VALUES($1,$2,$3,$4,$5,CASE WHEN $3='verified' THEN $6::timestamptz ELSE NULL END)
+    await client.query(`INSERT INTO lab_qualification(lead_id,user_id,status,score,identity_signature,first_verified_at,rule_version)
+      VALUES($1,$2,$3,$4,$5,CASE WHEN $3='verified' THEN $6::timestamptz ELSE NULL END,$7)
       ON CONFLICT(lead_id,user_id) DO UPDATE SET status=EXCLUDED.status,score=EXCLUDED.score,identity_signature=EXCLUDED.identity_signature,
-      first_verified_at=COALESCE(lab_qualification.first_verified_at,EXCLUDED.first_verified_at),evaluated_at=now()`,[lead.id,user.uid,quality.status,quality.score,quality.identity_signature,now().toISOString()]);
+      first_verified_at=CASE WHEN lab_qualification.rule_version=EXCLUDED.rule_version THEN COALESCE(lab_qualification.first_verified_at,EXCLUDED.first_verified_at) ELSE EXCLUDED.first_verified_at END,rule_version=EXCLUDED.rule_version,evaluated_at=now()`,[lead.id,user.uid,quality.status,quality.score,quality.identity_signature,now().toISOString(),QUALITY_VERSION]);
     return quality;
   }
   async function detail(user,id) {const {lead}=await accessible(user,id);return {lead,quality:await evaluate(user,lead),observations:await observations(user,id)};}
@@ -272,11 +272,26 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       costs AS (SELECT (created_at AT TIME ZONE 'UTC')::date AS day,sum(amount_micros) AS micros FROM lab_costs WHERE user_id=$1 GROUP BY 1)
       SELECT d.day::text,COALESCE(p.sourced,0) AS new_sourced,COALESCE(p.imported,0) AS imported,COALESCE(v.n,0) AS newly_verified,COALESCE(c.micros,0) AS cost_micros FROM days d LEFT JOIN people p USING(day) LEFT JOIN verified v USING(day) LEFT JOIN costs c USING(day) ORDER BY d.day`,[user.uid,days])).rows;
     const inventory=(await pool.query(`SELECT COALESCE(q.status,'unassessed') AS status,count(*)::int AS n FROM discovery_leads d LEFT JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2 WHERE ${visibleSQL} GROUP BY 1`,[TEAM,user.uid,user.email])).rows;
-    const sourceRows=(await pool.query(`SELECT t.source,count(*)::int AS attempts,count(*) FILTER(WHERE t.status IN ('failed','partial','skipped'))::int AS gaps,COALESCE(sum((t.result->>'added')::int),0)::int AS new_people,COALESCE(sum(t.reserved_micros),0) AS cost_micros,COALESCE(sum((t.result->>'duration_ms')::bigint),0) AS duration_ms FROM lab_tasks t JOIN lab_runs r ON r.id=t.run_id WHERE r.user_id=$1 AND r.created_at>=now()-($2*interval '1 day') GROUP BY t.source`,[user.uid,days])).rows;
+    const sourceRows=(await pool.query(`SELECT t.source,count(*)::int AS attempts,count(*) FILTER(WHERE t.status IN ('failed','partial','skipped'))::int AS gaps,COALESCE(sum((t.result->>'added')::int),0)::int AS new_people,COALESCE(sum(t.reserved_micros),0) AS cost_micros,COALESCE(sum((t.result->>'duration_ms')::bigint),0) AS duration_ms FROM lab_tasks t JOIN lab_runs r ON r.id=t.run_id WHERE r.user_id=$1 AND r.created_at>=(((now() AT TIME ZONE 'UTC')::date-($2::int-1))::timestamp AT TIME ZONE 'UTC') GROUP BY t.source`,[user.uid,days])).rows;
+    // Attribute each newly acquired person to its original source, never to every
+    // repeated lookup. Qualified yield is a cohort outcome, not model accuracy.
+    const cohorts=(await pool.query(`SELECT l.source,count(DISTINCT l.lead_id)::int AS acquired,
+      count(DISTINCT l.lead_id) FILTER(WHERE q.status='verified' AND q.rule_version=$3)::int AS qualified
+      FROM lab_run_leads l JOIN lab_runs r ON r.id=l.run_id
+      LEFT JOIN lab_qualification q ON q.lead_id=l.lead_id AND q.user_id=r.user_id
+      WHERE r.user_id=$1 AND l.is_new AND r.created_at >= (((now() AT TIME ZONE 'UTC')::date-($2::int-1))::timestamp AT TIME ZONE 'UTC')
+      GROUP BY l.source`,[user.uid,days,QUALITY_VERSION])).rows;
+    for(const c of cohorts) {
+      let row=sourceRows.find(s=>s.source===c.source);
+      if(!row){row={source:c.source,attempts:0,gaps:0,new_people:0,cost_micros:null,duration_ms:0};sourceRows.push(row);}
+      row.acquired=c.acquired;row.qualified=c.qualified;
+      row.qualification_rate=c.acquired?c.qualified/c.acquired:null;
+      row.reserved_cost_per_qualified=c.qualified&&row.cost_micros!==null?Number(row.cost_micros)/1000000/c.qualified:null;
+    }
     const sum=(k)=>daily.reduce((s,r)=>s+Number(r[k]),0),verified=sum('newly_verified'),costs=sum('cost_micros');
     const catalog=(await pool.query('SELECT count(*)::int AS plans,max(imported_at) AS imported_at FROM employer_plan_catalog')).rows[0];
     return {daily,inventory,sources:sourceRows,catalog,period_days:days,totals:{new_sourced:sum('new_sourced'),imported:sum('imported'),newly_verified:verified,cost_usd:costs/1000000,cost_per_verified:verified?costs/1000000/verified:null,verified_per_calendar_day:verified/days},
-      notes:['Newly verified counts each currently qualified person once, on the first review meeting all four criteria. Expired, corrected and deleted records are excluded.','Imported records are separate from newly sourced people.','Costs include only recorded provider, labor, infrastructure and subscription amounts; unrecorded costs are unknown.','Nonverified inventory totals reflect the last assessment; run Assess saved leads to refresh all evidence. UTC calendar days.']};
+      notes:['Newly verified counts each currently qualified person once under the current five-criterion rule. Expired, corrected and deleted records are excluded.','Source qualified yield measures the current qualification of new people acquired in this period; repeated lookups do not create new people. It is not a predictive accuracy estimate.','Imported records are separate from newly sourced people.','Costs include only recorded provider, labor, infrastructure and subscription amounts; unrecorded costs are unknown. Source costs show reserved provider charges only.','Nonverified inventory totals reflect the last assessment; run Assess saved leads to refresh all evidence. UTC calendar days.']};
   }
   async function route(request,user) {
     const url=new URL(request.url),path=url.pathname.replace(/\/$/,'');

@@ -1,3 +1,4 @@
+import {QUALITY_VERSION} from './lead-quality.mjs';
 const responseJSON=(detail,status)=>Response.json({detail},{status,headers:{'Cache-Control':'no-store'}});
 export function createHandler({auth,db,worker,loginHtml,loginScript,ownerEmail,origins,providerKey='',linkedin,nativeResearch,warn,warnPage,warnScript,researchJobs,lab,labPage,labScript,labStyle,releaseId=''}) {
   const allowed=new Set(origins);
@@ -6,7 +7,7 @@ export function createHandler({auth,db,worker,loginHtml,loginScript,ownerEmail,o
     const url=new URL(request.url);
     if(url.pathname==='/healthz')return new Response('ok');
     if(!allowed.has(url.origin))return responseJSON('Use the ProspectPilot website address.',403);
-    if(url.pathname==='/version'&&request.method==='GET')return Response.json({application:'ProspectPilot',feature_set:lab?'research-lab-v1':'legacy',release_id:releaseId},{headers:{'Cache-Control':'no-store'}});
+    if(url.pathname==='/version'&&request.method==='GET')return Response.json({application:'ProspectPilot',feature_set:lab?'research-lab-v1':'legacy',quality_version:lab?QUALITY_VERSION:null,release_id:releaseId},{headers:{'Cache-Control':'no-store'}});
     const mutates=!['GET','HEAD','OPTIONS'].includes(request.method);
     if(mutates&&request.headers.get('origin')!==url.origin)return responseJSON('Please submit changes from this website.',403);
     if(url.pathname==='/login'&&request.method==='GET')return new Response(loginHtml,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});
