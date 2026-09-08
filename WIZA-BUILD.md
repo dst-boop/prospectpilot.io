@@ -37,8 +37,15 @@ Provider API access has been requested from the user (provider name only; secret
 - Lists can be renamed and deleted through the UI. Deleting a list preserves contacts and clears its scope from saved searches. Saved searches can be deleted from the sidebar.
 - Older overlapping directory requests cannot overwrite newer filter results. Provider pagination preserves opaque tokens up to 5,000 characters instead of truncating at 250.
 - Email checks expire after 30 days or on missing/mismatched/future evidence before status filtering and CSV export.
-- `pnpm test`: 101 passing tests. `pnpm build` and `git diff --check` pass.
+- `pnpm test`: 105 passing tests. `pnpm build` and `git diff --check` pass.
 - Browser verified against a fresh synthetic demo on port 8089: list rename, queued verification, completed job, contact status update, and cost display. No real provider request or real spending occurred.
 - Existing port 8088 demo was left running with its previous in-memory data. The updated demo serves port 8089; revalidate process status before using it in a later turn.
 - Contact detail views show source, list membership, verification history and enrichment timestamps. Suppression can be set or removed in the UI; owner isolation and suppression-aware exports are tested. Browser verified the detail view and suppression toggle.
 - Production deployment and live licensed provider verification are still outstanding. The overall goal remains active.
+
+## Release readiness
+
+- [Draft PR #4](https://github.com/dst-boop/prospectpilot.io/pull/4) contains the contact workspace. GitHub run 34191164569 passed all checks, including the production Docker image, for commit 5388ec2.
+- Four additional transport tests cover contact pages/assets, signed-session ownership, cross-site write rejection, error redaction, CSV headers and version identity.
+- `/version` now reports whether the contact workspace is registered. The release script requires that marker as well as the Research Lab version and exact release ID.
+- Local preflight found no PDL/Hunter keys, Google application-default credentials, Google credential-path setting, or gcloud configuration. Live provider testing and deployment require an authenticated deployment environment and the configuration described in PROVIDER-SETUP.md. No secrets were read or printed.

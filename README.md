@@ -1,8 +1,14 @@
-# ProspectPilot Research Lab
+# ProspectPilot
 
-Retirement prospect research with evidence-based qualification and measured cost per verified lead. Built on the supplied ProspectPilot Cloud Run application and Lead Qualifier workflows.
+A professional contact workspace for discovering contacts, building lists, enriching email and phone data, verifying emails, and exporting results. Built on the existing Firebase-authenticated Cloud Run and Cloud SQL application.
 
-The authenticated home page provides daily discovery experiments, source results, a review queue, CSV imports and research exports. Existing lead-management and provider-enrichment pages remain available.
+The authenticated home page and `/prospect` provide directory filters, CSV import with deduplication, lists, saved searches, contact details, source and verification history, suppression controls, and CSV export. People Data Labs search/enrichment and Hunter verification run through background jobs with progress, explicit cost ceilings and shared daily budget reservations. Phone numbers remain provider-reported and unverified; email verification expires after 30 days.
+
+See [provider setup](PROVIDER-SETUP.md) for credentials, provider entitlements, pricing and worker configuration. No provider subscription or proprietary contact database is bundled. The current production access policy permits the configured owner's verified Google account; this is not an open-signup SaaS service.
+
+## Separate Research Lab
+
+The existing `/lab` workflow provides daily discovery experiments, source results, evidence reviews and research exports. It is separate from the professional contact directory.
 
 **A verified quality lead must meet all five reviewed criteria:** age 45–73 inclusive, US residence, retained retirement assets with an eligible distribution or IRA transfer, an identified phone/email/LinkedIn contact route, and a disclosed net-worth lower bound of at least $250,000 excluding the home and net of liabilities.
 
@@ -12,7 +18,7 @@ Traditional/contributory, rollover, and Roth IRAs support reviewed trustee-to-tr
 
 ## Try the application locally
 
-After installing dependencies, run `pnpm demo` and open [the local demonstration](http://127.0.0.1:8088). It uses the actual Research Lab API and an in-memory PostgreSQL-compatible database, with four clearly labeled fictional records. Imports, evidence reviews, exports and cost entries work. External source calls are disabled. State resets when stopped; do not enter real personal information. Production still uses `pnpm start`, Firebase authentication and Cloud SQL.
+After installing dependencies, run `pnpm demo` and open [the local demonstration](http://127.0.0.1:8088). It uses the actual workspace and Research Lab APIs with an in-memory PostgreSQL-compatible database and clearly labeled fictional records. Contact search, lists, provider-job simulation, verification simulation, exports and Research Lab reviews work. External source calls are disabled. State resets when stopped; do not enter real personal information. Production still uses `pnpm start`, Firebase authentication and Cloud SQL.
 
 ## Measure source performance
 
@@ -41,7 +47,9 @@ REFRESH_PLAN_CATALOG=1 bash release.sh
 
 Read [the release handoff](RELEASE-2026-09-07.md) for prerequisites, validation, costs, source coverage and rollback. The release verifies the new version through the custom domain. Production deployment is not implied by a successful local build or GitHub push.
 
-This update requires migration **007** before starting the new app and research worker. It preserves observations, adds the net-worth criterion, and invalidates old qualification totals so four-gate results cannot count under the new definition. Requalification records a new first-verification timestamp under rule `retirement-evidence-2`. The normal migration runner applies it once.
+The contact workspace requires migrations **008** and **009** before starting the service and worker; these add contacts, lists, imports, saved searches, durable tasks and cost reservations. The migration runner applies all outstanding migrations in order.
+
+The separate Research Lab uses migration **007**. It preserves observations, adds the net-worth criterion, and invalidates old qualification totals so four-gate results cannot count under the new definition. Requalification records a new first-verification timestamp under rule `retirement-evidence-2`. The normal migration runner applies it once.
 
 ## Data and cost handling
 
