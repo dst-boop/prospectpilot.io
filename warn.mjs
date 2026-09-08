@@ -27,7 +27,7 @@ export function csvRows(text){
  for(let i=0;i<text.length;i++){const c=text[i];if(c==='"'){if(quoted&&text[i+1]==='"'){cell+='"';i++;}else quoted=!quoted;}else if(!quoted&&(c===','||c==='\n')){row.push(cell);cell='';if(c==='\n'){if(row.some(v=>v.trim()))out.push(row);row=[];}}else if(c!=='\r')cell+=c;}
  if(quoted)throw Error('Malformed CSV quoting');if(cell||row.length){row.push(cell);if(row.some(v=>v.trim()))out.push(row);}return out;
 }
-export function parseWarn(text,state){
+export function parseWarn(text,state,now=Date.now()){
  const rows=csvRows(text);
  // Maryland's published feed omits headers; verified against the state's eight-column log.
  if(state==='MD'&&rows[0]?.length===8&&dateValue(rows[0][0]))rows.unshift(['Notice Date','NAICS','Company','Location','County','Employees Affected','Effective Date','Type']);
@@ -43,11 +43,13 @@ export function parseWarn(text,state){
   if(warnIndicator>=0&&/^(false|no|0)$/i.test(String(row[warnIndicator]||'').trim())){excluded_non_warn++;continue;}
   const get=k=>String(row[mapped[k]]||'').trim();const employer=get('employer');if(!employer)continue;
   const numeric=get('workers').replaceAll(',','');const workers=/^\d+$/.test(numeric)&&Number.isSafeInteger(Number(numeric))?Number(numeric):null;
-  const notice=dateValue(get('notice_date')),effective=dateValue(get('effective_date'));
+  let notice=dateValue(get('notice_date')),effective=dateValue(get('effective_date'));const quality_flags=[];
+  if(notice&&(notice<'1900-01-01'||Date.parse(notice)>now+86400000)){quality_flags.push('implausible_notice_date');notice=null;}
+  if(effective&&(effective<'1900-01-01'||Date.parse(effective)>now+5*366*86400000)){quality_flags.push('implausible_effective_date');effective=null;}
   const source=BASE+state.toLowerCase()+'.csv';
   const id=createHash('sha256').update([state,employer,get('address'),get('city'),get('notice_date'),get('effective_date'),workers].join('|')).digest('hex').slice(0,24);
   const aliases=[employer,get('dba'),...employer.split(/\bd\s*\/?\s*b\s*\/?\s*a\b/i)].map(companyKey).filter(k=>k.length>=3);
-  events.push({id,employer,employer_keys:[...new Set(aliases)],state,city:get('city'),address:get('address'),county:get('county'),workers,notice_date:notice,effective_date:effective,date_note:!effective?get('effective_date'):null,notice_date_note:!notice?get('notice_date'):null,reason:get('reason'),source_url:officialNoticeURL(get('url'))||source,feed_url:source,source_row:i+2});
+  events.push({id,employer,employer_keys:[...new Set(aliases)],state,city:get('city'),address:get('address'),county:get('county'),workers,notice_date:notice,effective_date:effective,quality_flags,date_note:!effective?get('effective_date'):null,notice_date_note:!notice?get('notice_date'):null,reason:get('reason'),source_url:officialNoticeURL(get('url'))||source,feed_url:source,source_row:i+2});
  }
  return {events,excluded_non_warn,malformed_rows,schema_notes,mapped_fields:Object.keys(mapped).filter(k=>mapped[k]>=0),missing_fields:Object.keys(mapped).filter(k=>mapped[k]<0)};
 }
@@ -73,7 +75,7 @@ export function createWarnService({get,ttl=3600000,officialTexas=true}){
       sourceDate=null;try{const metadata=JSON.parse((await get(f.metadata_url,{signal,maxBytes:500000})).text);const milliseconds=Number(metadata.rowsUpdatedAt)*1000;if(Number.isFinite(milliseconds)&&milliseconds>0&&milliseconds<=Date.now()+300000)sourceDate=new Date(milliseconds).toISOString();}catch{}
       for(const event of parsed.events){event.feed_url=f.url;event.source_url=f.source_url;}
      }
-     events.push(...parsed.events);coverage.push({state:f.state,status:'loaded',rows:parsed.events.length,source_url:f.source_url||f.url,published_at:sourceDate,publication_stale:sourceDate?Date.now()-Date.parse(sourceDate)>48*3600000:null,excluded_non_warn:parsed.excluded_non_warn,malformed_rows:parsed.malformed_rows,schema_notes:parsed.schema_notes,missing_fields:parsed.missing_fields,sha256:createHash('sha256').update(file.text).digest('hex'),unknown_notice_dates:parsed.events.filter(e=>!e.notice_date).length,latest_notice_date:parsed.events.reduce((last,e)=>e.notice_date&&e.notice_date>last?e.notice_date:last,'')||null});
+     events.push(...parsed.events);coverage.push({state:f.state,status:'loaded',rows:parsed.events.length,source_url:f.source_url||f.url,publication_basis:f.metadata_url?'official_dataset':'mirror',published_at:sourceDate,publication_stale:sourceDate?Date.now()-Date.parse(sourceDate)>48*3600000:null,excluded_non_warn:parsed.excluded_non_warn,malformed_rows:parsed.malformed_rows,schema_notes:parsed.schema_notes,date_anomalies:parsed.events.filter(e=>e.quality_flags.length).length,missing_fields:parsed.missing_fields,sha256:createHash('sha256').update(file.text).digest('hex'),unknown_notice_dates:parsed.events.filter(e=>!e.notice_date).length,latest_notice_date:parsed.events.reduce((last,e)=>e.notice_date&&e.notice_date>last?e.notice_date:last,'')||null});
     }
     catch{coverage.push({state:f.state,status:'unavailable',rows:0});}
    }));
