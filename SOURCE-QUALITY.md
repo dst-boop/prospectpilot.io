@@ -37,6 +37,8 @@ Example/test domains and shared mailboxes are review flags. Source dates older t
 
 The application does not infer personal wealth, income or retirement balances from employment history. The separate Research Lab requires evidence for its qualification gates.
 
+Public-page collection uses the rules for the declared crawler in robots.txt, merges matching groups, falls back to wildcard groups, and applies specific Allow/Disallow paths, wildcards, end anchors and query restrictions. It keeps access-check failures visible and does not retry through alternate identities. The rule behavior is based on [RFC 9309](https://www.rfc-editor.org/rfc/rfc9309).
+
 ## Provider contract checks
 
 **Check email domains** checks mail-routing DNS records without sending an email or using paid data-provider credits. `mx_present` means MX records exist; `address_fallback` means A/AAAA records are available when MX is absent. Neither establishes mailbox existence. `null_mx`, `no_domain` and `no_mail_route` are distinct negative results; `unknown` covers transient/inconclusive lookups. Special-use domains are not queried. Recent definitive failures can avoid a paid verification request for 15 minutes and invalidate an older valid badge while retaining its check history. Domain issue counts describe the last check, not a permanent finding.

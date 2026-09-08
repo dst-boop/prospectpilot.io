@@ -2,6 +2,7 @@ import https from 'node:https';
 import http from 'node:http';
 import {resolve4} from 'node:dns/promises';
 import {isIP} from 'node:net';
+import {robotsAllowed} from './robots-policy.mjs';
 
 export const normalize=v=>String(v||'').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
 const contains=(a,b)=>normalize(b).length>=3&&(' '+normalize(a)+' ').includes(' '+normalize(b)+' ');
@@ -123,8 +124,7 @@ export function createNativeResearch({get=publicGet,warn}={}){
     if(!robots.has(url.origin)){
      try{const r=await read(new URL('/robots.txt',url));robots.set(url.origin,r.text);}catch(e){if(/HTTP 404/.test(e.message))robots.set(url.origin,'');else throw e;}
     }
-    // Conservative: honor any matching disallow directive. Never bypass access challenges.
-    const disallowed=robots.get(url.origin).split(/\r?\n/).some(line=>{const m=line.match(/^\s*Disallow:\s*(\S+)/i);return m&&url.pathname.startsWith(m[1].split('*')[0]);});
+    const disallowed=!robotsAllowed(robots.get(url.origin),url.pathname+url.search);
     if(disallowed){blocked++;return;}
     const page=await read(url);if(!/text\/html|text\/plain/.test(page.type))throw Error('Unsupported page type');
     const content=plain(page.text);checked++;

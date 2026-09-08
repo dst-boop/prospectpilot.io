@@ -1,6 +1,7 @@
 import {publicGet, createCachedGet} from './native-research.mjs';
 import {parsePublicWebPage} from './generated/worker.mjs';
 import {nameKey, publicURL, linkedinURL} from './lead-quality.mjs';
+import {robotsAllowed} from './robots-policy.mjs';
 
 const plain = html => String(html).replace(/<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>/gi,' ').replace(/<[^>]+>/g,' ').replace(/&nbsp;|&#160;/g,' ').replace(/&amp;/g,'&').replace(/\s+/g,' ').trim();
 const blockedHost = host => /(^|\.)(linkedin\.com|facebook\.com|instagram\.com|fastpeoplesearch\.com|familytreenow\.com|whitepages\.com|fec\.gov)$/.test(host);
@@ -36,7 +37,7 @@ export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicr
       catch(error) {if (/HTTP 404/.test(error.message)) robots.set(url.origin,'');else throw Error('Source access rules could not be checked.');}
       if (robots.size>150) robots.delete(robots.keys().next().value);
     }
-    if (robots.get(url.origin).split(/\r?\n/).some(line=>{const rule=line.match(/^\s*Disallow:\s*(\S+)/i);return rule&&url.pathname.startsWith(rule[1].split('*')[0]);})) throw Error('Publisher disallows automated access to this page.');
+    if (!robotsAllowed(robots.get(url.origin),url.pathname+url.search)) throw Error('Publisher disallows automated access to this page.');
     const result=await read(url.href,signal);
     // A redirect is fetched by the safe transport, but do not parse a cross-origin destination without checking its rules.
     if (new URL(result.url).origin!==url.origin) throw Error('Page redirects to another site; review its source separately.');
