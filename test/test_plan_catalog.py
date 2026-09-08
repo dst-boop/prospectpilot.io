@@ -25,6 +25,15 @@ class CatalogTests(unittest.TestCase):
         row['TYPE_PENSION_BNFT_CODE']=''
         self.assertIsNone(catalog.normalize(row))
 
+    def test_missing_plan_identity_and_distribution_status_are_not_invented(self):
+        row=self.row()
+        self.assertIsNone(catalog.normalize(row)['all_assets_distributed'])
+        self.assertFalse(catalog.normalize(row, {'ALL_PLAN_AST_DISTRIB_IND':'2'})['all_assets_distributed'])
+        self.assertTrue(catalog.normalize(row, {'ALL_PLAN_AST_DISTRIB_IND':'1'})['all_assets_distributed'])
+        for value in ['', '000']:
+            row['SPONS_DFE_PN']=value
+            self.assertIsNone(catalog.normalize(row))
+
     def test_blank_short_form_fields_stay_unknown(self):
         row={'ACK_ID':'short','SF_TYPE_PENSION_BNFT_CODE':'2J','SF_SPONS_EIN':'123456789','SF_PLAN_NUM':'1','SF_PLAN_YEAR_BEGIN_DATE':'2025-01-01','SF_SPONSOR_NAME':'Example','SF_IN_SERVICE_DISTRIB_IND':''}
         self.assertIsNone(catalog.normalize(row,short=True)['in_service_distributions_reported'])

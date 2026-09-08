@@ -16,6 +16,8 @@ test('strict CSV parsing preserves quoted content and physical line numbers',()=
  assert.throws(()=>parseContactCSV('First Name,Last Name,\nAvery,Example,Sample'),/header/i);
  assert.throws(()=>parseContactCSV('First Name,FirstName,Last Name\nA,A,B'),/Duplicate/);
  assert.equal(parseContactCSV('First Name,Last Name,Company\rAvery,Example,Sample').records.length,1);
+ assert.throws(()=>parseContactCSV('First Name,Last Name,'+'x'.repeat(201)+'\nAvery,Example,Sample'),/headers.*200/);
+ assert.throws(()=>parseContactCSV(Array.from({length:501},(_,i)=>'Column '+i).join(',')+'\nAvery,Example,Sample'),/500 columns/);
 });
 
 test('normalization handles provider formats without inventing verification or location',()=>{
@@ -58,6 +60,7 @@ test('source history retains conflicts, field origin and original source observa
  await app.importCSV(user,{csv:basic.replace('Email,','Title,Email,').replace('Sample Co,avery','Sample Co,Director,avery'),source:'New export',source_observed_at:'2026-01-01'});
  await app.importCSV(user,{csv:basic.replace('Email,','Title,Email,').replace('Sample Co,avery','Sample Co,Manager,avery'),source:'Disagreeing export'});
  const record=(await app.search(user)).contacts[0];assert.equal(record.title,'Director');assert.equal(record.source,'Older export');assert.equal(record.source_observed_at,'2020-01-01');assert.equal(record.source_history.length,3);assert.deepEqual(record.source_history[2].differing_fields,['title']);assert.equal(record.field_sources.title.source,'New export');assert.equal(record.field_sources.email.source,'Older export');
+ const compact=(await app.search(user,{compact:'true'})).contacts[0];assert.equal(compact.source_history,undefined);assert.equal(compact.field_sources,undefined);assert.equal(compact.id,record.id);assert.deepEqual(compact.quality,record.quality);
  const summary=await app.qualitySummary(user);assert.equal(summary.sources.length,3);assert.equal(summary.summary.source_older_than_180_days,1);assert.equal(summary.summary.verified_emails,0);
  const url='https://example.com/api/prospect/imports/'+first.id;
  await assert.rejects(app.route(new Request(url),other),{status:404});assert.equal((await app.route(new Request(url),user)).result.added,1);
@@ -93,4 +96,14 @@ test('bulk import remains atomic when a later write batch fails',()=>fixture(asy
  await assert.rejects(failing.importCSV(user,{csv,list_id:list.id}),/Injected storage failure/);
  for(const table of ['prospect_contacts','prospect_imports','prospect_list_members'])assert.equal((await db.query(`SELECT count(*)::int AS n FROM ${table}`)).rows[0].n,0);
  const result=await app.importCSV(user,{csv,list_id:list.id});assert.equal(result.added,125);assert.equal((await app.lists(user)).lists[0].contacts,125);
+}));
+test('source and quality review filters isolate records and reject unknown options',()=>fixture(async app=>{
+ await app.importCSV(user,{csv:basic,source:'Old ZoomInfo export',source_observed_at:'2020-01-01'});
+ await app.importCSV(user,{csv:'First Name,Last Name,Company\nMorgan,Sample,Another Co',source:'Staff page'});
+ assert.equal((await app.search(user,{source:'zoominfo',quality_issue:'stale_source'})).total,1);
+ assert.equal((await app.search(user,{quality_issue:'no_contact_route'})).contacts[0].first_name,'Morgan');
+ assert.equal((await app.search(user,{quality_issue:'unknown_source_date'})).total,1);
+ assert.equal((await app.search(other,{quality_issue:'unknown_source_date'})).total,0);
+ assert.equal((await app.search(user,{quality_issue:'domain_issue'})).total,0);
+ await assert.rejects(app.search(user,{quality_issue:"' OR true--"}),{status:422});
 }));

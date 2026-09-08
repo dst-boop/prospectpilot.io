@@ -39,6 +39,12 @@ The application does not infer personal wealth, income or retirement balances fr
 
 ## Provider contract checks
 
+**Check email domains** checks mail-routing DNS records without sending an email or using paid data-provider credits. `mx_present` means MX records exist; `address_fallback` means A/AAAA records are available when MX is absent. Neither establishes mailbox existence. `null_mx`, `no_domain` and `no_mail_route` are distinct negative results; `unknown` covers transient/inconclusive lookups. Special-use domains are not queried. Recent definitive failures can avoid a paid verification request for 15 minutes and invalidate an older valid badge while retaining its check history. Domain issue counts describe the last check, not a permanent finding.
+
+Mail routing follows [RFC 7505](https://www.rfc-editor.org/rfc/rfc7505), including its distinction between null MX and A/AAAA fallback. DNS lookups use the [Node resolver](https://nodejs.org/api/dns.html), bounded timeouts and a bounded per-worker cache. Normal hosting costs still apply.
+
+Employer-plan selection chooses the latest filing for an EIN/plan before applying location and distribution filters. This prevents an older record from reappearing after a newer termination, move or sponsor-name change. Missing distribution indicators remain unknown; blank plan numbers are rejected.
+
 PDL enrichment requires an integer match likelihood from 8 through 10 plus an exact supplied email or LinkedIn match and matching names. Search and enrichment use the same strict field normalization as imports. Omitted malformed provider rows are counted, not hidden. Hunter pending results stay pending; disposable and catch-all flags cannot become valid checks.
 
 These checks use documented response contracts: [PDL enrichment output](https://docs.peopledatalabs.com/docs/output-response-person-enrichment-api), [PDL input parameters](https://docs.peopledatalabs.com/docs/input-parameters-person-enrichment-api), and [Hunter API](https://hunter.io/api-documentation#email-verifier). Reviewed September 8, 2026. Live credentials and contract pricing remain required for real provider validation.

@@ -12,7 +12,7 @@ test('imported contacts can be enriched, verified and exported without overwriti
  await jobs.enqueue(user,{action:'verify',ids:[before.id],max_cost_micros:1000,idempotency_key:'verify-journey'});await jobs.tick();
  const csv=await (await app.exportCSV(user,{ids:[before.id]})).text();assert.match(csv,/Operations Lead/);assert.match(csv,/"jamie@example.com","valid"/);assert.match(csv,/12125551234/);assert.equal(calls(),2);assert.equal((await jobs.summary(user)).reserved_today_micros,3000);
 }));
-async function fixture(fn,overrides={}){const db=new PGlite();try{for(const name of ['008-prospect-workspace','009-prospect-jobs'])await db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};let calls=0;const providers={readiness:{search:true,enrichment:true,email_verification:true},search:async()=>{calls++;return {contacts:[record],retrieved:1,total:1,scroll_token:'page-2'};},enrich:async()=>{calls++;return {contact:record,checked_at:new Date().toISOString()};},verifyEmail:async c=>{calls++;return {email:c.email,status:'valid',provider_status:'valid',provider:'hunter',checked_at:new Date().toISOString()};},...overrides};const config={dailyBudgetMicros:100000,prices:{search:1000,enrich:2000,verify:1000}};const jobs=createProspectJobs({pool,providers,config,pacingMs:{pdl:0,hunter:0}});const app=createProspectWorkspace({pool,jobs});await fn({db,app,jobs,providers,config,calls:()=>calls});}finally{await db.close();}}
+async function fixture(fn,overrides={}){const db=new PGlite();try{for(const name of ['008-prospect-workspace','009-prospect-jobs','011-email-domain-check'])await db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};let calls=0;const providers={readiness:{search:true,enrichment:true,email_verification:true},search:async()=>{calls++;return {contacts:[record],retrieved:1,total:1,scroll_token:'page-2'};},enrich:async()=>{calls++;return {contact:record,checked_at:new Date().toISOString()};},verifyEmail:async c=>{calls++;return {email:c.email,status:'valid',provider_status:'valid',provider:'hunter',checked_at:new Date().toISOString()};},...overrides};const config={dailyBudgetMicros:100000,prices:{search:1000,enrich:2000,verify:1000}};const jobs=createProspectJobs({pool,providers,config,pacingMs:{pdl:0,hunter:0}});const app=createProspectWorkspace({pool,jobs});await fn({db,app,jobs,providers,config,calls:()=>calls});}finally{await db.close();}}
 test('provider search to list to verification to export works with recorded cost and isolation',()=>fixture(async({app,jobs,calls})=>{
  const list=await app.createList(user,{name:'Prospects'});const input={action:'search',filters:{company:'Example'},size:10,list_id:list.id,idempotency_key:'search-001',max_cost_micros:10000};const job=await jobs.enqueue(user,input);assert.equal((await jobs.enqueue(user,input)).id,job.id);assert.equal(await jobs.tick(),true);assert.equal(calls(),1);
  const c=(await app.search(user,{list_id:list.id})).contacts[0];assert.equal(c.source_kind,'provider');assert.equal(c.email_status,'unverified');assert.equal(c.source_history[0].source,'People Data Labs');assert.equal(c.source_observed_at,null);assert.equal(c.field_sources.email.kind,'provider');
@@ -51,4 +51,23 @@ test('repeat valid verification skips provider cost but expired checks can run a
  assert.equal(calls(),1);assert.equal((await jobs.summary(user)).reserved_today_micros,1000);
  await db.query("UPDATE prospect_contacts SET payload=jsonb_set(payload,'{email_verification,checked_at}',$1::jsonb) WHERE id=$2",[JSON.stringify(new Date(Date.now()-31*86400000).toISOString()),contact.id]);
  await jobs.enqueue(user,{action:'verify',ids:[contact.id],max_cost_micros:1000,idempotency_key:'expired-valid'});await jobs.tick();assert.equal(calls(),2);
+}));
+test('domain checks work with zero provider budget and cannot manufacture a valid mailbox',()=>fixture(async({app,jobs,providers,config,calls})=>{
+ config.dailyBudgetMicros=0;providers.readiness.domain_check=true;
+ providers.checkDomain=async c=>({email:c.email,domain:c.email.split('@')[1],status:'null_mx',checked_at:new Date().toISOString()});
+ await app.importCSV(user,{csv:'First Name,Last Name,Email\nJamie,Rivera,jamie@example.com'});const contact=(await app.search(user)).contacts[0];
+ const job=await jobs.enqueue(user,{action:'check_domain',ids:[contact.id],max_cost_micros:0,idempotency_key:'domain-check-1'});await jobs.tick();
+ assert.equal((await jobs.jobs(user,job.id)).tasks[0].status,'completed');assert.equal((await jobs.summary(user)).reserved_today_micros,0);
+ const after=(await app.search(user)).contacts[0];assert.equal(after.email_status,'unverified');assert.equal(after.email_domain_check.status,'null_mx');
+ const quality=await app.qualitySummary(user);assert.equal(quality.summary.domain_checks,1);assert.equal(quality.summary.domain_issues,1);assert.equal(quality.coverage[0].domain_issues,1);
+ config.dailyBudgetMicros=100000;const verify=await jobs.enqueue(user,{action:'verify',ids:[contact.id],max_cost_micros:1000,idempotency_key:'domain-check-2'});await jobs.tick();
+ assert.equal((await jobs.jobs(user,verify.id)).tasks[0].status,'skipped');assert.equal(calls(),0);
+}));
+test('a new definitive domain failure invalidates an older valid badge but retains history',()=>fixture(async({app,db,jobs,providers})=>{
+ await app.importCSV(user,{csv:'First Name,Last Name,Email\nJamie,Rivera,jamie@example.com'});const contact=(await app.search(user)).contacts[0];
+ const checked_at=new Date(Date.now()-86400000).toISOString(),verification={email:contact.email,checked_at,provider:'hunter'};
+ await db.query("UPDATE prospect_contacts SET payload=payload||$1::jsonb WHERE id=$2",[JSON.stringify({email_status:'valid',email_verification:verification}),contact.id]);
+ providers.readiness.domain_check=true;providers.checkDomain=async c=>({email:c.email,domain:'example.com',status:'null_mx',checked_at:new Date().toISOString()});
+ await jobs.enqueue(user,{action:'check_domain',ids:[contact.id],max_cost_micros:0,idempotency_key:'domain-newer-result'});await jobs.tick();
+ const after=(await app.search(user)).contacts[0];assert.equal(after.email_status,'unverified');assert.deepEqual(after.email_verification,verification);
 }));

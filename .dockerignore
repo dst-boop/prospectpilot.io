@@ -55,6 +55,7 @@
 !prospect-client.js
 !prospect-workspace.mjs
 !prospect-data-quality.mjs
+!prospect-domain-check.mjs
 !prospect-providers.mjs
 !prospect-jobs.mjs
 !prospect-jobs-client.js
