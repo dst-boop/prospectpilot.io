@@ -5,6 +5,13 @@ import {PGlite} from '@electric-sql/pglite';
 import {createProspectWorkspace} from '../prospect-workspace.mjs';
 const user={uid:'one'},other={uid:'two'};
 const csv='First Name,Last Name,Company,Title,Email,Phone,Country,State,City,Industry,Seniority\nJamie,Rivera,Example Manufacturing,Operations Director,jamie@example.com,2125551234,US,NY,Albany,Manufacturing,Director';
+test('ZoomInfo CSV profile maps professional fields without API access or verification claims',()=>fixture(async app=>{
+ const input={format:'zoominfo',csv:'Contact First Name,Contact Last Name,Company Name,Job Title,Contact Email,Direct Phone Number,LinkedIn Contact Profile URL,Contact Country,Contact State,Contact City,Company Website,Primary Industry,Management Level,Email Status,Company Country,Mobile Phone\nJamie,Rivera,Example,Director,jamie@example.com,N/A,https://www.linkedin.com/in/jamie-rivera,US,NY,Albany,https://example.com/,Manufacturing,Director,valid,Canada,2125559876'};
+ const result=await app.importCSV(user,input);assert.equal(result.added,1);const contact=(await app.search(user)).contacts[0];
+ assert.equal(contact.source,'ZoomInfo CSV export');assert.equal(contact.source_kind,'zoominfo_csv');assert.equal(contact.company_domain,'example.com');assert.equal(contact.country,'US');assert.equal(contact.phone,'');assert.equal(contact.email_status,'unverified');assert.equal(contact.seniority,'Director');
+ assert.equal((await app.importCSV(user,input)).replayed,true);assert.equal((await app.search(other)).total,0);
+ await assert.rejects(app.importCSV(user,{...input,format:'unknown'}),{status:422});
+}));
 test('contact details and suppression are owner scoped and cannot edit identity or verification',()=>fixture(async(app)=>{
  const list=await app.createList(user,{name:'Team'});await app.importCSV(user,{csv,list_id:list.id});
  const id=(await app.search(user)).contacts[0].id;

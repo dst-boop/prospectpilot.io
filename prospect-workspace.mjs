@@ -3,7 +3,7 @@ import {emailAddress,phoneNumber,linkedinURL,nameKey,hash,csvCell} from './lead-
 import {csvRows} from './warn.mjs';
 const fail=(status,message)=>Object.assign(Error(message),{status});
 const text=(v,max=200)=>String(v??'').normalize('NFKC').trim().slice(0,max);
-const ALIASES={first_name:['first name','firstname'],last_name:['last name','lastname'],company:['company','company name','employer'],title:['title','job title','position','current title'],email:['email','work email','email address','business email'],phone:['phone','business phone','direct phone'],linkedin_url:['linkedin url','linkedin profile url','linkedin contact profile url'],country:['country'],state:['state','region'],city:['city'],company_domain:['company domain','domain'],industry:['industry'],seniority:['seniority','seniority level'],suppressed:['suppressed','do not contact']};
+const ALIASES={first_name:['first name','firstname','contact first name'],last_name:['last name','lastname','contact last name'],company:['company','company name','employer'],title:['title','job title','position','current title'],email:['email','work email','email address','business email','contact email'],phone:['phone','business phone','direct phone','direct phone number'],linkedin_url:['linkedin url','linkedin profile url','linkedin contact profile url'],country:['country','contact country'],state:['state','region','contact state'],city:['city','contact city'],company_domain:['company domain','domain','company website'],industry:['industry','primary industry'],seniority:['seniority','seniority level','management level'],suppressed:['suppressed','do not contact']};
 const canonical=v=>nameKey(v).replaceAll(' ','');
 const aliasMap=new Map(Object.entries(ALIASES).flatMap(([key,values])=>[key,...values].map(v=>[canonical(v),key])));
 export function normalizeContact(raw,source) {
@@ -57,6 +57,7 @@ export function createProspectWorkspace({pool,jobs}) {
   return {contacts,total,offset,limit,filters};
  }
  async function importCSV(user,input){
+  const format=input.format||'generic';if(!['generic','zoominfo'].includes(format))throw fail(422,'Choose a supported CSV format.');
   if(typeof input.csv!=='string'||Buffer.byteLength(input.csv)>4000000)throw fail(422,'Choose a CSV up to 4 MB.');
   let rows;try{rows=csvRows(input.csv);}catch{throw fail(422,'Malformed CSV quoting.');}
   if(rows.length<2||rows.length>5001)throw fail(422,'Include headers and 1–5,000 rows.');
@@ -64,14 +65,14 @@ export function createProspectWorkspace({pool,jobs}) {
   const known=headers.map(h=>aliasMap.get(canonical(h))).filter(Boolean);
   if(new Set(known).size!==known.length||new Set(headers.map(canonical)).size!==headers.length)throw fail(422,'Duplicate CSV columns.');
   if(!known.includes('first_name')||!known.includes('last_name'))throw fail(422,'Include First Name and Last Name columns.');
-  const source=text(input.source)||'CSV import',fingerprint=hash(input.csv+'\0'+source+'\0'+text(input.list_id));
+  const source=text(input.source)||(format==='zoominfo'?'ZoomInfo CSV export':'CSV import'),fingerprint=hash(input.csv+'\0'+source+'\0'+text(input.list_id)+(format==='zoominfo'?'\0zoominfo':''));
   return tx(pool,async c=>{
    await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`prospect:${user.uid}`]);
    if(input.list_id)await ownedList(c,user,input.list_id);
    const previous=(await c.query('SELECT result FROM prospect_imports WHERE user_id=$1 AND fingerprint=$2',[user.uid,fingerprint])).rows[0];if(previous)return {...previous.result,replayed:true};
    const result={id:randomUUID(),added:0,duplicates:0,conflicts:0,rejected:0,errors:[],replayed:false};
    for(const [index,row] of rows.entries()){
-    let contact,keys;try{if(row.length!==headers.length)throw fail(422,'Row has the wrong number of columns.');contact=normalizeContact(Object.fromEntries(headers.map((h,i)=>[h,row[i]])),source);keys=identities(contact);if(!keys.length)throw fail(422,'Include company, individual work email or LinkedIn URL.');}catch(e){result.rejected++;if(result.errors.length<50)result.errors.push({row:index+2,message:e.message});continue;}
+    let contact,keys;try{if(row.length!==headers.length)throw fail(422,'Row has the wrong number of columns.');const raw=Object.fromEntries(headers.map((h,i)=>[h,format==='zoominfo'&&/^(n\/a|not available|--|-)$/i.test(row[i].trim())?'':row[i]]));contact=normalizeContact(raw,source);if(format==='zoominfo')contact.source_kind='zoominfo_csv';keys=identities(contact);if(!keys.length)throw fail(422,'Include company, individual work email or LinkedIn URL.');}catch(e){result.rejected++;if(result.errors.length<50)result.errors.push({row:index+2,message:e.message});continue;}
     const matches=(await c.query('SELECT id,payload FROM prospect_contacts WHERE user_id=$1 AND identity_keys ?| $2::text[]',[user.uid,keys])).rows;
     if(matches.length>1){result.conflicts++;continue;}
     let id=matches[0]?.id||randomUUID();

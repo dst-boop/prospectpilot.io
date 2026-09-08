@@ -49,3 +49,7 @@ Provider API access has been requested from the user (provider name only; secret
 - Four additional transport tests cover contact pages/assets, signed-session ownership, cross-site write rejection, error redaction, CSV headers and version identity.
 - `/version` now reports whether the contact workspace is registered. The release script requires that marker as well as the Research Lab version and exact release ID.
 - Local preflight found no PDL/Hunter keys, Google application-default credentials, Google credential-path setting, or gcloud configuration. Live provider testing and deployment require an authenticated deployment environment and the configuration described in PROVIDER-SETUP.md. No secrets were read or printed.
+
+## Source clarification
+
+The user selected ZoomInfo with no API access. ZoomInfo CSV imports are now the primary acquisition workflow and do not depend on PDL/Hunter credentials. The import preset includes professional-field aliases and blank-placeholder handling, while preserving deduplication, suppression and unverified status for imported data. Optional API adapters remain available. Automated ZoomInfo sourcing is not implemented; validate the exact layout using a user-supplied export and measure manual/export costs separately. Cloud deployment still requires an authenticated environment.

@@ -4,7 +4,7 @@ A professional contact workspace for discovering contacts, building lists, enric
 
 The authenticated home page and `/prospect` provide directory filters, CSV import with deduplication, lists, saved searches, contact details, source and verification history, suppression controls, and CSV export. People Data Labs search/enrichment and Hunter verification run through background jobs with progress, explicit cost ceilings and shared daily budget reservations. Phone numbers remain provider-reported and unverified; email verification expires after 30 days.
 
-See [provider setup](PROVIDER-SETUP.md) for credentials, provider entitlements, pricing and worker configuration. No provider subscription or proprietary contact database is bundled. The current production access policy permits the configured owner's verified Google account; this is not an open-signup SaaS service.
+**Selected source: ZoomInfo CSV exports, without API access.** Import an authorized export using the ZoomInfo preset, then manage and export the contact list. Automated API search/enrichment and independent email verification are optional separate integrations. See [provider setup](PROVIDER-SETUP.md) for credentials, provider entitlements, pricing and worker configuration. No provider subscription or proprietary contact database is bundled. The current production access policy permits the configured owner's verified Google account; this is not an open-signup SaaS service.
 
 ## Separate Research Lab
 
