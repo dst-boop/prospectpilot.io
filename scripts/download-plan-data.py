@@ -1,4 +1,4 @@
-"""Download the three original public DOL datasets to a temporary job directory."""
+"""Download the original public DOL plan and financial-schedule datasets."""
 import datetime
 from pathlib import Path
 import sys
@@ -9,7 +9,7 @@ year=int(sys.argv[1])
 if not 2023 <= year <= datetime.datetime.now().year:
     raise ValueError('Invalid form year')
 root=Path(sys.argv[2])
-for pattern in ('F_5500_{year}_Latest.zip','F_SCH_H_{year}_Latest.zip','F_5500_SF_{year}_Latest.zip'):
+for pattern in ('F_5500_{year}_Latest.zip','F_SCH_H_{year}_Latest.zip','F_SCH_I_{year}_Latest.zip','F_5500_SF_{year}_Latest.zip'):
     name=pattern.format(year=year)
     url=f'https://www.askebsa.dol.gov/FOIA%20Files/{year}/Latest/{name}'
     request=Request(url,headers={'User-Agent':'ProspectPilotResearch/1.0 (+https://prospectpilot.io)'})

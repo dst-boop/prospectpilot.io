@@ -289,7 +289,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       row.reserved_cost_per_qualified=c.qualified&&row.cost_micros!==null?Number(row.cost_micros)/1000000/c.qualified:null;
     }
     const sum=(k)=>daily.reduce((s,r)=>s+Number(r[k]),0),verified=sum('newly_verified'),costs=sum('cost_micros');
-    const catalog=(await pool.query('SELECT count(*)::int AS plans,max(imported_at) AS imported_at FROM employer_plan_catalog')).rows[0];
+    const catalog=(await pool.query("SELECT count(DISTINCT (payload->>'ein',payload->>'plan_number'))::int AS plans,count(*)::int AS filings,max(plan_year) AS latest_plan_year,max(imported_at) AS imported_at FROM employer_plan_catalog")).rows[0];
     return {daily,inventory,sources:sourceRows,catalog,period_days:days,totals:{new_sourced:sum('new_sourced'),imported:sum('imported'),newly_verified:verified,cost_usd:costs/1000000,cost_per_verified:verified?costs/1000000/verified:null,verified_per_calendar_day:verified/days},
       notes:['Newly verified counts each currently qualified person once under the current five-criterion rule. Expired, corrected and deleted records are excluded.','Source qualified yield measures the current qualification of new people acquired in this period; repeated lookups do not create new people. It is not a predictive accuracy estimate.','Imported records are separate from newly sourced people.','Costs include only recorded provider, labor, infrastructure and subscription amounts; unrecorded costs are unknown. Source costs show reserved provider charges only.','Nonverified inventory totals reflect the last assessment; run Assess saved leads to refresh all evidence. UTC calendar days.']};
   }
