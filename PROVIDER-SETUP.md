@@ -2,6 +2,15 @@
 
 ProspectPilot uses People Data Labs for professional contact search and enrichment, and Hunter for email verification. Provider accounts and API entitlements are required. The app does not include or purchase a global contact database. The local demo uses synthetic providers; it makes no external provider calls.
 
+## ZoomInfo without API access
+
+The selected source is ZoomInfo through CSV exports from the user's account. Use **Import ZoomInfo CSV**, select the exported file, retain or customize the source label, and choose a destination list. No API keys or paid API requests are needed to import, search, organize, inspect or export these contacts.
+
+Supported headers include First Name / Contact First Name, Last Name / Contact Last Name, Company Name, Job Title, Email Address / Contact Email, Direct Phone / Direct Phone Number, LinkedIn Contact Profile URL, Contact Country/State/City, Company Website, Primary Industry and Management Level. Include only one alias for each mapped field. Company location is not mapped to contact location. Unmapped columns are ignored. N/A, Not Available, -- and - placeholders become blank in ZoomInfo mode. The current phone field accepts US direct numbers.
+
+Imported status columns do not establish independent verification. Existing verified statuses and suppressions are preserved on deduplication. Missing details can be refreshed using a later authorized export, subject to identity-conflict checks. The app does not automate ZoomInfo searches or export clicks, and does not measure ZoomInfo subscription/export-credit charges. Exact export layout still needs validation against a user-supplied sample.
+
+The following API integrations are optional alternatives; ZoomInfo CSV usage does not require PDL or Hunter credentials. Live API enrichment or independent verification still requires a configured API provider.
 ## Server and worker configuration
 
 Configure the same values on **both** the authenticated `prospectpilot` Cloud Run service and the `prospectpilot-research` job. Use Secret Manager references for API keys. Never commit keys, put them in URLs presented to users, or paste them into this documentation.

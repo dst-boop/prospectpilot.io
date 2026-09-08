@@ -26,7 +26,7 @@ $('listForm').onsubmit=e=>submit(e,'listError',async()=>{await api('lists',{name
 $('searchForm').onsubmit=e=>submit(e,'searchError',async()=>{await api('saved-searches',{name:$('searchName').value,filters:filters()});await loadSearches();$('searchDialog').close();$('searchForm').reset();notice('Search saved.');});
 $('addForm').onsubmit=e=>submit(e,'addError',async()=>{await api('lists/'+encodeURIComponent($('addList').value)+'/members',{ids:[...selected]});await loadLists();$('addDialog').close();notice('Selected contacts added to the list.');});
 $('removeList').onclick=async()=>{try{await api('lists/'+encodeURIComponent($('listFilter').value)+'/members',{ids:[...selected]},'DELETE');selected.clear();await loadLists();await load();notice('Contacts removed from this list; they remain in your directory.');}catch(e){notice(e.message,true);}};
-$('importForm').onsubmit=e=>submit(e,'importResult',async()=>{const file=$('csvFile').files[0];if(!file||file.size>4000000)throw Error('Choose a CSV up to 4 MB.');const r=await api('import',{csv:await file.text(),source:$('source').value,list_id:$('importList').value||undefined});await loadLists();offset=0;await load();const message=r.replayed?'This exact import was already processed.':`${r.added} added · ${r.duplicates} duplicates · ${r.conflicts} identity conflicts · ${r.rejected} rejected.`;$('importResult').textContent=message+(r.errors?.length?' '+r.errors.map(x=>`Row ${x.row}: ${x.message}`).join(' '):'');notice(message);});
+$('importForm').onsubmit=e=>submit(e,'importResult',async()=>{const file=$('csvFile').files[0];if(!file||file.size>4000000)throw Error('Choose a CSV up to 4 MB.');const r=await api('import',{csv:await file.text(),format:importFormat.value,source:$('source').value,list_id:$('importList').value||undefined});await loadLists();offset=0;await load();const message=r.replayed?'This exact import was already processed.':`${r.added} added · ${r.duplicates} duplicates · ${r.conflicts} identity conflicts · ${r.rejected} rejected.`;$('importResult').textContent=message+(r.errors?.length?' '+r.errors.map(x=>`Row ${x.row}: ${x.message}`).join(' '):'');notice(message);});
 $('export').onclick=async()=>{try{const blob=await api('export',{ids:[...selected]});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='prospectpilot-contacts.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notice('Export ready. Suppressed contacts were omitted.');}catch(e){notice(e.message,true);}};
 try{await Promise.all([loadLists(),loadSearches()]);await load();notice('Your contact workspace is ready.');}catch(e){notice(e.message,true);}
 
@@ -57,3 +57,5 @@ async function showContact(id){
   if(!$('contactDialog').open)$('contactDialog').showModal();
  }catch(e){notice(e.message,true);}
 }
+
+$('importFormat').onchange=()=>{$('source').value=$('importFormat').value==='zoominfo'?'ZoomInfo CSV export':'';};
