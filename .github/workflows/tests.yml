@@ -25,3 +25,5 @@ jobs:
       - run: bash -n release.sh setup-research-worker.sh setup-plan-catalog.sh
       - name: Build the production image
         run: docker build -t prospectpilot-ci .
+      - name: Verify Python HTTPS trust store in runtime
+        run: docker run --rm --entrypoint python3 prospectpilot-ci -c "import ssl; assert ssl.create_default_context().cert_store_stats()['x509_ca'] > 0, 'System CA certificates are missing'"
