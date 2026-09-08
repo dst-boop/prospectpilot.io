@@ -22,7 +22,7 @@ jobs:
       - run: pnpm build
       - run: pnpm test
       - run: python3 -m unittest discover -s test -p 'test_*.py'
-      - run: bash -n release.sh setup-research-worker.sh setup-plan-catalog.sh
+      - run: for script in release.sh setup-research-worker.sh setup-plan-catalog.sh setup-plan-catalog-schedule.sh; do bash -n "$script"; done
       - name: Build the production image
         run: docker build -t prospectpilot-ci .
       - name: Verify Python HTTPS trust store in runtime

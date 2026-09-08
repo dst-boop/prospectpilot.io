@@ -33,3 +33,4 @@ with open(path,'w') as f: json.dump(job,f)
 subprocess.run(['gcloud','run','jobs','replace',path,'--project='+sys.argv[1],'--region='+sys.argv[2]],check=True)
 PY
 gcloud run jobs execute prospectpilot-plan-catalog --project="$PROJECT" --region="$REGION" --wait
+bash setup-plan-catalog-schedule.sh
