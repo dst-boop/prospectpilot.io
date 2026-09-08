@@ -30,7 +30,7 @@ existing_path=os.path.join(sys.argv[3],'existing-worker.json')
 if os.path.isfile(existing_path):
  with open(existing_path) as stream: existing=json.load(stream)
  prior=existing['spec']['template']['spec']['template']['spec']['containers'][0].get('env',[])
- preserved=[entry for entry in prior if entry.get('name') in {'BRAVE_SEARCH_API_KEY','BRAVE_QUERY_COST_MICROS','GOOGLE_CLOUD_REGION'}]
+ preserved=[entry for entry in prior if entry.get('name') in {'BRAVE_SEARCH_API_KEY','BRAVE_QUERY_COST_MICROS','GOOGLE_CLOUD_REGION','PDL_API_KEY','HUNTER_API_KEY','PDL_SEARCH_RECORD_COST_MICROS','PDL_ENRICH_COST_MICROS','HUNTER_VERIFY_COST_MICROS','PROSPECT_DAILY_BUDGET_MICROS'}]
  names={entry['name'] for entry in preserved}
  c['env']=[entry for entry in c.get('env',[]) if entry.get('name') not in names]+preserved
 if os.environ.get('IMAGE'): c['image']=os.environ['IMAGE']

@@ -1,6 +1,6 @@
 import {QUALITY_VERSION} from './lead-quality.mjs';
 const responseJSON=(detail,status)=>Response.json({detail},{status,headers:{'Cache-Control':'no-store'}});
-export function createHandler({auth,db,worker,loginHtml,loginScript,ownerEmail,origins,providerKey='',linkedin,nativeResearch,warn,warnPage,warnScript,researchJobs,lab,labPage,labScript,labStyle,releaseId=''}) {
+export function createHandler({auth,db,worker,loginHtml,loginScript,ownerEmail,origins,providerKey='',linkedin,nativeResearch,warn,warnPage,warnScript,researchJobs,lab,labPage,labScript,labStyle,prospect,prospectPage,prospectScript,prospectJobsScript,prospectStyle,releaseId=''}) {
   const allowed=new Set(origins);
   const authorized=claims=>claims.email_verified===true&&String(claims.email||'').toLowerCase()===ownerEmail.toLowerCase()&&claims.firebase?.sign_in_provider==='google.com';
   return async request=>{
@@ -27,6 +27,15 @@ export function createHandler({auth,db,worker,loginHtml,loginScript,ownerEmail,o
     const cookie=(request.headers.get('cookie')||'').split(';').map(x=>x.trim()).find(x=>x.startsWith('__session='))?.slice(10);
     let claims;if(cookie){try{claims=await auth.verifySessionCookie(cookie,true);}catch{}}
     if(!claims||!authorized(claims))return url.pathname.startsWith('/api/')?responseJSON('Sign in to ProspectPilot.',401):new Response(null,{status:303,headers:{Location:'/login','Cache-Control':'no-store'}});
+    if(prospect && url.pathname==='/prospect-jobs-client.js' && request.method==='GET')return new Response(prospectJobsScript,{headers:{'Content-Type':'text/javascript; charset=utf-8','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
+    if(prospect && ['/', '/prospect','/prospect-client.js','/prospect.css'].includes(url.pathname) && request.method==='GET') {
+      const script=url.pathname==='/prospect-client.js',style=url.pathname==='/prospect.css';
+      return new Response(script?prospectScript:style?prospectStyle:prospectPage,{headers:{'Content-Type':script?'text/javascript; charset=utf-8':style?'text/css; charset=utf-8':'text/html; charset=utf-8','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"}});
+    }
+    if(prospect && url.pathname.startsWith('/api/prospect/')) {
+      try {const result=await prospect.route(request,claims);const response=result instanceof Response?result:Response.json(result);response.headers.set('Cache-Control','private, no-store');return response;}
+      catch(error){return responseJSON(error.status?error.message:'Contact request could not be completed.',error.status||500);}
+    }
     if(lab && ['/', '/lab','/lab-client.js','/lab.css'].includes(url.pathname) && request.method==='GET') {
       const script=url.pathname==='/lab-client.js',style=url.pathname==='/lab.css';
       return new Response(script?labScript:style?labStyle:labPage,{headers:{'Content-Type':script?'text/javascript; charset=utf-8':style?'text/css; charset=utf-8':'text/html; charset=utf-8','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"}});
