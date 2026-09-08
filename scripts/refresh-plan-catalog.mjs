@@ -10,6 +10,6 @@ const run=(command,args)=>new Promise((resolve,reject)=>{const child=spawn(comma
 try{
   await run('python3',['scripts/download-plan-data.py',String(year),root]);
   const output=join(root,'catalog.jsonl');
-  await run('python3',['scripts/prepare-plan-catalog.py','--form',join(root,`F_5500_${year}_Latest.zip`),'--schedule-h',join(root,`F_SCH_H_${year}_Latest.zip`),'--short-form',join(root,`F_5500_SF_${year}_Latest.zip`),'--output',output]);
+  await run('python3',['scripts/prepare-plan-catalog.py','--form',join(root,`F_5500_${year}_Latest.zip`),'--schedule-h',join(root,`F_SCH_H_${year}_Latest.zip`),'--schedule-i',join(root,`F_SCH_I_${year}_Latest.zip`),'--short-form',join(root,`F_5500_SF_${year}_Latest.zip`),'--output',output]);
   await run(process.execPath,['scripts/import-plan-catalog.mjs',output]);
 }finally{await rm(root,{recursive:true,force:true});}

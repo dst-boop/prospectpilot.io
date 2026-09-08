@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';import {PGlite} from '@electric-sql/pglite';
-import {matchPlans,selectEmployers} from '../plan-catalog.mjs';
+import {matchPlans,selectEmployers,importPlanRecords} from '../plan-catalog.mjs';
 test('plan matches use exact company identity; discovery rotates recently researched employers',async()=>{
   const db=new PGlite();try{
     await db.exec(readFileSync(new URL('../generated/schema.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/006-research-lab.sql',import.meta.url),'utf8'));
@@ -24,5 +24,20 @@ test('latest filing is chosen before termination and location filters',async()=>
   assert.equal((await selectEmployers(db,{states:['NY']})).length,0);assert.equal((await selectEmployers(db,{states:['CA']}))[0].id,'moved-new');
   await put('renamed-old','333333333',year-1,'NY',false,'Old Name');await put('renamed-new','333333333',year,'NY',false,'New Name');
   assert.equal((await selectEmployers(db,{employers:['Old Name']})).length,0);
+  assert.equal((await matchPlans(db,{company:'Old Name'})).length,0);
+  assert.equal((await matchPlans(db,{company:'New Name'}))[0].id,'renamed-new');
+ }finally{await db.close();}
+});
+
+test('catalog refresh rolls back every batch on malformed input and rejects older amendments',async()=>{
+ const db=new PGlite();try{
+  await db.exec(readFileSync(new URL('../generated/schema.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/006-research-lab.sql',import.meta.url),'utf8'));
+  const make=(i,ack='b')=>({id:`plan-${i}`,sponsor:'Example Co',state:'NY',plan_year:2025,scope:'employer_plan',individual_balance:null,filed_at:'2026-01-01',ack_id:ack});
+  await importPlanRecords(db,[make(0)]);
+  await assert.rejects(importPlanRecords(db,[...Array.from({length:500},(_,i)=>make(i+1)),{id:'malformed'}]),/Invalid plan/);
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM employer_plan_catalog')).rows[0].n,1);
+  const result=await importPlanRecords(db,[make(0,'a')]);assert.equal(result.older_filings_skipped,1);
+  assert.equal((await db.query('SELECT payload FROM employer_plan_catalog')).rows[0].payload.ack_id,'b');
+  await assert.rejects(importPlanRecords(db,[]),/Empty plan catalog/);
  }finally{await db.close();}
 });

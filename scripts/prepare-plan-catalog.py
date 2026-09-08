@@ -1,6 +1,6 @@
 """Prepare public employer-plan data. No participant or contact records are emitted.
 
-Run with the original DOL Form 5500, Schedule H and 5500-SF ZIP downloads.
+Run with the original DOL Form 5500, Schedule H/I and 5500-SF ZIP downloads.
 Joins schedules by ACK_ID; retains the latest filing for EIN/plan/plan year.
 """
 import argparse
@@ -36,6 +36,17 @@ def date(value):
             pass
     return ''
 
+def schedule_values(row, small=False):
+    # Schedule H has many columns. Retain only the three used by this catalog.
+    return {key: row.get(('SMALL_' if small and key != 'IN_SERVICE_DISTRIB_IND' else '') + key) for key in ('NET_ASSETS_EOY_AMT', 'ALL_PLAN_AST_DISTRIB_IND', 'IN_SERVICE_DISTRIB_IND')}
+
+def archive_metadata(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return {'file': Path(path).name, 'bytes': Path(path).stat().st_size, 'sha256': digest.hexdigest()}
+
 def normalize(row, schedule=None, short=False):
     prefix = 'SF_' if short else ''
     codes = str(row.get(prefix + 'TYPE_PENSION_BNFT_CODE', ''))
@@ -69,7 +80,7 @@ def normalize(row, schedule=None, short=False):
         'benefit_codes': sorted(code_set), 'net_assets': assets,
         'participants_with_balances': balances, 'average_account_balance': average,
         'separated_future_benefits': number(row.get('RTD_SEP_PARTCP_FUT_CNT')) if not short else None,
-        'in_service_distributions_reported': {'1': True, '2': False}.get(row.get('SF_IN_SERVICE_DISTRIB_IND')) if short else None,
+        'in_service_distributions_reported': {'1': True, '2': False}.get(row.get('SF_IN_SERVICE_DISTRIB_IND') if short else (schedule or {}).get('IN_SERVICE_DISTRIB_IND')),
         'all_assets_distributed': {'1': True, '2': False}.get(row.get('SF_ALL_PLAN_AST_DISTRIB_IND') if short else (schedule or {}).get('ALL_PLAN_AST_DISTRIB_IND')),
         'source_url': SOURCE, 'scope': 'employer_plan', 'individual_balance': None,
     }
@@ -78,10 +89,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--form', required=True)
     parser.add_argument('--schedule-h', required=True)
+    parser.add_argument('--schedule-i')
     parser.add_argument('--short-form')
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
-    schedules = {r['ACK_ID']: r for r in records(args.schedule_h)}
+    archives = [archive_metadata(path) for path in (args.form, args.schedule_h, args.schedule_i, args.short_form) if path]
+    schedules = {r['ACK_ID']: schedule_values(r) for r in records(args.schedule_h)}
+    if args.schedule_i:
+        for row in records(args.schedule_i):
+            schedules.setdefault(row['ACK_ID'], schedule_values(row, small=True))
     latest = {}
     read = 0
     for path, short in [(args.form, False), (args.short_form, True)]:
@@ -100,7 +116,10 @@ def main():
     with output.open('w', encoding='utf-8') as stream:
         for plan in sorted(latest.values(), key=lambda p: p['id']):
             stream.write(json.dumps(plan, ensure_ascii=False) + '\n')
-    summary = {'input_rows': read, 'employer_plans': len(latest), 'with_account_average': sum(p['average_account_balance'] is not None for p in latest.values()), 'with_separated_future_benefits': sum((p['separated_future_benefits'] or 0) > 0 for p in latest.values()), 'with_reported_in_service_distributions': sum(p['in_service_distributions_reported'] is True for p in latest.values()), 'sha256': hashlib.sha256(output.read_bytes()).hexdigest(), 'source_url': SOURCE, 'generated_at': dt.datetime.now(dt.timezone.utc).isoformat(), 'person_leads': 0}
+    summary = {'input_rows': read, 'employer_plans': len(latest), 'with_account_average': sum(p['average_account_balance'] is not None for p in latest.values()), 'with_separated_future_benefits': sum((p['separated_future_benefits'] or 0) > 0 for p in latest.values()), 'with_reported_in_service_distributions': sum(p['in_service_distributions_reported'] is True for p in latest.values()), 'sha256': archive_metadata(output)['sha256'], 'source_url': SOURCE, 'generated_at': dt.datetime.now(dt.timezone.utc).isoformat(), 'person_leads': 0}
+    summary['source_archives'] = archives
+    summary['distinct_plans'] = len({(p['ein'], p['plan_number']) for p in latest.values()})
+    summary['source_date_unknown'] = sum(not p['filed_at'] for p in latest.values())
     output.with_suffix('.summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
     print(json.dumps(summary))
 
