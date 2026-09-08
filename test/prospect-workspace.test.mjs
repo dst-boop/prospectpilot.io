@@ -3,8 +3,17 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
 import {createProspectWorkspace} from '../prospect-workspace.mjs';
+import {createHandler} from '../handler.mjs';
 const user={uid:'one'},other={uid:'two'};
 const csv='First Name,Last Name,Company,Title,Email,Phone,Country,State,City,Industry,Seniority\nJamie,Rivera,Example Manufacturing,Operations Director,jamie@example.com,2125551234,US,NY,Albany,Manufacturing,Director';
+test('public signups use isolated workspaces through the authenticated transport',()=>fixture(async app=>{
+ const origin='https://prospectpilot.io';const handler=createHandler({auth:{verifySessionCookie:async uid=>({uid,email:uid+'@example.net',email_verified:true,firebase:{sign_in_provider:uid==='alice'?'google.com':'password'}})},ownerEmail:'admin@example.net',origins:[origin],prospect:app});
+ const call=(uid,path,method='GET',body)=>handler(new Request(origin+'/api/prospect/'+path,{method,headers:{cookie:'__session='+uid,origin,...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})}));
+ assert.equal((await call('alice','import','POST',{csv})).status,200);
+ const alice=await (await call('alice','contacts')).json(),bob=await (await call('bob','contacts')).json();assert.equal(alice.total,1);assert.equal(bob.total,0);
+ const id=alice.contacts[0].id;assert.equal((await call('bob','contacts/'+id)).status,404);assert.equal((await call('bob','contacts/'+id,'PATCH',{suppressed:true})).status,404);assert.equal((await call('bob','export','POST',{ids:[id]})).status,404);
+ assert.equal((await call('bob','import','POST',{csv})).status,200);const own=await (await call('bob','contacts')).json();assert.equal(own.total,1);assert.notEqual(own.contacts[0].id,id);
+}));
 test('ZoomInfo CSV profile maps professional fields without API access or verification claims',()=>fixture(async app=>{
  const input={format:'zoominfo',csv:'Contact First Name,Contact Last Name,Company Name,Job Title,Contact Email,Direct Phone Number,LinkedIn Contact Profile URL,Contact Country,Contact State,Contact City,Company Website,Primary Industry,Management Level,Email Status,Company Country,Mobile Phone\nJamie,Rivera,Example,Director,jamie@example.com,N/A,https://www.linkedin.com/in/jamie-rivera,US,NY,Albany,https://example.com/,Manufacturing,Director,valid,Canada,2125559876'};
  const result=await app.importCSV(user,input);assert.equal(result.added,1);const contact=(await app.search(user)).contacts[0];

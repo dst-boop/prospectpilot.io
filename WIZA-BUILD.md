@@ -53,3 +53,9 @@ Provider API access has been requested from the user (provider name only; secret
 ## Source clarification
 
 The user selected ZoomInfo with no API access. ZoomInfo CSV imports are now the primary acquisition workflow and do not depend on PDL/Hunter credentials. The import preset includes professional-field aliases and blank-placeholder handling, while preserving deduplication, suppression and unverified status for imported data. Optional API adapters remain available. Automated ZoomInfo sourcing is not implemented; validate the exact layout using a user-supplied export and measure manual/export costs separately. Cloud deployment still requires an authenticated environment.
+
+## Public account creation
+
+The user requires any visitor to be able to create an account. The login UI now supports Google signup, email/password signup, email verification, sign-in and password reset. The session endpoint accepts any verified Google/password identity and derives ownership from the verified Firebase UID. Existing legacy administration remains restricted to OWNER_EMAIL, preventing public signup from exposing older administrative tools. Public account access, cross-user isolation and legacy-route restrictions are covered by tests.
+
+Deployment must enable Email/Password in Firebase Authentication in addition to Google, verify authorized site domains, and test email verification/reset delivery. The Google Cloud browser is still waiting for the owner's passkey confirmation. No real account was created and no authentication settings were changed during implementation.

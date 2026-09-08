@@ -2,7 +2,7 @@ import {QUALITY_VERSION} from './lead-quality.mjs';
 const responseJSON=(detail,status)=>Response.json({detail},{status,headers:{'Cache-Control':'no-store'}});
 export function createHandler({auth,db,worker,loginHtml,loginScript,ownerEmail,origins,providerKey='',linkedin,nativeResearch,warn,warnPage,warnScript,researchJobs,lab,labPage,labScript,labStyle,prospect,prospectPage,prospectScript,prospectJobsScript,prospectStyle,releaseId=''}) {
   const allowed=new Set(origins);
-  const authorized=claims=>claims.email_verified===true&&String(claims.email||'').toLowerCase()===ownerEmail.toLowerCase()&&claims.firebase?.sign_in_provider==='google.com';
+  const authorized=claims=>typeof claims.uid==='string'&&claims.uid.length>0&&claims.email_verified===true&&typeof claims.email==='string'&&claims.email.includes('@')&&['google.com','password'].includes(claims.firebase?.sign_in_provider);
   return async request=>{
     const url=new URL(request.url);
     if(url.pathname==='/healthz')return new Response('ok');
@@ -13,8 +13,8 @@ export function createHandler({auth,db,worker,loginHtml,loginScript,ownerEmail,o
     if(url.pathname==='/login'&&request.method==='GET')return new Response(loginHtml,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});
     if(url.pathname==='/auth/login.js'&&request.method==='GET')return new Response(loginScript,{headers:{'Content-Type':'text/javascript','Cache-Control':'no-store'}});
     if(url.pathname==='/auth/session'&&request.method==='POST'){
-      let claims,idToken;try{({idToken}=await request.json());claims=await auth.verifyIdToken(idToken,true);}catch{return responseJSON('Google sign-in could not be verified.',401);}
-      if(!authorized(claims))return responseJSON('This account has not been granted access to ProspectPilot.',403);
+      let claims,idToken;try{({idToken}=await request.json());claims=await auth.verifyIdToken(idToken,true);}catch{return responseJSON('Sign-in could not be verified.',401);}
+      if(!authorized(claims))return responseJSON('Verify your email address before signing in.',403);
       if(!Number.isFinite(claims.auth_time)||Math.abs(Date.now()/1000-claims.auth_time)>300)return responseJSON('Please sign in again.',401);
       const expiresIn=8*60*60*1000;
       const body=await auth.createSessionCookie(idToken,{expiresIn});
@@ -27,6 +27,7 @@ export function createHandler({auth,db,worker,loginHtml,loginScript,ownerEmail,o
     const cookie=(request.headers.get('cookie')||'').split(';').map(x=>x.trim()).find(x=>x.startsWith('__session='))?.slice(10);
     let claims;if(cookie){try{claims=await auth.verifySessionCookie(cookie,true);}catch{}}
     if(!claims||!authorized(claims))return url.pathname.startsWith('/api/')?responseJSON('Sign in to ProspectPilot.',401):new Response(null,{status:303,headers:{Location:'/login','Cache-Control':'no-store'}});
+    if(prospect && url.pathname==='/api/prospect/me'&&request.method==='GET')return Response.json({uid:claims.uid,email:claims.email,name:claims.name||''},{headers:{'Cache-Control':'private, no-store'}});
     if(prospect && url.pathname==='/prospect-jobs-client.js' && request.method==='GET')return new Response(prospectJobsScript,{headers:{'Content-Type':'text/javascript; charset=utf-8','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
     if(prospect && ['/', '/prospect','/prospect-client.js','/prospect.css'].includes(url.pathname) && request.method==='GET') {
       const script=url.pathname==='/prospect-client.js',style=url.pathname==='/prospect.css';
@@ -48,6 +49,8 @@ export function createHandler({auth,db,worker,loginHtml,loginScript,ownerEmail,o
     if(warn&&url.pathname==='/warn-client.js'&&request.method==='GET')return new Response(warnScript,{headers:{'Content-Type':'text/javascript','Cache-Control':'no-store'}});
     if(warn&&url.pathname==='/api/warn'&&request.method==='GET'){try{return Response.json(await warn.query(Object.fromEntries(url.searchParams)),{headers:{'Cache-Control':'no-store'}});}catch{return responseJSON('WARN feeds are unavailable. Please retry.',503);}}
     if(linkedin&&(url.pathname==='/settings/linkedin'||url.pathname.startsWith('/api/linkedin/')||url.pathname.startsWith('/auth/linkedin/')))return linkedin(request,claims,cookie);
+    // Legacy administration predates public signup; only the configured owner can reach it.
+    if(!ownerEmail||claims.email.toLowerCase()!==ownerEmail.toLowerCase())return responseJSON('This legacy tool is available only to the site administrator.',403);
     const headers=new Headers(request.headers);
     for(const key of [...headers.keys()])if(key.startsWith('oai-'))headers.delete(key);
     headers.set('oai-authenticated-user-id',claims.uid);
