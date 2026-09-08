@@ -59,3 +59,5 @@ async function showContact(id){
 }
 
 $('importFormat').onchange=()=>{$('source').value=$('importFormat').value==='zoominfo'?'ZoomInfo CSV export':'';};
+
+api('me').then(user=>{$('account').textContent=user.email;}).catch(()=>{});

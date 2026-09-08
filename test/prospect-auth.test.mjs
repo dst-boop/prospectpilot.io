@@ -17,7 +17,7 @@ function fixture({route=async()=>({ok:true}),session=claims,enabled=true}={}){
 }
 const request=(path,{method='GET',cookie='valid',site=origin,headers={}}={})=>new Request(origin+path,{method,headers:{...(cookie?{cookie:'__session='+cookie}:{}),...(site?{origin:site}:{}),...headers}});
 
-test('contact workspace pages and all assets require a valid approved session',async()=>{
+test('contact workspace pages and all assets require a valid verified session',async()=>{
  const {handler}=fixture();
  for(const [path,body] of [['/','Contact workspace'],['/prospect','Contact workspace'],['/prospect-client.js','contact-script'],['/prospect-jobs-client.js','job-script'],['/prospect.css','contact-style']]){
   assert.equal((await handler(request(path,{cookie:''}))).status,303);
@@ -25,7 +25,7 @@ test('contact workspace pages and all assets require a valid approved session',a
   const response=await handler(request(path));assert.equal(response.status,200);assert.equal(await response.text(),body);assert.equal(response.headers.get('cache-control'),'private, no-store');
  }
  assert.equal(await (await handler(request('/lab'))).text(),'Research Lab');
- for(const session of [{...claims,email:'other@example.com'},{...claims,email_verified:false}])assert.equal((await fixture({session}).handler(request('/api/prospect/contacts'))).status,401);
+ for(const session of [{...claims,email_verified:false},{...claims,firebase:{sign_in_provider:'anonymous'}}])assert.equal((await fixture({session}).handler(request('/api/prospect/contacts'))).status,401);
 });
 
 test('contact mutations require same origin and derive ownership only from the signed session',async()=>{
@@ -50,4 +50,8 @@ test('release identity distinguishes a registered contact workspace from the old
   const response=await fixture({enabled}).handler(request('/version',{cookie:''}));const version=await response.json();
   assert.equal(version.contact_workspace_version,enabled?'professional-contacts-1':null);assert.equal(version.release_id,'release-test');assert.equal(version.quality_version,'retirement-evidence-2');assert.equal(response.headers.get('cache-control'),'no-store');
  }
+});
+
+test('new public users reach their own workspace and account endpoint',async()=>{
+ for(const provider of ['google.com','password']){const session={...claims,uid:'new-user',email:'new@example.net',firebase:{sign_in_provider:provider}};const {handler,seen}=fixture({session});assert.equal((await handler(request('/prospect'))).status,200);const me=await (await handler(request('/api/prospect/me'))).json();assert.equal(me.uid,'new-user');assert.equal(me.email,'new@example.net');assert.equal((await handler(request('/api/prospect/contacts'))).status,200);assert.equal(seen[0].user.uid,'new-user');}
 });
