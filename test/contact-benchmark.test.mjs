@@ -26,6 +26,24 @@ test('benchmark intervals retain uncertainty at zero and full coverage and omit 
 });
 const fixture=()=>({schema_version:1,cohort_id:'fictional',candidate_ids:['a','b','c'],runs:[{label:'first',outcomes:[{candidate_id:'a',returned:true,review:{...review}},{candidate_id:'b',returned:true},{candidate_id:'c',returned:false}],costs_micros:{...costs},user_seconds:60},{label:'second',outcomes:[{candidate_id:'a',returned:false},{candidate_id:'b',returned:true,review:{...review}},{candidate_id:'c',returned:true,review:{...review}}],costs_micros:{...costs,provider:4000000},user_seconds:120}]});
 
+test('two-dollar ceiling includes every cost and counts only reviewed usable leads',()=>{
+ const input=fixture();
+ Object.assign(input.runs[0].costs_micros,{provider:1000000,subscription:250000,labor:250000,infrastructure:250000,export:250000});
+ let result=evaluateContactBenchmark(input,{now});
+ assert.deepEqual(result.runs.map(run=>run.cost_ceiling_assessment.status),['pass','pass']);
+ assert.equal(result.runs[0].cost_ceiling_assessment.max_cost_per_usable_contact_micros,2000000);
+ input.runs[0].costs_micros.export++;
+ input.runs[1].costs_micros.provider++;
+ result=evaluateContactBenchmark(input,{now});
+ assert.deepEqual(result.runs.map(run=>run.cost_ceiling_assessment.status),['fail','fail']);
+ assert.equal(result.superiority_established,false);
+ delete input.runs[0].costs_micros.labor;
+ input.runs[1].outcomes.forEach(row=>{delete row.review;});
+ result=evaluateContactBenchmark(input,{now});
+ assert.deepEqual(result.runs.map(run=>run.cost_ceiling_assessment.status),['unproven','unproven']);
+ assert.deepEqual(result.runs.map(run=>run.cost_ceiling_assessment.reason),['missing_costs','no_usable_contacts']);
+});
+
 test('paired benchmark uses every requested candidate and actual all-in costs without declaring a winner',()=>{
  const result=evaluateContactBenchmark(fixture(),{now});
  assert.equal(result.runs[0].usable_contacts,1);assert.equal(result.runs[0].unknown_reviews,1);assert.equal(result.runs[0].usable_coverage,1/3);

@@ -70,3 +70,11 @@ These intervals assume independent representative candidates. They do not repair
 ## Continuing work
 
 The existing task automation is active every 10 minutes with the old cutoff removed. Keep working on independent authorized engineering when one external dependency is missing. Record every batch's tests, publication/deployment state and remaining gaps. Do not mark the objective achieved because of a checklist or fictional demo results.
+
+## Required cost ceiling
+
+The user requires no more than **$2 per lead**. With the confirmed priority of data quality and cost per usable contact, the acceptance ceiling is $2 all-in per unique, reviewed usable lead. Include provider/verification charges, attributable subscriptions, labor, infrastructure and export costs, including spend on missing, rejected and unusable results. The earlier 20% relative savings target cannot substitute for this absolute ceiling.
+
+Each benchmark run now reports `cost_ceiling_assessment`: `pass` at or below 2,000,000 microdollars per reviewed usable contact, `fail` above it, or `unproven` when any cost is missing or there are no reviewed usable contacts. Compare unrounded totals against the usable count. A pass describes the measured cohort only; it does not establish future pricing, independent evidence validity or superiority over Wiza.
+
+Provider batch reservations and daily caps are existing spend controls, not an all-in usable-lead cost guarantee. Do not enable or scale a paid acquisition workflow without a costed plan satisfying this ceiling and a defined stop rule. Real licensed outcomes and attributable costs remain necessary to validate the target.
