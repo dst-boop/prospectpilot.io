@@ -1,6 +1,21 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';import {PGlite} from '@electric-sql/pglite';
 import {createProspectJobs} from '../prospect-jobs.mjs';import {createProspectWorkspace} from '../prospect-workspace.mjs';
 const user={uid:'owner'},other={uid:'stranger'};
+test('invalid search and enrichment timestamps cannot overwrite source history and retain charged cost',()=>fixture(async({app,jobs,providers})=>{
+ await app.importCSV(user,{csv:'First Name,Last Name,Email\nJamie,Rivera,jamie@example.com'});
+ const before=(await app.search(user)).contacts[0];
+ for(const [index,checked_at] of [null,'not-a-date','2999-01-01T00:00:00.000Z','2020-01-01'].entries()){
+  providers.search=async()=>({contacts:[record],retrieved:1,total:1,checked_at});
+  providers.enrich=async()=>({contact:record,checked_at});
+  for(const action of ['search','enrich']){
+   const job=await jobs.enqueue(user,{action,filters:{company:'Example'},size:1,ids:[before.id],max_cost_micros:2000,idempotency_key:`source-time-${action}-${index}`});
+   await jobs.tick();assert.equal((await jobs.jobs(user,job.id)).tasks[0].status,'needs_attention');
+  }
+ }
+ const after=(await app.search(user)).contacts[0];
+ assert.deepEqual(after.source_history,before.source_history);assert.equal(after.phone,before.phone);assert.equal(after.last_seen_at,before.last_seen_at);
+ assert.equal((await jobs.summary(user)).reserved_today_micros,12000);
+}));
 test('paid search rejects malformed pagination tokens without silently truncating or restarting',()=>fixture(async({jobs,providers})=>{
  const base={action:'search',filters:{company:'Example'},size:1,max_cost_micros:1000,idempotency_key:'pagination-validation'};
  for(const scroll_token of ['x'.repeat(5001),123,{}])await assert.rejects(jobs.enqueue(user,{...base,scroll_token}),{status:422});
