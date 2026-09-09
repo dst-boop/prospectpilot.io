@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {nameKey,hash,csvCell,publicURL} from './lead-quality.mjs';
-import {normalizeContact,parseContactCSV,normalizeCountry,normalizeState,countryAliases,stateAliases,sharedMailbox,contactQuality,sourceFreshnessCutoff} from './prospect-data-quality.mjs';
+import {normalizeContact,parseContactCSV,normalizeCountry,normalizeState,countryAliases,stateAliases,sharedMailbox,SHARED_MAILBOX_PATTERN,contactQuality,sourceFreshnessCutoff} from './prospect-data-quality.mjs';
 export {normalizeContact} from './prospect-data-quality.mjs';
 const fail=(status,message)=>Object.assign(Error(message),{status});
 const text=(v,max=200)=>String(v??'').normalize('NFKC').trim().slice(0,max);
@@ -13,7 +13,7 @@ export function searchFilters(input={}) {
  const filters=Object.fromEntries(allowed.map(k=>[k,text(input[k],k==='source'?200:150)]));
  if(filters.email_status&&!['missing','unverified','valid','invalid','catch_all','unknown'].includes(filters.email_status))throw fail(422,'Invalid email status.');
  for(const key of ['has_email','has_phone','suppressed'])if(filters[key]&&!['true','false'].includes(filters[key]))throw fail(422,'Invalid contact filter.');
- if(filters.quality_issue&&!['no_contact_route','unknown_source_date','stale_source','domain_issue'].includes(filters.quality_issue))throw fail(422,'Invalid data-review filter.');
+ if(filters.quality_issue&&!['no_contact_route','unknown_source_date','stale_source','domain_issue','shared_mailbox'].includes(filters.quality_issue))throw fail(422,'Invalid data-review filter.');
  filters.country=normalizeCountry(filters.country);filters.state=normalizeState(filters.state,filters.country);
  return filters;
 }
@@ -40,6 +40,7 @@ export function createProspectWorkspace({pool,jobs}) {
   if(filters.suppressed)where.push(`COALESCE(c.payload->>'suppressed','false')=${bind(filters.suppressed)}`);
   if(filters.quality_issue==='no_contact_route')where.push("COALESCE(c.payload->>'email','')='' AND COALESCE(c.payload->>'phone','')='' AND COALESCE(c.payload->>'linkedin_url','')=''");
   if(filters.quality_issue==='unknown_source_date')where.push("COALESCE(c.payload->>'source_observed_at','')=''");
+  if(filters.quality_issue==='shared_mailbox')where.push(`COALESCE(c.payload->>'email','') ~* ${bind(SHARED_MAILBOX_PATTERN)}`);
   if(filters.quality_issue==='stale_source')where.push(`COALESCE(c.payload->>'source_observed_at','')<>'' AND c.payload->>'source_observed_at'<${bind(sourceFreshnessCutoff())}`);
   if(filters.quality_issue==='domain_issue')where.push(`${matchingDomainCheck} AND c.payload->'email_domain_check'->>'status' IN ('no_domain','null_mx','no_mail_route')`);
   if(filters.list_id)where.push(`EXISTS(SELECT 1 FROM prospect_list_members m WHERE m.contact_id=c.id AND m.list_id=${bind(filters.list_id)})`);
@@ -146,6 +147,7 @@ export function createProspectWorkspace({pool,jobs}) {
  async function qualitySummary(user){
   await expireVerification(user);
   const summary=(await pool.query(`SELECT count(*)::int AS contacts,
+   count(*) FILTER(WHERE COALESCE(payload->>'email','') ~* $3)::int AS shared_mailboxes,
    count(*) FILTER(WHERE payload->>'email_status'='valid')::int AS verified_emails,
    count(*) FILTER(WHERE payload->>'email_status'='unverified')::int AS unverified_emails,
    count(*) FILTER(WHERE payload->>'email_status'='invalid')::int AS invalid_emails,
@@ -155,7 +157,7 @@ export function createProspectWorkspace({pool,jobs}) {
    count(*) FILTER(WHERE COALESCE(payload->>'email','')='' AND COALESCE(payload->>'phone','')='' AND COALESCE(payload->>'linkedin_url','')='')::int AS no_contact_route,
    count(*) FILTER(WHERE COALESCE(payload->>'source_observed_at','')='')::int AS source_date_unknown,
    count(*) FILTER(WHERE COALESCE(payload->>'source_observed_at','')<>'' AND payload->>'source_observed_at'<$2)::int AS source_older_than_180_days
-   FROM prospect_contacts WHERE user_id=$1`,[user.uid,sourceFreshnessCutoff()])).rows[0];
+   FROM prospect_contacts WHERE user_id=$1`,[user.uid,sourceFreshnessCutoff(),SHARED_MAILBOX_PATTERN])).rows[0];
   const sources=(await pool.query(`SELECT source,count(*)::int AS imports,max(created_at) AS last_import,
    COALESCE(sum((result->>'added')::int),0)::int AS added,COALESCE(sum((result->>'duplicates')::int),0)::int AS duplicates,
    COALESCE(sum((result->>'conflicts')::int),0)::int AS conflicts,COALESCE(sum((result->>'rejected')::int),0)::int AS rejected

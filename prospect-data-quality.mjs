@@ -37,7 +37,9 @@ const cleanField = (value, key) => {
   if (cleaned.length > limit) throw fail(`${key}: exceeds ${limit} characters; shorten the field before importing.`);
   return key !== 'first_name' && key !== 'last_name' && optionalBlank(cleaned) ? '' : cleaned.replace(/\s+/g, ' ');
 };
-export const sharedMailbox = email => /^(info|sales|hello|contact|support|office|admin|team|reception|service|billing|careers|jobs|hr|marketing|accounts|noreply|no-reply)(?:[+._-][^@]*)?@/i.test(email || '');
+export const SHARED_MAILBOX_PATTERN = '^(info|sales|hello|contact|support|office|admin|team|reception|service|billing|careers|jobs|hr|marketing|accounts|noreply|no-reply)([+._-][^@]*)?@';
+const sharedMailboxRegex=new RegExp(SHARED_MAILBOX_PATTERN,'i');
+export const sharedMailbox = email => sharedMailboxRegex.test(email || '');
 const hostname = value => value.length<=253&&value.split('.').every(label=>label.length<=63)&&/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/i.test(value);
 export function contactEmail(value){
  const email=emailAddress(value);

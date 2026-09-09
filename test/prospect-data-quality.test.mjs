@@ -9,6 +9,16 @@ const basic='First Name,Last Name,Company,Email,Country,State\nAvery,Example,Sam
 async function fixture(fn){const db=new PGlite();try{await db.exec(readFileSync(new URL('../migrations/008-prospect-workspace.sql',import.meta.url),'utf8'));const app=createProspectWorkspace({pool:{query:(...args)=>db.query(...args),connect:async()=>({query:(...args)=>db.query(...args),release(){}})}});await fn(app,db);}finally{await db.close();}}
 const raw={first_name:'Avery',last_name:'Example',company:'Sample Co'};
 
+test('shared-mailbox review filtering and summary agree with identity flags and isolate owners',()=>fixture(async(app)=>{
+ const emails=['team@example.com','support+us@example.com','SALES.eu@example.com','salesperson@example.com','avery@example.com'];
+ await app.importCSV(user,{csv:'First Name,Last Name,Company,Email\n'+emails.map((email,i)=>`Person${i},Example,Company${i},${email}`).join('\n')});
+ const all=(await app.search(user)).contacts,filtered=await app.search(user,{quality_issue:'shared_mailbox'});
+ const expected=all.filter(c=>c.quality.issues.some(i=>i.code==='shared_mailbox')).map(c=>c.id).sort();
+ assert.equal(expected.length,3);assert.deepEqual(filtered.contacts.map(c=>c.id).sort(),expected);
+ assert.equal((await app.qualitySummary(user)).summary.shared_mailboxes,3);
+ assert.equal((await app.search(other,{quality_issue:'shared_mailbox'})).total,0);assert.equal((await app.qualitySummary(other)).summary.shared_mailboxes,0);
+}));
+
 test('contact imports reject overlong mail components and company hostname labels',()=>{
  for(const email of ['a'.repeat(65)+'@example.com','a@'+'b'.repeat(64)+'.com','é'.repeat(33)+'@example.com'])assert.throws(()=>normalizeContact({...raw,email}),/email/i);
  assert.throws(()=>normalizeContact({...raw,company_domain:'https://'+'b'.repeat(64)+'.com'}),/hostname/i);
