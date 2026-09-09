@@ -208,7 +208,15 @@ export function createProspectWorkspace({pool,jobs}) {
   if(path==='/api/prospect/saved-searches'&&method==='GET')return {searches:(await pool.query('SELECT * FROM prospect_saved_searches WHERE user_id=$1 ORDER BY created_at DESC',[user.uid])).rows};
   const saved=path.match(/^\/api\/prospect\/saved-searches\/([^/]+)$/);
   if(saved&&method==='DELETE'){const result=await pool.query('DELETE FROM prospect_saved_searches WHERE id=$1 AND user_id=$2 RETURNING id',[saved[1],user.uid]);if(!result.rows.length)throw fail(404,'Saved search not found.');return {deleted:true};}
-  if(path==='/api/prospect/saved-searches'&&method==='POST'){const input=await body(),name=text(input.name,100);if(!name)throw fail(422,'Name your search.');try{return (await pool.query('INSERT INTO prospect_saved_searches(id,user_id,name,filters) VALUES($1,$2,$3,$4::jsonb) RETURNING *',[randomUUID(),user.uid,name,JSON.stringify(searchFilters(input.filters))])).rows[0];}catch(e){if(e.code==='23505')throw fail(409,'A search with this name exists.');throw e;}}
+  if(path==='/api/prospect/saved-searches'&&method==='POST'){
+   const input=await body(),name=text(input.name,100),filters=searchFilters(input.filters);if(!name)throw fail(422,'Name your search.');
+   try{return await tx(pool,async c=>{
+    // Keep the selected list alive until insertion, so concurrent deletion can
+    // remove its scope from this search as part of the normal cleanup.
+    if(filters.list_id&&!(await c.query('SELECT id FROM prospect_lists WHERE id=$1 AND user_id=$2 FOR SHARE',[filters.list_id,user.uid])).rows.length)throw fail(404,'List not found.');
+    return (await c.query('INSERT INTO prospect_saved_searches(id,user_id,name,filters) VALUES($1,$2,$3,$4::jsonb) RETURNING *',[randomUUID(),user.uid,name,JSON.stringify(filters)])).rows[0];
+   });}catch(e){if(e.code==='23505')throw fail(409,'A search with this name exists.');throw e;}
+  }
   throw fail(404,'Prospect endpoint not found.');
  }
  return {route,search,lists,createList,membership,importCSV,exportCSV,qualitySummary};
