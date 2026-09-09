@@ -2,6 +2,16 @@ import test from 'node:test';import assert from 'node:assert/strict';
 import {createProspectProviders,professionalRecord} from '../prospect-providers.mjs';
 const raw={id:'provider-id',first_name:'Jamie',last_name:'Rivera',job_company_name:'Example',work_email:'jamie@example.com',linkedin_url:'linkedin.com/in/jamie-example',phone_numbers:['+12125551234'],birth_date:'private',estimated_net_worth:1000000};
 const contact={...professionalRecord(raw),suppressed:false};
+
+test('direct adapters do not send non-public email domains to paid providers',async()=>{
+ let calls=0;const p=createProspectProviders({pdlKey:'key',hunterKey:'key',fetcher:async()=>{calls++;return Response.json({likelihood:9,data:raw});}});
+ for(const domain of ['example.invalid','team.test','server.localhost','company.internal','service.local']){
+  const c={...contact,email:'fixture@'+domain,linkedin_url:''};
+  await assert.rejects(p.verifyEmail(c),{status:422});await assert.rejects(p.enrich(c),{status:422});
+ }
+ assert.equal(calls,0);
+ const result=await p.enrich({...contact,email:'fixture@example.invalid'});assert.equal(result.contact.linkedin_url,contact.linkedin_url);assert.equal(calls,1);
+});
 test('provider pagination preserves opaque tokens longer than contact fields',async()=>{const token='opaque-'.repeat(100);const p=createProspectProviders({pdlKey:'key',fetcher:async(url,options)=>{assert.equal(JSON.parse(options.body).scroll_token,token);return Response.json({data:[],total:0,scroll_token:token});}});assert.equal((await p.search({company:'Example',scroll_token:token})).scroll_token,token);await assert.rejects(p.search({company:'Example',scroll_token:'x'.repeat(5001)}),{status:422});});
 test('provider projection excludes financial and demographic data; no status is fabricated',()=>{const c=professionalRecord(raw);assert.equal(c.birth_date,undefined);assert.equal(c.estimated_net_worth,undefined);assert.equal(c.phone,'+12125551234');assert.equal(c.email_status,'unverified');});
 test('provider search is bounded and key remains in the server request header',async()=>{let calls=0;const p=createProspectProviders({pdlKey:'test-key',fetcher:async(url,options)=>{calls++;assert.equal(options.headers['X-Api-Key'],'test-key');assert.ok(!String(url).includes('test-key'));const body=JSON.parse(options.body);assert.equal(body.size,10);assert.ok(!body.data_include.includes('birth'));return Response.json({data:[raw],total:1});}});assert.equal((await p.search({company:'Example'})).contacts.length,1);await assert.rejects(p.search({size:1000,company:'Example'}),{status:422});await assert.rejects(p.search({}),{status:422});assert.equal(calls,1);});

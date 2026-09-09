@@ -4,10 +4,11 @@ import {emailAddress} from './lead-quality.mjs';
 export const DOMAIN_CHECK_STATUSES=['mx_present','address_fallback','null_mx','no_domain','no_mail_route','special_use','unknown'];
 export const DOMAIN_CHECK_LABELS={mx_present:'Mail-routing records found',address_fallback:'Address fallback found',null_mx:'Domain declares it accepts no mail',no_domain:'Domain not found',no_mail_route:'No mail route found',special_use:'Special-use domain; not queried',unknown:'Lookup inconclusive'};
 const absent=error=>['ENODATA','ENOTFOUND'].includes(error?.code);
+export const isNonPublicMailDomain=domain=>typeof domain==='string'&&/(?:^|\.)(?:localhost|local|internal|invalid|test)$/i.test(domain);
 export function createDomainChecker({resolver=new Resolver({timeout:3500,tries:1}),now=()=>Date.now(),maxEntries=1000}={}){
  const cache=new Map();
  async function lookup(domain){
-  if(/\.(?:localhost|local|internal|invalid|test)$/i.test(domain))return {status:'special_use'};
+  if(isNonPublicMailDomain(domain))return {status:'special_use'};
   let records;
   try{records=await resolver.resolveMx(domain);}catch(error){
    if(error?.code==='ENOTFOUND')return {status:'no_domain'};

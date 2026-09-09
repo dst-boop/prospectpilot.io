@@ -1,8 +1,8 @@
 import {randomUUID} from 'node:crypto';
-import {hash,nameKey} from './lead-quality.mjs';
+import {hash,nameKey,linkedinURL} from './lead-quality.mjs';
 import {normalizeContact,contactIdentities,identityLookupKeys,searchFilters} from './prospect-workspace.mjs';
 import {CONTACT_ALIASES} from './prospect-data-quality.mjs';
-import {DOMAIN_CHECK_STATUSES,DOMAIN_CHECK_LABELS,recentDomainFailure} from './prospect-domain-check.mjs';
+import {DOMAIN_CHECK_STATUSES,DOMAIN_CHECK_LABELS,recentDomainFailure,isNonPublicMailDomain} from './prospect-domain-check.mjs';
 const fail=(status,message)=>Object.assign(Error(message),{status});
 const sig=contact=>hash(JSON.stringify(['first_name','last_name','company','email','linkedin_url'].map(k=>contact[k]||'')));
 const terminal=['completed','failed','skipped','needs_attention'];
@@ -58,6 +58,9 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   const skip=!ready(task.action)?'Provider is no longer configured.':quote(task.action,task.action==='search'?task.payload.filters.size:1)>task.payload.quote?'Configured price increased; launch a new job with a current quote.':task.action!=='search'&&(!contact||contact.suppressed||sig(contact)!==task.payload.signature)?'Contact is missing, suppressed, or changed.':task.action==='verify'&&!contact.email?'This contact has no email to verify.':task.action==='enrich'&&!contact.email&&!contact.linkedin_url?'An email or LinkedIn profile is needed for identity matching.':null;
   if(skip){await finish(c,task,'skipped',{message:skip});return {skipped:true};}
   if(task.action==='check_domain'&&!contact.email){await finish(c,task,'skipped',{message:'This contact has no email domain to check.'});return {skipped:true};}
+  if((task.action==='verify'||task.action==='enrich'&&!linkedinURL(contact.linkedin_url))&&isNonPublicMailDomain(String(contact.email||'').split('@')[1])){
+   await finish(c,task,'skipped',{message:'This email uses a non-public domain. No new paid provider request or cost reservation was made.'});return {skipped:true};
+  }
   if(task.action==='verify'&&recentDomainFailure(contact)){await finish(c,task,'skipped',{message:'A recent domain check found no mail route. Review the email domain before paying for verification; no provider request was sent.'});return {skipped:true};}
   if(task.action==='verify'&&contact.email_status==='valid'&&contact.email_verification?.email===contact.email){
    const checked=Date.parse(contact.email_verification.checked_at),age=Date.now()-checked;

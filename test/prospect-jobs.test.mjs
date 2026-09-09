@@ -79,6 +79,17 @@ test('domain checks work with zero provider budget and cannot manufacture a vali
  config.dailyBudgetMicros=100000;const verify=await jobs.enqueue(user,{action:'verify',ids:[contact.id],max_cost_micros:1000,idempotency_key:'domain-check-2'});await jobs.tick();
  assert.equal((await jobs.jobs(user,verify.id)).tasks[0].status,'skipped');assert.equal(calls(),0);
 }));
+
+test('non-public email domains skip paid verification and email-only enrichment before reserving cost',()=>fixture(async({app,jobs,calls})=>{
+ await app.importCSV(user,{csv:'First Name,Last Name,Company,Email\nSynthetic,Fixture,Test Co,synthetic@example.invalid'});
+ const contact=(await app.search(user)).contacts[0];
+ for(const action of ['verify','enrich']){
+  const job=await jobs.enqueue(user,{action,ids:[contact.id],max_cost_micros:2000,idempotency_key:'non-public-'+action});
+  await jobs.tick();const result=(await jobs.jobs(user,job.id)).tasks[0];assert.equal(result.status,'skipped');assert.match(result.result.message,/non-public/i);
+ }
+ assert.equal(calls(),0);assert.equal((await jobs.summary(user)).reserved_today_micros,0);
+ assert.equal((await app.search(user)).contacts[0].email_status,'unverified');
+}));
 test('a new definitive domain failure invalidates an older valid badge but retains history',()=>fixture(async({app,db,jobs,providers})=>{
  await app.importCSV(user,{csv:'First Name,Last Name,Email\nJamie,Rivera,jamie@example.com'});const contact=(await app.search(user)).contacts[0];
  const checked_at=new Date(Date.now()-86400000).toISOString(),verification={email:contact.email,checked_at,provider:'hunter'};
