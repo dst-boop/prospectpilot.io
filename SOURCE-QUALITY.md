@@ -24,6 +24,8 @@ Verification and email-only enrichment skip non-public `.invalid`, `.test`, `.lo
 
 ## Interpreting the reports
 
+Email and domain results need canonical UTC observation timestamps no later than processing time. Missing, malformed or future timestamps cannot become verification evidence; processing fails for review while prior contact evidence is preserved and any reserved cost remains recorded.
+
 Paid API searches use professional provider filters, including email/phone presence or absence. The dialog lists active directory-only filters that will not constrain new provider results, such as source, suppression, review flags and verification status. The job API rejects those filters instead of silently ignoring them. A destination list organizes results; it does not limit the provider search to existing members.
 
 The Shared mailbox filter and summary count use the same role-address rules as contact warnings and identity matching. They help review addresses such as `team@` and `support+us@`; the count is not a measure of independently confirmed people or mailbox usability.
