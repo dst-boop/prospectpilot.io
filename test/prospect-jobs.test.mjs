@@ -2,6 +2,21 @@ import test from 'node:test';import assert from 'node:assert/strict';import {rea
 import {createProspectJobs} from '../prospect-jobs.mjs';import {createProspectWorkspace} from '../prospect-workspace.mjs';
 const user={uid:'owner'},other={uid:'stranger'};
 const record={first_name:'Jamie',last_name:'Rivera',company:'Example',title:'Director',email:'jamie@example.com',linkedin_url:'https://www.linkedin.com/in/jamie-rivera',phone:'+12125551234',provider_id:'p1'};
+test('delayed verification preserves newer domain failure evidence without restoring a valid badge',()=>fixture(async({db,app,jobs,providers})=>{
+ await app.importCSV(user,{csv:'First Name,Last Name,Email\nJamie,Rivera,jamie@example.com'});
+ const contact=(await app.search(user)).contacts[0],checked_at=new Date(Date.now()-60000).toISOString();
+ providers.verifyEmail=async()=>{
+  const domainCheck={domain:'example.com',status:'null_mx',checked_at:new Date().toISOString(),provider:'dns'};
+  await db.query("UPDATE prospect_contacts SET payload=jsonb_set(payload,'{email_domain_check}',$1::jsonb) WHERE id=$2",[JSON.stringify(domainCheck),contact.id]);
+  return {email:contact.email,status:'valid',provider:'hunter',checked_at};
+ };
+ const job=await jobs.enqueue(user,{action:'verify',ids:[contact.id],max_cost_micros:1000,idempotency_key:'delayed-verification'});await jobs.tick();
+ const after=(await app.search(user)).contacts[0];
+ assert.equal(after.email_status,'unverified');assert.equal(after.email_verification.checked_at,checked_at);assert.equal(after.email_domain_check.status,'null_mx');
+ assert.equal((await jobs.jobs(user,job.id)).tasks[0].status,'completed');
+ assert.match((await jobs.jobs(user,job.id)).tasks[0].result.message,/newer domain check/);
+ assert.match(await (await app.exportCSV(user,{ids:[contact.id]})).text(),/"jamie@example.com","unverified"/);
+}));
 test('imported contacts can be enriched, verified and exported without overwriting known fields',()=>fixture(async({app,jobs,calls})=>{
  const list=await app.createList(user,{name:'Enrichment journey'});
  await app.importCSV(user,{csv:'First Name,Last Name,Company,Title,Email\nJamie,Rivera,Example,Operations Lead,jamie@example.com',source:'Authorized fixture',list_id:list.id});
