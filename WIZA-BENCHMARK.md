@@ -45,6 +45,10 @@ Workflow acceptance also requires suppression-aware exports, tenant isolation, n
 
 ## Offline comparison evaluator
 
+Prepare a review file with `node scripts/prepare-contact-benchmark.mjs .tmp/contact-benchmark-draft.json 300 contact_trial`. The parent directory must exist. This creates equal candidate slots for ProspectPilot and Wiza and refuses to overwrite an existing file. Keep the mapping from each opaque candidate ID to one licensed, deduplicated person separately; the script does not select or invent people.
+
+Every outcome starts with `returned: null`, meaning the trial has not been run. After each permitted search, explicitly set it to true or false and attach the documented review for returned contacts. Costs and user time also start unknown. The evaluator refuses a draft with unfilled outcome slots, so an unfinished trial cannot silently become a measured coverage failure. Retain source evidence and allocation records before entering any costs.
+
 Run `node scripts/evaluate-contact-benchmark.mjs .tmp/benchmark.json`. The evaluator makes no network requests and prints aggregate JSON. Keep licensed data and reviewer evidence outside version control; use opaque canonical-person IDs, not names or email addresses. An evidence reference points to the separately retained review record; the evaluator does not inspect it or output it.
 
 Input schema: `schema_version: 1`, opaque `cohort_id`, a unique `candidate_ids` array and exactly two `runs`. Each run needs a unique `label` and exactly one `outcomes` row for every candidate, including missing results. A row contains `candidate_id`, boolean `returned`, and optionally `review` for a returned record. A vendor's verification label alone is not a review.
