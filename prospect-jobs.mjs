@@ -24,6 +24,7 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   let payloads=[];
   if(action==='search'){
    const filters=searchFilters(input.filters);if(!['title','company','country','state','city','industry','seniority'].some(k=>filters[k]))throw fail(422,'Set at least one professional search filter.');
+   if(Object.entries(filters).some(([key,value])=>value&&!['title','company','country','state','city','industry','seniority','has_email','has_phone'].includes(key)))throw fail(422,'Directory-only filters cannot constrain a paid provider search. Use supported professional filters and a separate destination list.');
    const size=integer(Number(input.size??10),1,100,'search size');
    payloads=[{filters:{...filters,scroll_token:typeof input.scroll_token==='string'?input.scroll_token.slice(0,5000):'',size},list_id:input.list_id||null,quote:ready(action)?quote(action,size):0}];
   }else{

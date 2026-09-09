@@ -1,3 +1,7 @@
+export function providerSearchSelection(input){
+ const supported=['title','company','country','state','city','industry','seniority','has_email','has_phone'];
+ return {filters:Object.fromEntries(Object.entries(input).filter(([key,value])=>value&&supported.includes(key))),ignored:Object.keys(input).filter(key=>input[key]&&!supported.includes(key)&&!['list_id','size','scroll_token'].includes(key))};
+}
 export async function initProviderUI({api,selected,filters,getLists,refresh,notice}){
  const $=id=>document.getElementById(id),esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
  const money=v=>v==null?'Not configured':(Number(v)/1000000).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:4});
@@ -8,10 +12,12 @@ export async function initProviderUI({api,selected,filters,getLists,refresh,noti
  async function settings(){setup=await api('providers');$('providerSummary').textContent=`Reserved today: ${money(setup.reserved_today_micros)} · shared daily cap: ${money(setup.daily_budget_micros)}`;return setup;}
  function quote(){if(!setup||!activeInput)return;const count=activeInput.action==='search'?Number($('providerSize').value):activeInput.ids.length;const value=count*Number(setup.prices[activeInput.action]||0);$('providerQuote').textContent=`Up to ${count} ${activeInput.action==='search'?'records':'contacts'} · quoted reservation ${money(value)}`;$('providerCeiling').value=(value/1000000).toFixed(6);nonce=null;}
  async function open(action,continuation=null){try{await settings();if(!setup.actions[action]){$('providerSetup').click();return notice('Configure provider access and pricing before starting this operation.',true);}if(action!=='search'&&!selected.size)return notice('Select one or more contacts first.',true);if(selected.size>500&&action!=='search')return notice('Choose at most 500 contacts per batch.',true);
-  activeInput=action==='search'?{action,filters:continuation?.filters||filters(),scroll_token:continuation?.scroll_token||''}:{action,ids:[...selected]};
+  const searchSelection=action==='search'?providerSearchSelection(continuation?.filters||filters()):null;
+  activeInput=action==='search'?{action,filters:searchSelection.filters,scroll_token:continuation?.scroll_token||''}:{action,ids:[...selected]};
   $('providerTitle').textContent=action==='search'?'Find new professional contacts':action==='check_domain'?'Check selected email domains':action==='verify'?'Verify selected emails':'Enrich selected contacts';
   $('providerDescription').textContent=action==='search'?'Search filters: '+Object.entries(activeInput.filters).filter(([k,v])=>v&&['title','company','country','state','city','industry','seniority'].includes(k)).map(([k,v])=>k+': '+v).join(' · '):`${activeInput.ids.length} selected contacts. Suppressed or changed records are skipped. Current valid email checks are reused without a new charge.`;
   if(action==='check_domain')$('providerDescription').textContent='Check mail-routing DNS records for the selected email domains. No paid data-provider credits are used. This does not verify an individual mailbox or send email.';
+  if(action==='search')$('providerDescription').textContent='Provider filters: '+(Object.entries(activeInput.filters).map(([key,value])=>key.replaceAll('_',' ')+': '+value).join(' · ')||'None selected')+(searchSelection.ignored.length?'. Directory-only filters will not apply: '+searchSelection.ignored.map(key=>key.replaceAll('_',' ')).join(', ')+'.':'')+' Results may add new contacts to the destination list.';
   $('providerSearchFields').hidden=action!=='search';$('providerSize').required=action==='search';$('providerList').innerHTML='<option value="">No list</option>'+getLists().map(l=>`<option value="${esc(l.id)}">${esc(l.name)}</option>`).join('');$('providerList').value=filters().list_id||'';$('providerError').textContent='';quote();$('providerDialog').showModal();
  }catch(e){notice(e.message,true);}}
  $('providerSearch').onclick=()=>open('search');$('enrichSelected').onclick=()=>open('enrich');$('domainSelected').onclick=()=>open('check_domain');$('verifySelected').onclick=()=>open('verify');$('providerSize').oninput=quote;$('providerCeiling').oninput=()=>nonce=null;$('providerList').onchange=()=>nonce=null;
