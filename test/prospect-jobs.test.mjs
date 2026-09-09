@@ -1,6 +1,20 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';import {PGlite} from '@electric-sql/pglite';
 import {createProspectJobs} from '../prospect-jobs.mjs';import {createProspectWorkspace} from '../prospect-workspace.mjs';
 const user={uid:'owner'},other={uid:'stranger'};
+test('provider daily budget is shared across users while their job details stay isolated',()=>fixture(async({jobs,config,calls})=>{
+ config.dailyBudgetMicros=1500;
+ const input={action:'search',filters:{company:'Example'},size:1,max_cost_micros:1000,idempotency_key:'shared-budget-test'};
+ const first=await jobs.enqueue(user,input),second=await jobs.enqueue(other,input);
+ await jobs.tick();await jobs.tick();
+ const firstDetail=await jobs.jobs(user,first.id),secondDetail=await jobs.jobs(other,second.id);
+ assert.deepEqual([firstDetail.tasks[0].status,secondDetail.tasks[0].status].sort(),['completed','skipped']);
+ const skipped=[firstDetail,secondDetail].find(detail=>detail.tasks[0].status==='skipped');
+ assert.match(skipped.tasks[0].result.message,/shared daily provider budget/);
+ assert.equal(calls(),1);
+ assert.equal((await jobs.summary(user)).reserved_today_micros+(await jobs.summary(other)).reserved_today_micros,1000);
+ await assert.rejects(jobs.jobs(user,second.id),{status:404});
+ await assert.rejects(jobs.jobs(other,first.id),{status:404});
+}));
 test('invalid search and enrichment timestamps cannot overwrite source history and retain charged cost',()=>fixture(async({app,jobs,providers})=>{
  await app.importCSV(user,{csv:'First Name,Last Name,Email\nJamie,Rivera,jamie@example.com'});
  const before=(await app.search(user)).contacts[0];
