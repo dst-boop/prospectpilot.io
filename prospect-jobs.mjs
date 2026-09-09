@@ -84,6 +84,7 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   return {...task,contact,attempts:task.attempts+1};
  });}
  async function saveSearch(c,task,result){
+  if(result.checked_at!==undefined&&!validObservationTime(result.checked_at))throw fail(502,'Invalid search observation time.');
   await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`prospect:${task.user_id}`]);
   let added=0,duplicates=0,conflicts=0,rejected=result.rejected||0;const contact_ids=[];
   // A list deleted while the request ran cannot make paid results disappear.
@@ -127,6 +128,7 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
    contact.email_status=result.status;contact.email_verification={provider:result.provider,provider_status:result.provider_status,checked_at:result.checked_at,email:result.email};
    if(contact.email_status==='valid'&&recentDomainFailure(contact)&&Date.parse(contact.email_domain_check.checked_at)>Date.parse(result.checked_at))contact.email_status='unverified';
   }else{
+   if(result.checked_at!==undefined&&!validObservationTime(result.checked_at))throw fail(502,'Invalid enrichment observation time.');
    const candidate=normalizeContact(result.contact,'People Data Labs');
    if(['first_name','last_name'].some(k=>nameKey(candidate[k])!==nameKey(contact[k]))||['email','linkedin_url'].some(k=>candidate[k]&&contact[k]&&candidate[k]!==contact[k])){await finish(c,task,'skipped',{message:'Enrichment conflicts with current identifiers. Existing contact preserved.'});return;}
    const prospective={...contact};for(const [key,value] of Object.entries(candidate))if(!prospective[key]&&value)prospective[key]=value;
