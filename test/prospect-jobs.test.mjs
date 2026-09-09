@@ -1,6 +1,19 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';import {PGlite} from '@electric-sql/pglite';
 import {createProspectJobs} from '../prospect-jobs.mjs';import {createProspectWorkspace} from '../prospect-workspace.mjs';
 const user={uid:'owner'},other={uid:'stranger'};
+test('invalid provider observation times cannot become verification evidence',()=>fixture(async({app,jobs,providers})=>{
+ await app.importCSV(user,{csv:'First Name,Last Name,Email\nJamie,Rivera,jamie@example.com'});const c=(await app.search(user)).contacts[0];
+ providers.readiness.domain_check=true;
+ for(const [index,checked_at] of [undefined,'not-a-date','2999-01-01T00:00:00.000Z'].entries()){
+  providers.verifyEmail=async()=>({email:c.email,status:'valid',provider:'hunter',checked_at});
+  providers.checkDomain=async()=>({email:c.email,domain:'example.com',status:'mx_present',checked_at});
+  for(const action of ['verify','check_domain']){
+   const job=await jobs.enqueue(user,{action,ids:[c.id],max_cost_micros:1000,idempotency_key:`bad-time-${action}-${index}`});await jobs.tick();
+   assert.equal((await jobs.jobs(user,job.id)).tasks[0].status,'needs_attention');
+  }
+ }
+ const after=(await app.search(user)).contacts[0];assert.equal(after.email_status,'unverified');assert.equal(after.email_verification,undefined);assert.equal(after.email_domain_check,undefined);
+}));
 test('paid searches reject unsupported or malformed filters before creating jobs or reservations',()=>fixture(async({jobs,calls})=>{
  for(const filters of [{source:'ZoomInfo'},{quality_issue:'shared_mailbox'},{suppressed:'false'},{email_status:'valid'},{q:'Jamie'},{list_id:'a-list'},{job_titel:'Director'},{first_name:'Jamie'}]){
   await assert.rejects(jobs.enqueue(user,{action:'search',filters:{company:'Example',...filters},size:1,max_cost_micros:1000,idempotency_key:'unsupported-filter'}),{status:422});
@@ -44,7 +57,7 @@ test('imported contacts can be enriched, verified and exported without overwriti
  await jobs.enqueue(user,{action:'verify',ids:[before.id],max_cost_micros:1000,idempotency_key:'verify-journey'});await jobs.tick();
  const csv=await (await app.exportCSV(user,{ids:[before.id]})).text();assert.match(csv,/Operations Lead/);assert.match(csv,/"jamie@example.com","valid"/);assert.match(csv,/12125551234/);assert.equal(calls(),2);assert.equal((await jobs.summary(user)).reserved_today_micros,3000);
 }));
-async function fixture(fn,overrides={}){const db=new PGlite();try{for(const name of ['008-prospect-workspace','009-prospect-jobs','011-email-domain-check'])await db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};let calls=0;const providers={readiness:{search:true,enrichment:true,email_verification:true},search:async()=>{calls++;return {contacts:[record],retrieved:1,total:1,scroll_token:'page-2'};},enrich:async()=>{calls++;return {contact:record,checked_at:new Date().toISOString()};},verifyEmail:async c=>{calls++;return {email:c.email,status:'valid',provider_status:'valid',provider:'hunter',checked_at:new Date().toISOString()};},...overrides};const config={dailyBudgetMicros:100000,prices:{search:1000,enrich:2000,verify:1000}};const jobs=createProspectJobs({pool,providers,config,pacingMs:{pdl:0,hunter:0}});const app=createProspectWorkspace({pool,jobs});await fn({db,app,jobs,providers,config,calls:()=>calls});}finally{await db.close();}}
+async function fixture(fn,overrides={}){const db=new PGlite();try{for(const name of ['008-prospect-workspace','009-prospect-jobs','011-email-domain-check'])await db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};let calls=0;const providers={readiness:{search:true,enrichment:true,email_verification:true},search:async()=>{calls++;return {contacts:[record],retrieved:1,total:1,scroll_token:'page-2'};},enrich:async()=>{calls++;return {contact:record,checked_at:new Date().toISOString()};},verifyEmail:async c=>{calls++;return {email:c.email,status:'valid',provider_status:'valid',provider:'hunter',checked_at:new Date().toISOString()};},...overrides};const config={dailyBudgetMicros:100000,prices:{search:1000,enrich:2000,verify:1000}};const jobs=createProspectJobs({pool,providers,config,pacingMs:{pdl:0,hunter:0,dns:0}});const app=createProspectWorkspace({pool,jobs});await fn({db,app,jobs,providers,config,calls:()=>calls});}finally{await db.close();}}
 test('provider search to list to verification to export works with recorded cost and isolation',()=>fixture(async({app,jobs,calls})=>{
  const list=await app.createList(user,{name:'Prospects'});const input={action:'search',filters:{company:'Example'},size:10,list_id:list.id,idempotency_key:'search-001',max_cost_micros:10000};const job=await jobs.enqueue(user,input);assert.equal((await jobs.enqueue(user,input)).id,job.id);assert.equal(await jobs.tick(),true);assert.equal(calls(),1);
  const c=(await app.search(user,{list_id:list.id})).contacts[0];assert.equal(c.source_kind,'provider');assert.equal(c.email_status,'unverified');assert.equal(c.source_history[0].source,'People Data Labs');assert.equal(c.source_observed_at,null);assert.equal(c.field_sources.email.kind,'provider');

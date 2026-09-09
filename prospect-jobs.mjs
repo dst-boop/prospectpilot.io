@@ -6,6 +6,7 @@ import {DOMAIN_CHECK_STATUSES,DOMAIN_CHECK_LABELS,recentDomainFailure,isNonPubli
 const fail=(status,message)=>Object.assign(Error(message),{status});
 const sig=contact=>hash(JSON.stringify(['first_name','last_name','company','email','linkedin_url'].map(k=>contact[k]||'')));
 const terminal=['completed','failed','skipped','needs_attention'];
+const validObservationTime=value=>{const time=Date.parse(value);return typeof value==='string'&&Number.isFinite(time)&&time<=Date.now()&&new Date(time).toISOString()===value;};
 const integer=(v,min,max,label)=>{if(!Number.isSafeInteger(v)||v<min||v>max)throw fail(422,'Invalid '+label+'.');return v;};
 async function tx(pool,fn){const c=await pool.connect();let broken;try{await c.query('BEGIN');const r=await fn(c);await c.query('COMMIT');return r;}catch(e){try{await c.query('ROLLBACK');}catch(b){broken=b;}throw e;}finally{c.release(broken);}}
 export function providerJobConfig(env=process.env){
@@ -117,11 +118,11 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   if(result.suppressed){contact.suppressed=true;await c.query('UPDATE prospect_contacts SET payload=$1::jsonb,updated_at=now() WHERE id=$2',[JSON.stringify(contact),task.contact_id]);await finish(c,task,'skipped',{message:'Provider reported a suppression; the contact is now suppressed.'});return;}
   if(result.not_found||result.conflict){await finish(c,task,'skipped',{message:result.conflict?'Provider identity conflict; existing data preserved.':'No matching provider record.'});return;}
   if(task.action==='check_domain'){
-   if(result.email!==contact.email||result.domain!==contact.email.split('@')[1]||!DOMAIN_CHECK_STATUSES.includes(result.status)||!Number.isFinite(Date.parse(result.checked_at)))throw fail(502,'Invalid domain-check result.');
+   if(result.email!==contact.email||result.domain!==contact.email.split('@')[1]||!DOMAIN_CHECK_STATUSES.includes(result.status)||!validObservationTime(result.checked_at))throw fail(502,'Invalid domain-check result.');
    contact.email_domain_check={domain:result.domain,status:result.status,checked_at:result.checked_at,provider:'dns',label:DOMAIN_CHECK_LABELS[result.status],mx_hosts:result.mx_hosts||[]};
    if(contact.email_status==='valid'&&recentDomainFailure(contact)&&Date.parse(result.checked_at)>Date.parse(contact.email_verification?.checked_at))contact.email_status='unverified';
   }else if(task.action==='verify'){
-   if(result.email!==contact.email||!['valid','invalid','catch_all','unknown'].includes(result.status))throw fail(502,'Invalid verifier result.');
+   if(result.email!==contact.email||!['valid','invalid','catch_all','unknown'].includes(result.status)||!validObservationTime(result.checked_at))throw fail(502,'Invalid verifier result.');
    contact.email_status=result.status;contact.email_verification={provider:result.provider,provider_status:result.provider_status,checked_at:result.checked_at,email:result.email};
    if(contact.email_status==='valid'&&recentDomainFailure(contact)&&Date.parse(contact.email_domain_check.checked_at)>Date.parse(result.checked_at))contact.email_status='unverified';
   }else{
