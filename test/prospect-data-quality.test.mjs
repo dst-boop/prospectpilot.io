@@ -9,6 +9,14 @@ const basic='First Name,Last Name,Company,Email,Country,State\nAvery,Example,Sam
 async function fixture(fn){const db=new PGlite();try{await db.exec(readFileSync(new URL('../migrations/008-prospect-workspace.sql',import.meta.url),'utf8'));const app=createProspectWorkspace({pool:{query:(...args)=>db.query(...args),connect:async()=>({query:(...args)=>db.query(...args),release(){}})}});await fn(app,db);}finally{await db.close();}}
 const raw={first_name:'Avery',last_name:'Example',company:'Sample Co'};
 
+test('contact imports reject overlong mail components and company hostname labels',()=>{
+ for(const email of ['a'.repeat(65)+'@example.com','a@'+'b'.repeat(64)+'.com','é'.repeat(33)+'@example.com'])assert.throws(()=>normalizeContact({...raw,email}),/email/i);
+ assert.throws(()=>normalizeContact({...raw,company_domain:'https://'+'b'.repeat(64)+'.com'}),/hostname/i);
+ const email='a'.repeat(64)+'@'+'b'.repeat(63)+'.com';
+ assert.equal(normalizeContact({...raw,email}).email,email);
+ assert.equal(normalizeContact({...raw,company_domain:'b'.repeat(63)+'.com'}).company_domain,'b'.repeat(63)+'.com');
+});
+
 test('strict CSV parsing preserves quoted content and physical line numbers',()=>{
  const parsed=parseContactCSV('\uFEFFFirst Name,Last Name,Company\r\n\r\nAvery,Example,"Sample\r\nCompany"\r\nMorgan,Sample,"A ""Quoted"" Company"');
  assert.equal(parsed.records[0].row,3);assert.equal(parsed.records[0].cells[2],'Sample\nCompany');assert.equal(parsed.records[1].row,5);assert.equal(parsed.records[1].cells[2],'A "Quoted" Company');
