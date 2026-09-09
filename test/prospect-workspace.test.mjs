@@ -5,6 +5,14 @@ import {PGlite} from '@electric-sql/pglite';
 import {createProspectWorkspace} from '../prospect-workspace.mjs';
 import {createHandler} from '../handler.mjs';
 const user={uid:'one'},other={uid:'two'};
+test('saved searches reject unavailable lists and retain valid quality and suppression filters',()=>fixture(async app=>{
+ const own=await app.createList(user,{name:'Owned'}),foreign=await app.createList(other,{name:'Other list'});
+ const save=filters=>app.route(new Request('https://example.com/api/prospect/saved-searches',{method:'POST',body:JSON.stringify({name:'Review',filters})}),user);
+ for(const list_id of [foreign.id,'missing-list'])await assert.rejects(save({list_id}),{status:404});
+ const before=await app.route(new Request('https://example.com/api/prospect/saved-searches'),user);assert.equal(before.searches.length,0);
+ const saved=await save({list_id:own.id,quality_issue:'shared_mailbox',suppressed:'false'});
+ assert.equal(saved.filters.list_id,own.id);assert.equal(saved.filters.quality_issue,'shared_mailbox');assert.equal(saved.filters.suppressed,'false');
+}));
 const csv='First Name,Last Name,Company,Title,Email,Phone,Country,State,City,Industry,Seniority\nJamie,Rivera,Example Manufacturing,Operations Director,jamie@example.com,2125551234,US,NY,Albany,Manufacturing,Director';
 test('public signups use isolated workspaces through the authenticated transport',()=>fixture(async app=>{
  const origin='https://prospectpilot.io';const handler=createHandler({auth:{verifySessionCookie:async uid=>({uid,email:uid+'@example.net',email_verified:true,firebase:{sign_in_provider:uid==='alice'?'google.com':'password'}})},ownerEmail:'admin@example.net',origins:[origin],prospect:app});
