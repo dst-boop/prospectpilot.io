@@ -4,6 +4,15 @@ import {evaluateContactBenchmark} from '../contact-benchmark.mjs';
 const now=Date.parse('2026-09-09T13:00:00.000Z');
 const review={identity:'match',route:'usable',in_segment:true,suppressed:false,evidence_ref:'review-fixture',reviewed_at:'2026-09-09T12:00:00.000Z'};
 const costs={provider:1000000,subscription:0,labor:0,infrastructure:0,export:0};
+test('predeclared segments preserve missing outcomes and paired coverage without inventing segment costs',()=>{
+ const input=fixture();input.candidate_segments={a:'segment_one',b:'segment_one',c:'segment_two'};
+ const result=evaluateContactBenchmark(input,{now}),[one,two]=result.segment_coverage;
+ assert.equal(one.requested,2);assert.deepEqual(one.runs.map(r=>r.usable_coverage),[0.5,0.5]);
+ assert.equal(two.requested,1);assert.deepEqual(two.runs.map(r=>r.usable_coverage),[0,1]);
+ assert.deepEqual(two.paired_coverage,{both_usable:0,first_only:0,second_only:1,neither_usable:0});
+ assert.equal(one.runs[0].total_cost_micros,undefined);assert.equal(result.superiority_established,false);
+ for(const segments of [{a:'one'},{a:'one',b:'one',outsider:'two'},{a:'one',b:'one',c:''},null]){input.candidate_segments=segments;assert.throws(()=>evaluateContactBenchmark(input,{now}),/Segment assignments/);}
+});
 test('benchmark intervals retain uncertainty at zero and full coverage and omit unreviewed identity rates',()=>{
  for(const [successes,lower,upper] of [[0,0,0.2775327998628892],[5,0.236593090512564,0.763406909487436],[10,0.7224672001371107,1]]){
   const input=fixture();input.candidate_ids=Array.from({length:10},(_,i)=>'id_'+i);

@@ -39,7 +39,7 @@ Workflow acceptance also requires suppression-aware exports, tenant isolation, n
 1. CI passed through commit `b784ce7ef62f76e20d9a37079df2e6fb95c840c4`, including the export evidence, comparison evaluator and non-public-domain cost guard. Deployment needs Google reauthentication, then custom-domain verification.
 2. The local checkout is reconciled with published history and has an origin remote; local handoff documentation is preserved.
 3. This branch's CSV exports include source dates, historical verification context and review flags; local tests pass, live verification pending.
-4. The local comparison evaluator is implemented with four passing regression tests; it accepts measured outcomes and actual costs, refuses unsupported winners and needs no personal data in the repository. A real comparison remains pending licensed inputs and reviewed evidence.
+4. The local comparison evaluator is implemented with regression coverage; it accepts measured outcomes and actual costs, refuses unsupported winners and needs no personal data in the repository. A real comparison remains pending licensed inputs and reviewed evidence.
 5. Validate permitted real provider data when credentials and source samples are available; do not buy access or contact third parties without authorization.
 6. Build the highest-priority integration after the user's CRM/workflow is established; do not guess a live destination for contact data.
 
@@ -57,9 +57,11 @@ A review requires `identity` (match/mismatch/unknown), `route` (usable/unusable/
 
 Each run's `costs_micros` has `provider`, `subscription`, `labor`, `infrastructure` and `export` categories, in nonnegative integer microdollars. One dollar is 1,000,000 microdollars. Use actual attributable costs allocated consistently to the trial, without double counting. Explicit zero means measured zero; null or an omitted category means unknown and prevents a total/unit-cost comparison. `user_seconds` is optional whole seconds. No usable contacts means undefined unit cost.
 
-The output preserves all candidates in denominators, reports unknown reviews, and includes paired usable-contact counts and observed cost/time differences. It always leaves `superiority_established` false: representative sampling, independent evidence review and statistical uncertainty still need assessment. The four regression tests use fictional outcomes solely to verify evaluator behavior.
+The output preserves all candidates in denominators, reports unknown reviews, and includes paired usable-contact counts and observed cost/time differences. It always leaves `superiority_established` false: representative sampling, independent evidence review and statistical uncertainty still need assessment. The regression tests use fictional outcomes solely to verify evaluator behavior.
 
 ## Interpreting uncertainty
+
+Optionally supply `candidate_segments`, an object mapping every candidate ID to one opaque segment ID, with no missing or extra candidates and at most 50 segments. Define these assignments before reviewing outcomes; the evaluator checks completeness, not when the assignments were made. Segment output includes each run's confirmed usable coverage, its interval and paired usable counts, with all requested candidates retained in the segment denominator. Costs are not allocated to segments without measured attribution. Selecting favorable segments after seeing results cannot support a superiority claim, and multiple segment comparisons need an appropriate analysis.
 
 Each run includes approximate two-sided 95% Wilson score intervals for confirmed usable-contact coverage and the identity-error rate among identity-reviewed outputs. The calculation follows the [NIST proportion confidence-interval formula](https://www.itl.nist.gov/div898/handbook/prc/section2/prc241.htm). Zero observed errors still have a positive upper bound; no reviewed identities produces a null identity-error interval.
 
