@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {hash,nameKey,linkedinURL} from './lead-quality.mjs';
 import {normalizeContact,contactIdentities,identityLookupKeys,searchFilters} from './prospect-workspace.mjs';
-import {CONTACT_ALIASES} from './prospect-data-quality.mjs';
+import {CONTACT_ALIASES,contactEmail} from './prospect-data-quality.mjs';
 import {DOMAIN_CHECK_STATUSES,DOMAIN_CHECK_LABELS,recentDomainFailure,isNonPublicMailDomain} from './prospect-domain-check.mjs';
 const fail=(status,message)=>Object.assign(Error(message),{status});
 const sig=contact=>hash(JSON.stringify(['first_name','last_name','company','email','linkedin_url'].map(k=>contact[k]||'')));
@@ -57,6 +57,9 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   let contact;if(task.contact_id){contact=(await c.query('SELECT payload FROM prospect_contacts WHERE id=$1 AND user_id=$2',[task.contact_id,task.user_id])).rows[0]?.payload;}
   const skip=!ready(task.action)?'Provider is no longer configured.':quote(task.action,task.action==='search'?task.payload.filters.size:1)>task.payload.quote?'Configured price increased; launch a new job with a current quote.':task.action!=='search'&&(!contact||contact.suppressed||sig(contact)!==task.payload.signature)?'Contact is missing, suppressed, or changed.':task.action==='verify'&&!contact.email?'This contact has no email to verify.':task.action==='enrich'&&!contact.email&&!contact.linkedin_url?'An email or LinkedIn profile is needed for identity matching.':null;
   if(skip){await finish(c,task,'skipped',{message:skip});return {skipped:true};}
+  if((task.action==='verify'||task.action==='enrich'&&!linkedinURL(contact.linkedin_url))&&!contactEmail(contact.email)){
+   await finish(c,task,'skipped',{message:'Invalid email address. No new paid provider request or cost reservation was made.'});return {skipped:true};
+  }
   if(task.action==='check_domain'&&!contact.email){await finish(c,task,'skipped',{message:'This contact has no email domain to check.'});return {skipped:true};}
   if((task.action==='verify'||task.action==='enrich'&&!linkedinURL(contact.linkedin_url))&&isNonPublicMailDomain(String(contact.email||'').split('@')[1])){
    await finish(c,task,'skipped',{message:'This email uses a non-public domain. No new paid provider request or cost reservation was made.'});return {skipped:true};

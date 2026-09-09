@@ -2,6 +2,16 @@ import test from 'node:test';import assert from 'node:assert/strict';import {rea
 import {createProspectJobs} from '../prospect-jobs.mjs';import {createProspectWorkspace} from '../prospect-workspace.mjs';
 const user={uid:'owner'},other={uid:'stranger'};
 const record={first_name:'Jamie',last_name:'Rivera',company:'Example',title:'Director',email:'jamie@example.com',linkedin_url:'https://www.linkedin.com/in/jamie-rivera',phone:'+12125551234',provider_id:'p1'};
+test('legacy malformed emails cannot reserve funds or trigger email-based provider jobs',()=>fixture(async({db,app,jobs,calls})=>{
+ await app.importCSV(user,{csv:'First Name,Last Name,Email\nJamie,Rivera,jamie@example.com'});
+ const contact=(await app.search(user)).contacts[0];
+ await db.query("UPDATE prospect_contacts SET payload=jsonb_set(payload,'{email}',$1::jsonb) WHERE id=$2",[JSON.stringify('a'.repeat(65)+'@example.com'),contact.id]);
+ for(const action of ['verify','enrich']){
+  const job=await jobs.enqueue(user,{action,ids:[contact.id],max_cost_micros:2000,idempotency_key:'legacy-invalid-'+action});await jobs.tick();
+  const task=(await jobs.jobs(user,job.id)).tasks[0];assert.equal(task.status,'skipped');assert.match(task.result.message,/invalid email/i);
+ }
+ assert.equal(calls(),0);assert.equal((await jobs.summary(user)).reserved_today_micros,0);
+}));
 test('delayed verification preserves newer domain failure evidence without restoring a valid badge',()=>fixture(async({db,app,jobs,providers})=>{
  await app.importCSV(user,{csv:'First Name,Last Name,Email\nJamie,Rivera,jamie@example.com'});
  const contact=(await app.search(user)).contacts[0],checked_at=new Date(Date.now()-60000).toISOString();

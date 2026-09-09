@@ -39,6 +39,10 @@ const cleanField = (value, key) => {
 };
 export const sharedMailbox = email => /^(info|sales|hello|contact|support|office|admin|team|reception|service|billing|careers|jobs|hr|marketing|accounts|noreply|no-reply)(?:[+._-][^@]*)?@/i.test(email || '');
 const hostname = value => value.length<=253&&value.split('.').every(label=>label.length<=63)&&/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/i.test(value);
+export function contactEmail(value){
+ const email=emailAddress(value);
+ return email&&Buffer.byteLength(email.split('@')[0])<=64&&Buffer.byteLength(email)<=254&&hostname(email.split('@')[1])&&!/^\.|\.\.|\.@/.test(email)?email:'';
+}
 export function normalizeContact(raw, source) {
   const mapped = {};
   for (const [key, value] of Object.entries(raw)) {
@@ -47,9 +51,9 @@ export function normalizeContact(raw, source) {
   }
   const contact = Object.fromEntries(Object.keys(CONTACT_ALIASES).map(key => [key, cleanField(mapped[key], key)]));
   if (![contact.first_name, contact.last_name].every(value => /\p{L}/u.test(value))) throw fail('First and last name must each contain a letter.');
-  contact.email = emailAddress(contact.email);
+  contact.email = contactEmail(contact.email);
   const rawEmail = cleanField(mapped.email, 'email');
-  if (rawEmail && (!contact.email || Buffer.byteLength(contact.email.split('@')[0])>64 || Buffer.byteLength(contact.email)>254 || !hostname(contact.email.split('@')[1]) || /^\.|\.\.|\.@/.test(contact.email))) throw fail('Invalid email address.');
+  if (rawEmail && !contact.email) throw fail('Invalid email address.');
   const rawPhone = contact.phone;
   contact.phone = phoneNumber(rawPhone);
   if (rawPhone && (!contact.phone || /[^0-9()+.\s-]/.test(rawPhone))) throw fail('Use a valid US phone number without an extension.');

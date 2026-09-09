@@ -1,5 +1,5 @@
 import {emailAddress,phoneNumber,linkedinURL,nameKey} from './lead-quality.mjs';
-import {normalizeContact,stateName} from './prospect-data-quality.mjs';
+import {normalizeContact,stateName,contactEmail} from './prospect-data-quality.mjs';
 import {createDomainChecker,isNonPublicMailDomain} from './prospect-domain-check.mjs';
 const fail=(status,message)=>Object.assign(Error(message),{status});
 const fields='id,first_name,last_name,job_title,job_company_name,job_company_website,job_company_industry,job_title_levels,location_country,location_region,location_locality,linkedin_url,work_email,phone_numbers';
@@ -45,7 +45,7 @@ export function createProspectProviders({pdlKey='',hunterKey='',fetcher=fetch,no
  async function enrich(contact){
   if(!pdlKey)throw fail(503,'Contact enrichment is not configured.');
   if(contact.suppressed)throw fail(422,'Suppressed contacts cannot be enriched.');
-  const profile=normalizeProfile(contact.linkedin_url),email=emailAddress(contact.email);
+  const profile=normalizeProfile(contact.linkedin_url),email=contactEmail(contact.email);
   if(!profile&&!email)throw fail(422,'A LinkedIn profile or known email is required for identity matching.');
   if(!profile&&isNonPublicMailDomain(email.split('@')[1]))throw fail(422,'A non-public email domain cannot be used for paid enrichment.');
   const url=new URL('https://api.peopledatalabs.com/v5/person/enrich');
@@ -62,7 +62,7 @@ export function createProspectProviders({pdlKey='',hunterKey='',fetcher=fetch,no
  async function verifyEmail(contact){
   if(!hunterKey)throw fail(503,'Email verification is not configured.');
   if(contact.suppressed)throw fail(422,'Suppressed contacts cannot be verified.');
-  const email=emailAddress(contact.email);if(!email)throw fail(422,'A valid email is required.');
+  const email=contactEmail(contact.email);if(!email)throw fail(422,'A valid email is required.');
   if(isNonPublicMailDomain(email.split('@')[1]))throw fail(422,'A non-public email domain cannot be sent for paid verification.');
   const url=new URL('https://api.hunter.io/v2/email-verifier');url.searchParams.set('email',email);url.searchParams.set('api_key',hunterKey);
   const response=await request(url);if(response.pending||response.suppressed)return response;
