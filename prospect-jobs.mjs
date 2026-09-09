@@ -23,8 +23,10 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   const key=String(input.idempotency_key||'');if(!/^[a-zA-Z0-9_-]{8,100}$/.test(key))throw fail(422,'A stable request key is required.');
   let payloads=[];
   if(action==='search'){
+   if(input.filters!==undefined&&(!input.filters||typeof input.filters!=='object'||Array.isArray(input.filters)))throw fail(422,'Provide a search filter object.');
+   const supported=['title','company','country','state','city','industry','seniority','has_email','has_phone'];
+   if(Object.entries(input.filters||{}).some(([key,value])=>value!=null&&String(value).trim()!==''&&!supported.includes(key)))throw fail(422,'Unsupported provider search filter. Use professional filters, email/phone presence, and a separate destination list.');
    const filters=searchFilters(input.filters);if(!['title','company','country','state','city','industry','seniority'].some(k=>filters[k]))throw fail(422,'Set at least one professional search filter.');
-   if(Object.entries(filters).some(([key,value])=>value&&!['title','company','country','state','city','industry','seniority','has_email','has_phone'].includes(key)))throw fail(422,'Directory-only filters cannot constrain a paid provider search. Use supported professional filters and a separate destination list.');
    const size=integer(Number(input.size??10),1,100,'search size');
    payloads=[{filters:{...filters,scroll_token:typeof input.scroll_token==='string'?input.scroll_token.slice(0,5000):'',size},list_id:input.list_id||null,quote:ready(action)?quote(action,size):0}];
   }else{
