@@ -15,6 +15,7 @@ ENV NODE_ENV=production PORT=8080
 RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/node_modules ./node_modules
 COPY package.json ./
+COPY contact-benchmark.mjs ./
 COPY --from=build /app/generated ./generated
 COPY scripts ./scripts
 COPY lab.html lab.css lab-client.js lead-quality.mjs source-catalog.mjs plan-catalog.mjs lab-sources.mjs robots-policy.mjs research-lab.mjs ./

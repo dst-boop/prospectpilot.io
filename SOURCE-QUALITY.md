@@ -16,6 +16,8 @@ Shared mailboxes are not individual identity keys. A name/company match alone ca
 
 Provider search applies the same namesake safeguard before attributing source history or adding an existing contact to the requested list. A new identifier without a matching individual email or LinkedIn profile is counted as an identity conflict, not a duplicate.
 
+CSV exports retain the original contact columns, followed by the contact ID, source observation date, last-seen time, last email/domain check evidence and data-review issue codes. Columns prefixed `last_` describe historical checks, including the exact checked address or domain. They do not confer current verification on a changed address. Unknown dates stay blank, expired valid statuses become unverified, and suppressed contacts are omitted.
+
 ## Interpreting the reports
 
 - **Source import results:** counts of new, matched, conflicting and rejected rows. Matches are repeat records, not new leads. Exact repeat uploads do not inflate counts.
