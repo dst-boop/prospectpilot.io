@@ -13,7 +13,7 @@ Imported status columns do not establish independent verification. Existing veri
 The following API integrations are optional alternatives; ZoomInfo CSV usage does not require PDL or Hunter credentials. Live API enrichment or independent verification still requires a configured API provider.
 ## Server and worker configuration
 
-The current acceptance ceiling is **$2 all-in per unique reviewed usable lead**. Before enabling paid acquisition, account for provider/verification charges, attributable subscriptions, labor, infrastructure and exports, including spend on missing or rejected results. Unknown costs do not count as zero. Establish a costed batch plan and stop rule; configured provider reservations alone cannot prove this ceiling. Use the measured assessment and optional CLI gate documented in WIZA-BENCHMARK.md. No live cost compliance has been established.
+The user withdrew the lead-cost ceiling. Prioritize licensed data quality, usable coverage and workflow reliability. Existing configured spending limits and authorization requirements remain; this change does not authorize new purchases or paid provider usage. The historical cost assessment in WIZA-BENCHMARK.md is optional and must not block current work.
 
 **Check email domains** works without PDL/Hunter credentials or paid data-provider credits. It checks DNS mail-routing information only, in a durable job. Normal application hosting costs still apply. A domain check cannot mark an individual mailbox valid. Missing domains, explicit null MX and absent mail routes remain distinct from transient lookup failures and A/AAAA fallback. Recent definitive failures avoid a paid verification request for 15 minutes; cached positive DNS results retain their original check time.
 
