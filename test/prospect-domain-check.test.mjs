@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createDomainChecker,recentDomainFailure} from '../prospect-domain-check.mjs';
+import {createDomainChecker,recentDomainFailure,isNonPublicMailDomain} from '../prospect-domain-check.mjs';
 const contact={email:'synthetic@example.com'};
 const missing=()=>Promise.reject(Object.assign(Error('No record'),{code:'ENODATA'}));
 test('domain checking distinguishes MX, null MX, address fallback and transient failures',async()=>{
@@ -30,4 +30,9 @@ test('only a recent matching definitive domain result avoids paid verification',
 test('special-use domains are not queried through the resolver',async()=>{
  const check=createDomainChecker({resolver:{resolveMx:()=>{throw Error('Unexpected query');}}});
  for(const email of ['a@example.invalid','a@company.internal','a@local.test'])assert.equal((await check({email})).status,'special_use');
+});
+
+test('non-public mail domain guard uses suffix boundaries and ignores ordinary hostnames',()=>{
+ for(const domain of ['team.invalid','mail.test','server.localhost','company.local','company.internal','TEAM.INVALID'])assert.equal(isNonPublicMailDomain(domain),true);
+ for(const domain of ['invalid.com','test.example.com','internaltools.com','example.com','test.com'])assert.equal(isNonPublicMailDomain(domain),false);
 });
