@@ -1,6 +1,14 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';import {PGlite} from '@electric-sql/pglite';
 import {createProspectJobs} from '../prospect-jobs.mjs';import {createProspectWorkspace} from '../prospect-workspace.mjs';
 const user={uid:'owner'},other={uid:'stranger'};
+test('paid search rejects malformed pagination tokens without silently truncating or restarting',()=>fixture(async({jobs,providers})=>{
+ const base={action:'search',filters:{company:'Example'},size:1,max_cost_micros:1000,idempotency_key:'pagination-validation'};
+ for(const scroll_token of ['x'.repeat(5001),123,{}])await assert.rejects(jobs.enqueue(user,{...base,scroll_token}),{status:422});
+ assert.equal((await jobs.jobs(user)).jobs.length,0);assert.equal((await jobs.summary(user)).reserved_today_micros,0);
+ const token='opaque-'.repeat(100);let received;
+ providers.search=async filters=>{received=filters.scroll_token;return {contacts:[],retrieved:0,total:0};};
+ await jobs.enqueue(user,{...base,scroll_token:token});await jobs.tick();assert.equal(received,token);
+}));
 test('invalid provider observation times cannot become verification evidence',()=>fixture(async({app,jobs,providers})=>{
  await app.importCSV(user,{csv:'First Name,Last Name,Email\nJamie,Rivera,jamie@example.com'});const c=(await app.search(user)).contacts[0];
  providers.readiness.domain_check=true;
