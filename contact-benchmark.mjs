@@ -1,5 +1,6 @@
 // Offline, reviewer-supplied outcomes. No provider calls or personal data needed.
 const categories=['provider','subscription','labor','infrastructure','export'];
+export const MAX_COST_PER_USABLE_CONTACT_MICROS=2000000;
 const requireThat=(condition,message)=>{if(!condition)throw Error(message);};
 const opaque=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(value);
 const amount=value=>Number.isSafeInteger(value)&&value>=0;
@@ -66,7 +67,11 @@ export function evaluateContactBenchmark(input,{now=Date.now()}={}){
   const requested=Object.values(counts).reduce((sum,n)=>sum+n,0);
   return {segment,requested,paired_coverage:counts,runs:runs.map((run,i)=>{const usable=counts.both_usable+counts[i===0?'first_only':'second_only'];return {label:run.label,usable_contacts:usable,usable_coverage:usable/requested,usable_coverage_interval:proportionInterval(usable,requested)};})};
  });
- for(const run of runs){run.usable_coverage_interval=proportionInterval(run.usable_contacts,run.requested);run.identity_error_rate_interval=proportionInterval(run.identity_errors,run.identity_reviewed);}
+ for(const run of runs){
+  run.usable_coverage_interval=proportionInterval(run.usable_contacts,run.requested);run.identity_error_rate_interval=proportionInterval(run.identity_errors,run.identity_reviewed);
+  const reason=run.total_cost_micros===null?'missing_costs':run.usable_contacts===0?'no_usable_contacts':null;
+  run.cost_ceiling_assessment={max_cost_per_usable_contact_micros:MAX_COST_PER_USABLE_CONTACT_MICROS,status:reason?'unproven':run.total_cost_micros<=MAX_COST_PER_USABLE_CONTACT_MICROS*run.usable_contacts?'pass':'fail',reason,basis:'Observed all-in cost divided by reviewed usable contacts; not a guarantee of future cost.'};
+ }
  const aCost=a.cost_per_usable_contact_micros,bCost=b.cost_per_usable_contact_micros;
  return {schema_version:1,cohort_id:input.cohort_id,assessment_basis:'Reviewer-supplied evidence; this evaluator does not independently verify claims.',runs:runs.map(({usable,...summary})=>summary),paired_coverage:paired,segment_coverage,observed_comparison:{first_minus_second_coverage:a.usable_coverage-b.usable_coverage,first_cost_reduction_fraction:aCost!==null&&bCost!==null&&bCost>0?1-aCost/bCost:null,first_time_reduction_fraction:a.user_seconds!==null&&b.user_seconds>0?1-a.user_seconds/b.user_seconds:null},superiority_established:false,limitations:['Intervals are approximate binomial ranges assuming independent representative candidates; they do not correct biased selection, unknown reviews or clustering.','Per-run intervals do not test the paired difference or establish cost superiority.','Observed differences are not a statistical superiority finding.','Review source evidence, cohort representativeness, comparison timing and uncertainty before making a competitive claim.','All requested candidates remain in coverage denominators; unknown reviews never count as usable.','Missing costs remain unknown; zero usable contacts have undefined unit cost.']};
 }
