@@ -29,7 +29,8 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
    if(Object.entries(input.filters||{}).some(([key,value])=>value!=null&&String(value).trim()!==''&&!supported.includes(key)))throw fail(422,'Unsupported provider search filter. Use professional filters, email/phone presence, and a separate destination list.');
    const filters=searchFilters(input.filters);if(!['title','company','country','state','city','industry','seniority'].some(k=>filters[k]))throw fail(422,'Set at least one professional search filter.');
    const size=integer(Number(input.size??10),1,100,'search size');
-   payloads=[{filters:{...filters,scroll_token:typeof input.scroll_token==='string'?input.scroll_token.slice(0,5000):'',size},list_id:input.list_id||null,quote:ready(action)?quote(action,size):0}];
+   const scroll_token=input.scroll_token??'';if(typeof scroll_token!=='string'||scroll_token.length>5000)throw fail(422,'Invalid provider pagination token.');
+   payloads=[{filters:{...filters,scroll_token,size},list_id:input.list_id||null,quote:ready(action)?quote(action,size):0}];
   }else{
    if(!Array.isArray(input.ids)||!input.ids.length||input.ids.length>500||input.ids.some(x=>typeof x!=='string'||x.length>100))throw fail(422,'Select 1–500 contacts.');
    payloads=[...new Set(input.ids)].sort().map(contact_id=>({contact_id,quote:ready(action)?quote(action):0}));
