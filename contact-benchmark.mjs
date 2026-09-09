@@ -20,6 +20,11 @@ export function evaluateContactBenchmark(input,{now=Date.now()}={}){
  requireThat(new Set(cohort).size===cohort.length,'Candidate IDs must be unique canonical people.');
  requireThat(Array.isArray(input.runs)&&input.runs.length===2,'Provide exactly two comparable runs.');
  const ids=new Set(cohort),seenLabels=new Set();
+ const segments=input.candidate_segments,segmentCounts=new Map();
+ if(segments!==undefined){
+  requireThat(segments&&typeof segments==='object'&&!Array.isArray(segments)&&Object.keys(segments).length===cohort.length&&Object.keys(segments).every(id=>ids.has(id))&&Object.values(segments).every(opaque),'Segment assignments must cover the cohort exactly using opaque segment IDs.');
+  requireThat(new Set(Object.values(segments)).size<=50,'Use no more than 50 predeclared segments.');
+ }
  const runs=input.runs.map(run=>{
   requireThat(opaque(run?.label)&&!seenLabels.has(run.label),'Run labels must be distinct opaque identifiers.');seenLabels.add(run.label);
   requireThat(Array.isArray(run.outcomes)&&run.outcomes.length===cohort.length,'Every run must include one outcome for every requested candidate.');
@@ -53,8 +58,15 @@ export function evaluateContactBenchmark(input,{now=Date.now()}={}){
   return {label:run.label,requested:cohort.length,returned,missing_results:cohort.length-returned,identity_reviewed:reviewed,identity_errors:identityErrors,unknown_reviews:unknown,suppressed,usable_contacts:usable.size,usable_coverage:rate(usable.size,cohort.length),observed_identity_error_rate:rate(identityErrors,reviewed),costs_micros:Object.fromEntries(categories.map(key=>[key,costs[key]??null])),missing_cost_categories:missing,total_cost_micros:total,cost_per_usable_contact_micros:total===null?null:rate(total,usable.size),user_seconds:run.user_seconds??null,usable};
  });
  const [a,b]=runs,paired={both_usable:0,first_only:0,second_only:0,neither_usable:0};
- for(const id of cohort){const first=a.usable.has(id),second=b.usable.has(id);paired[first?(second?'both_usable':'first_only'):(second?'second_only':'neither_usable')]++;}
+ for(const id of cohort){
+  const first=a.usable.has(id),second=b.usable.has(id),category=first?(second?'both_usable':'first_only'):(second?'second_only':'neither_usable');paired[category]++;
+  if(segments){const segment=segments[id];if(!segmentCounts.has(segment))segmentCounts.set(segment,{both_usable:0,first_only:0,second_only:0,neither_usable:0});segmentCounts.get(segment)[category]++;}
+ }
+ const segment_coverage=[...segmentCounts].map(([segment,counts])=>{
+  const requested=Object.values(counts).reduce((sum,n)=>sum+n,0);
+  return {segment,requested,paired_coverage:counts,runs:runs.map((run,i)=>{const usable=counts.both_usable+counts[i===0?'first_only':'second_only'];return {label:run.label,usable_contacts:usable,usable_coverage:usable/requested,usable_coverage_interval:proportionInterval(usable,requested)};})};
+ });
  for(const run of runs){run.usable_coverage_interval=proportionInterval(run.usable_contacts,run.requested);run.identity_error_rate_interval=proportionInterval(run.identity_errors,run.identity_reviewed);}
  const aCost=a.cost_per_usable_contact_micros,bCost=b.cost_per_usable_contact_micros;
- return {schema_version:1,cohort_id:input.cohort_id,assessment_basis:'Reviewer-supplied evidence; this evaluator does not independently verify claims.',runs:runs.map(({usable,...summary})=>summary),paired_coverage:paired,observed_comparison:{first_minus_second_coverage:a.usable_coverage-b.usable_coverage,first_cost_reduction_fraction:aCost!==null&&bCost!==null&&bCost>0?1-aCost/bCost:null,first_time_reduction_fraction:a.user_seconds!==null&&b.user_seconds>0?1-a.user_seconds/b.user_seconds:null},superiority_established:false,limitations:['Intervals are approximate binomial ranges assuming independent representative candidates; they do not correct biased selection, unknown reviews or clustering.','Per-run intervals do not test the paired difference or establish cost superiority.','Observed differences are not a statistical superiority finding.','Review source evidence, cohort representativeness, comparison timing and uncertainty before making a competitive claim.','All requested candidates remain in coverage denominators; unknown reviews never count as usable.','Missing costs remain unknown; zero usable contacts have undefined unit cost.']};
+ return {schema_version:1,cohort_id:input.cohort_id,assessment_basis:'Reviewer-supplied evidence; this evaluator does not independently verify claims.',runs:runs.map(({usable,...summary})=>summary),paired_coverage:paired,segment_coverage,observed_comparison:{first_minus_second_coverage:a.usable_coverage-b.usable_coverage,first_cost_reduction_fraction:aCost!==null&&bCost!==null&&bCost>0?1-aCost/bCost:null,first_time_reduction_fraction:a.user_seconds!==null&&b.user_seconds>0?1-a.user_seconds/b.user_seconds:null},superiority_established:false,limitations:['Intervals are approximate binomial ranges assuming independent representative candidates; they do not correct biased selection, unknown reviews or clustering.','Per-run intervals do not test the paired difference or establish cost superiority.','Observed differences are not a statistical superiority finding.','Review source evidence, cohort representativeness, comparison timing and uncertainty before making a competitive claim.','All requested candidates remain in coverage denominators; unknown reviews never count as usable.','Missing costs remain unknown; zero usable contacts have undefined unit cost.']};
 }
