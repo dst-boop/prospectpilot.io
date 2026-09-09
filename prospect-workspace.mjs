@@ -1,9 +1,10 @@
 import {randomUUID} from 'node:crypto';
 import {nameKey,hash,csvCell,publicURL} from './lead-quality.mjs';
-import {normalizeContact,parseContactCSV,normalizeCountry,normalizeState,countryAliases,stateAliases,sharedMailbox,contactQuality} from './prospect-data-quality.mjs';
+import {normalizeContact,parseContactCSV,normalizeCountry,normalizeState,countryAliases,stateAliases,sharedMailbox,contactQuality,sourceFreshnessCutoff} from './prospect-data-quality.mjs';
 export {normalizeContact} from './prospect-data-quality.mjs';
 const fail=(status,message)=>Object.assign(Error(message),{status});
 const text=(v,max=200)=>String(v??'').normalize('NFKC').trim().slice(0,max);
+const matchingDomainCheck="(COALESCE(payload->>'email','')<>'' AND payload->'email_domain_check'->>'domain'=split_part(payload->>'email','@',2))";
 export function contactIdentities(c){return [c.linkedin_url&&`linkedin:${c.linkedin_url}`,c.email&&!sharedMailbox(c.email)&&`email:${c.email}`,c.company&&`person:${nameKey(c.first_name)}|${nameKey(c.last_name)}|${nameKey(c.company)}|${nameKey(normalizeCountry(c.country))}|${nameKey(normalizeState(c.state,c.country))}|${nameKey(c.city)}`].filter(Boolean);}
 export function identityLookupKeys(c){return [...new Set([...contactIdentities(c),...(c.company?countryAliases(c.country).flatMap(country=>stateAliases(c.state,c.country).map(state=>`person:${nameKey(c.first_name)}|${nameKey(c.last_name)}|${nameKey(c.company)}|${nameKey(country)}|${nameKey(state)}|${nameKey(c.city)}`)):[])])];}
 const identities=contactIdentities;
@@ -39,8 +40,8 @@ export function createProspectWorkspace({pool,jobs}) {
   if(filters.suppressed)where.push(`COALESCE(c.payload->>'suppressed','false')=${bind(filters.suppressed)}`);
   if(filters.quality_issue==='no_contact_route')where.push("COALESCE(c.payload->>'email','')='' AND COALESCE(c.payload->>'phone','')='' AND COALESCE(c.payload->>'linkedin_url','')=''");
   if(filters.quality_issue==='unknown_source_date')where.push("COALESCE(c.payload->>'source_observed_at','')=''");
-  if(filters.quality_issue==='stale_source')where.push(`COALESCE(c.payload->>'source_observed_at','')<>'' AND c.payload->>'source_observed_at'<${bind(new Date(Date.now()-180*86400000).toISOString().slice(0,10))}`);
-  if(filters.quality_issue==='domain_issue')where.push("c.payload->'email_domain_check'->>'status' IN ('no_domain','null_mx','no_mail_route')");
+  if(filters.quality_issue==='stale_source')where.push(`COALESCE(c.payload->>'source_observed_at','')<>'' AND c.payload->>'source_observed_at'<${bind(sourceFreshnessCutoff())}`);
+  if(filters.quality_issue==='domain_issue')where.push(`${matchingDomainCheck} AND c.payload->'email_domain_check'->>'status' IN ('no_domain','null_mx','no_mail_route')`);
   if(filters.list_id)where.push(`EXISTS(SELECT 1 FROM prospect_list_members m WHERE m.contact_id=c.id AND m.list_id=${bind(filters.list_id)})`);
   const condition=where.join(' AND ');
   const total=Number((await pool.query(`SELECT count(*) AS n FROM prospect_contacts c WHERE ${condition}`,values)).rows[0].n);
@@ -135,13 +136,13 @@ export function createProspectWorkspace({pool,jobs}) {
    count(*) FILTER(WHERE payload->>'email_status'='valid')::int AS verified_emails,
    count(*) FILTER(WHERE payload->>'email_status'='unverified')::int AS unverified_emails,
    count(*) FILTER(WHERE payload->>'email_status'='invalid')::int AS invalid_emails,
-   count(*) FILTER(WHERE payload->'email_domain_check'->>'checked_at' IS NOT NULL)::int AS domain_checks,
-   count(*) FILTER(WHERE payload->'email_domain_check'->>'status' IN ('no_domain','null_mx','no_mail_route'))::int AS domain_issues,
+   count(*) FILTER(WHERE ${matchingDomainCheck} AND payload->'email_domain_check'->>'checked_at' IS NOT NULL)::int AS domain_checks,
+   count(*) FILTER(WHERE ${matchingDomainCheck} AND payload->'email_domain_check'->>'status' IN ('no_domain','null_mx','no_mail_route'))::int AS domain_issues,
    count(*) FILTER(WHERE payload->>'suppressed'='true')::int AS suppressed,
    count(*) FILTER(WHERE COALESCE(payload->>'email','')='' AND COALESCE(payload->>'phone','')='' AND COALESCE(payload->>'linkedin_url','')='')::int AS no_contact_route,
    count(*) FILTER(WHERE COALESCE(payload->>'source_observed_at','')='')::int AS source_date_unknown,
    count(*) FILTER(WHERE COALESCE(payload->>'source_observed_at','')<>'' AND payload->>'source_observed_at'<$2)::int AS source_older_than_180_days
-   FROM prospect_contacts WHERE user_id=$1`,[user.uid,new Date(Date.now()-180*86400000).toISOString().slice(0,10)])).rows[0];
+   FROM prospect_contacts WHERE user_id=$1`,[user.uid,sourceFreshnessCutoff()])).rows[0];
   const sources=(await pool.query(`SELECT source,count(*)::int AS imports,max(created_at) AS last_import,
    COALESCE(sum((result->>'added')::int),0)::int AS added,COALESCE(sum((result->>'duplicates')::int),0)::int AS duplicates,
    COALESCE(sum((result->>'conflicts')::int),0)::int AS conflicts,COALESCE(sum((result->>'rejected')::int),0)::int AS rejected
@@ -151,7 +152,7 @@ export function createProspectWorkspace({pool,jobs}) {
    count(*)::int AS contacts,count(*) FILTER(WHERE COALESCE(payload->>'email','')<>'')::int AS emails,
    count(*) FILTER(WHERE payload->>'email_status'='valid')::int AS valid_emails,
    count(*) FILTER(WHERE payload->>'email_status'='invalid')::int AS invalid_emails,
-   count(*) FILTER(WHERE payload->'email_domain_check'->>'status' IN ('no_domain','null_mx','no_mail_route'))::int AS domain_issues,
+   count(*) FILTER(WHERE ${matchingDomainCheck} AND payload->'email_domain_check'->>'status' IN ('no_domain','null_mx','no_mail_route'))::int AS domain_issues,
    count(*) FILTER(WHERE payload->>'suppressed'='true')::int AS suppressed,
    count(*) FILTER(WHERE COALESCE(payload->>'source_observed_at','')='')::int AS unknown_dates
    FROM prospect_contacts WHERE user_id=$1 GROUP BY 1 ORDER BY count(*) DESC,1 LIMIT 50`,[user.uid])).rows;

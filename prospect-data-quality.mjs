@@ -115,6 +115,10 @@ export function parseContactCSV(input) {
   return {headers, records, mapped_columns: known, ignored_columns: headers.filter(header => !CONTACT_COLUMNS.has(columnKey(header)))};
 }
 
+// Observation dates have no time of day. Use the same whole-date boundary in
+// detail flags, directory filters and aggregate coverage.
+export const sourceFreshnessCutoff = (now = new Date()) => new Date(Number(now) - 180 * 86400000).toISOString().slice(0, 10);
+
 export function contactQuality(contact, now = new Date()) {
   const issues = [];
   if (!contact.email && !contact.phone && !contact.linkedin_url) issues.push({code: 'no_contact_route', message: 'No email, phone or LinkedIn profile.'});
@@ -126,6 +130,6 @@ export function contactQuality(contact, now = new Date()) {
   if (!contact.country) issues.push({code: 'missing_country', message: 'Contact country is missing.'});
   const seen = contact.source_observed_at;
   if (!seen) issues.push({code: 'source_date_unknown', message: 'Source observation date is unknown; importing today does not establish freshness.'});
-  if (seen && Number.isFinite(Date.parse(seen)) && now - new Date(seen) > 180 * 86400000) issues.push({code: 'stale_source', message: 'Source observation is over 180 days old.'});
+  if (seen && Number.isFinite(Date.parse(seen)) && seen < sourceFreshnessCutoff(now)) issues.push({code: 'stale_source', message: 'Source observation is over 180 days old.'});
   return {issues, suppressed: contact.suppressed === true, contact_routes: ['email', 'phone', 'linkedin_url'].filter(key => !!contact[key]).length};
 }

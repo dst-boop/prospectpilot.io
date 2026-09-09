@@ -39,6 +39,32 @@ test('shared mailboxes are never individual identity keys and quality flags do n
  assert.ok(contactQuality({...raw,source_observed_at:'2020-01-01'}).issues.some(issue=>issue.code==='stale_source'));
 });
 
+test('source freshness uses whole UTC dates at the 180-day boundary',()=>{
+ const day=86400000,now=new Date('2026-09-09T23:59:59.999Z');
+ for(const [days,expected] of [[179,false],[180,false],[181,true]]){
+  const observed=new Date(now.getTime()-days*day).toISOString().slice(0,10);
+  assert.equal(contactQuality({...raw,source_observed_at:observed},now).issues.some(issue=>issue.code==='stale_source'),expected);
+ }
+});
+
+test('review filters, detail flags and summary counts agree on dates and matching email domains',()=>fixture(async(app,db)=>{
+ const day=86400000,today=Date.now();
+ for(const [id,age,domain] of [['boundary',180,'old.example.com'],['stale',181,'example.com']]){
+  const payload={...raw,email:`${id}@example.com`,email_status:'unverified',source:'Review fixture',source_observed_at:new Date(today-age*day).toISOString().slice(0,10),email_domain_check:{domain,status:'null_mx',checked_at:new Date(today).toISOString()}};
+  await db.query('INSERT INTO prospect_contacts(id,user_id,payload,identity_keys) VALUES($1,$2,$3::jsonb,$4::jsonb)',[id,user.uid,JSON.stringify(payload),'[]']);
+ }
+ const records=(await app.search(user)).contacts;
+ for(const [filter,issue,countKey] of [['stale_source','stale_source','source_older_than_180_days'],['domain_issue','domain_mail_issue','domain_issues']]){
+  const flagged=records.filter(row=>row.quality.issues.some(item=>item.code===issue)).map(row=>row.id).sort();
+  const filtered=(await app.search(user,{quality_issue:filter})).contacts.map(row=>row.id).sort();
+  assert.deepEqual(flagged,['stale']);assert.deepEqual(filtered,flagged);
+  assert.equal((await app.qualitySummary(user)).summary[countKey],flagged.length);
+  assert.equal((await app.search(other,{quality_issue:filter})).total,0);
+ }
+ assert.equal((await app.qualitySummary(user)).coverage[0].domain_issues,1);
+ assert.equal((await app.qualitySummary(user)).summary.domain_checks,1);
+}));
+
 test('preview simulates duplicates and rejects rows without writing contacts, imports or memberships',()=>fixture(async(app,db)=>{
  const list=await app.createList(user,{name:'Preview'});
  const input={csv:basic+'\nAvery,Example,Sample Co,avery@example.com,US,NY\nMorgan,Sample,Sample Co,invalid,US,NY',list_id:list.id};
