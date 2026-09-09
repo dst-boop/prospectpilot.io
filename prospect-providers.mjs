@@ -1,5 +1,5 @@
-import {emailAddress,phoneNumber,linkedinURL,nameKey} from './lead-quality.mjs';
-import {normalizeContact,stateName,contactEmail} from './prospect-data-quality.mjs';
+import {emailAddress,linkedinURL,nameKey} from './lead-quality.mjs';
+import {normalizeContact,stateName,contactEmail,contactPhone} from './prospect-data-quality.mjs';
 import {createDomainChecker,isNonPublicMailDomain} from './prospect-domain-check.mjs';
 const fail=(status,message)=>Object.assign(Error(message),{status});
 const fields='id,first_name,last_name,job_title,job_company_name,job_company_website,job_company_industry,job_title_levels,location_country,location_region,location_locality,linkedin_url,work_email,phone_numbers';
@@ -8,7 +8,7 @@ const clean=v=>typeof v==='string'?v:'';
 const scrollToken=v=>{if(v==null||v==='')return '';if(typeof v!=='string'||v.length>5000)throw fail(422,'Invalid provider pagination token.');return v;};
 export function professionalRecord(raw){
  if(!raw||typeof raw!=='object'||!raw.first_name||!raw.last_name)throw fail(502,'Provider returned an incomplete identity.');
- const contact=normalizeContact({first_name:clean(raw.first_name),last_name:clean(raw.last_name),title:clean(raw.job_title),company:clean(raw.job_company_name),company_domain:clean(raw.job_company_website),industry:clean(raw.job_company_industry),seniority:Array.isArray(raw.job_title_levels)?raw.job_title_levels.map(clean).join(', '):'',country:clean(raw.location_country),state:clean(raw.location_region),city:clean(raw.location_locality),linkedin_url:clean(raw.linkedin_url),email:clean(raw.work_email),phone:(Array.isArray(raw.phone_numbers)?raw.phone_numbers:[]).filter(v=>typeof v==='string'&&!/[^0-9()+.\s-]/.test(v)).map(phoneNumber).find(Boolean)||''},'People Data Labs');
+ const contact=normalizeContact({first_name:clean(raw.first_name),last_name:clean(raw.last_name),title:clean(raw.job_title),company:clean(raw.job_company_name),company_domain:clean(raw.job_company_website),industry:clean(raw.job_company_industry),seniority:Array.isArray(raw.job_title_levels)?raw.job_title_levels.map(clean).join(', '):'',country:clean(raw.location_country),state:clean(raw.location_region),city:clean(raw.location_locality),linkedin_url:clean(raw.linkedin_url),email:clean(raw.work_email),phone:(Array.isArray(raw.phone_numbers)?raw.phone_numbers:[]).filter(v=>typeof v==='string'&&!/[^0-9()+.\s-]/.test(v)).map(value=>contactPhone(value,clean(raw.location_country))).find(Boolean)||''},'People Data Labs');
  return {...contact,provider_id:clean(raw.id).slice(0,250),source_kind:'provider'};
 }
 // Retain only professional fields. Financial, household, birth and demographic

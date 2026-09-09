@@ -45,6 +45,11 @@ export function contactEmail(value){
  const email=emailAddress(value);
  return email&&Buffer.byteLength(email.split('@')[0])<=64&&Buffer.byteLength(email)<=254&&hostname(email.split('@')[1])&&!/^\.|\.\.|\.@/.test(email)?email:'';
 }
+export function contactPhone(value,country){
+ const raw=String(value??'').normalize('NFKC').trim(),location=normalizeCountry(country);
+ if(/[^0-9()+.\s-]/.test(raw)||location&&location!=='US'&&!raw.startsWith('+1'))return '';
+ return phoneNumber(raw);
+}
 export function normalizeContact(raw, source) {
   const mapped = {};
   for (const [key, value] of Object.entries(raw)) {
@@ -57,8 +62,8 @@ export function normalizeContact(raw, source) {
   const rawEmail = cleanField(mapped.email, 'email');
   if (rawEmail && !contact.email) throw fail('Invalid email address.');
   const rawPhone = contact.phone;
-  contact.phone = phoneNumber(rawPhone);
-  if (rawPhone && (!contact.phone || /[^0-9()+.\s-]/.test(rawPhone))) throw fail('Use a valid US phone number without an extension.');
+  contact.phone = contactPhone(rawPhone,contact.country);
+  if (rawPhone && !contact.phone) throw fail('Use a supported +1 phone number without an extension. For contacts outside the US, include +1 explicitly.');
   const rawLinkedIn = contact.linkedin_url;
   contact.linkedin_url = linkedinURL(rawLinkedIn && !/^https?:/i.test(rawLinkedIn) ? 'https://' + rawLinkedIn : rawLinkedIn);
   if (rawLinkedIn && !contact.linkedin_url) throw fail('Use a LinkedIn person profile URL.');
