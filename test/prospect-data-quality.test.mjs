@@ -8,6 +8,11 @@ const user={uid:'quality-owner'},other={uid:'other'};
 const basic='First Name,Last Name,Company,Email,Country,State\nAvery,Example,Sample Co,avery@example.com,United States,New York';
 async function fixture(fn){const db=new PGlite();try{await db.exec(readFileSync(new URL('../migrations/008-prospect-workspace.sql',import.meta.url),'utf8'));const app=createProspectWorkspace({pool:{query:(...args)=>db.query(...args),connect:async()=>({query:(...args)=>db.query(...args),release(){}})}});await fn(app,db);}finally{await db.close();}}
 const raw={first_name:'Avery',last_name:'Example',company:'Sample Co'};
+test('international contact locations do not silently turn local phone numbers into +1 numbers',()=>{
+ assert.throws(()=>normalizeContact({...raw,country:'India',phone:'9876543210'}),/phone/i);
+ assert.equal(normalizeContact({...raw,country:'India',phone:'+12125551234'}).phone,'+12125551234');
+ assert.equal(normalizeContact({...raw,country:'US',phone:'2125551234'}).phone,'+12125551234');
+});
 
 test('shared-mailbox review filtering and summary agree with identity flags and isolate owners',()=>fixture(async(app)=>{
  const emails=['team@example.com','support+us@example.com','SALES.eu@example.com','salesperson@example.com','avery@example.com'];

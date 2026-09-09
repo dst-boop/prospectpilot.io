@@ -24,6 +24,8 @@ Verification and email-only enrichment skip non-public `.invalid`, `.test`, `.lo
 
 ## Interpreting the reports
 
+Phone normalization currently supports +1 numbers, not global dialing plans. When a contact country is outside the US, imports require an explicit +1 prefix instead of assuming that an unprefixed local number belongs to the supported plan. Provider projections omit ambiguous local numbers and can retain a later explicit supported number. Formatting never establishes reachability or ownership; existing stored numbers are not rewritten by this safeguard.
+
 Email and domain results need canonical UTC observation timestamps no later than processing time. Missing, malformed or future timestamps cannot become verification evidence; processing fails for review while prior contact evidence is preserved and any reserved cost remains recorded.
 
 Paid API searches use professional provider filters, including email/phone presence or absence. The dialog lists active directory-only filters that will not constrain new provider results, such as source, suppression, review flags and verification status. The job API rejects those filters instead of silently ignoring them. A destination list organizes results; it does not limit the provider search to existing members.

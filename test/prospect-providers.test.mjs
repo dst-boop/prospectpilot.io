@@ -2,6 +2,11 @@ import test from 'node:test';import assert from 'node:assert/strict';
 import {createProspectProviders,professionalRecord} from '../prospect-providers.mjs';
 const raw={id:'provider-id',first_name:'Jamie',last_name:'Rivera',job_company_name:'Example',work_email:'jamie@example.com',linkedin_url:'linkedin.com/in/jamie-example',phone_numbers:['+12125551234'],birth_date:'private',estimated_net_worth:1000000};
 const contact={...professionalRecord(raw),suppressed:false};
+test('provider phone projection omits ambiguous international local numbers and retains explicit supported numbers',()=>{
+ const international={...raw,location_country:'India',phone_numbers:['9876543210']};
+ assert.equal(professionalRecord(international).phone,'');
+ assert.equal(professionalRecord({...international,phone_numbers:['9876543210','+12125551234']}).phone,'+12125551234');
+});
 
 test('direct paid adapters reject malformed legacy email inputs without a network request',async()=>{
  let calls=0;const p=createProspectProviders({pdlKey:'key',hunterKey:'key',fetcher:async()=>{calls++;return Response.json({likelihood:9,data:raw});}});
