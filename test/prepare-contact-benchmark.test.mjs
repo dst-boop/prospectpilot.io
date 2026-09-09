@@ -7,6 +7,26 @@ import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {evaluateContactBenchmark} from '../contact-benchmark.mjs';
 
+test('explicit CLI cost gate fails closed for excess or unknown costs and validates the selected run',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'contact-cost-gate-'));
+ try{
+  const path=join(directory,'trial.json'),script=fileURLToPath(new URL('../scripts/evaluate-contact-benchmark.mjs',import.meta.url));
+  const outcome={candidate_id:'a',returned:true,review:{identity:'match',route:'usable',in_segment:true,suppressed:false,evidence_ref:'fixture',reviewed_at:'2020-01-01T00:00:00.000Z'}};
+  const costs={provider:2000000,subscription:0,labor:0,infrastructure:0,export:0};
+  const input={schema_version:1,cohort_id:'fixture',candidate_ids:['a'],runs:[{label:'prospectpilot',outcomes:[outcome],costs_micros:costs},{label:'comparison',outcomes:[outcome],costs_micros:{...costs,provider:3000000}}]};
+  const invoke=(...args)=>execFileSync(process.execPath,[script,path,...args],{encoding:'utf8',stdio:'pipe'});
+  await writeFile(path,JSON.stringify(input));
+  assert.equal(JSON.parse(invoke('--require-cost-ceiling','prospectpilot')).runs[0].cost_ceiling_assessment.status,'pass');
+  assert.throws(()=>invoke('--require-cost-ceiling','missing'),error=>error.status===1&&error.stdout.length===0);
+  assert.throws(()=>invoke('--require-cost-ceiling'),error=>error.status===1&&error.stdout.length===0);
+  for(const price of [2000001,null]){
+   costs.provider=price;await writeFile(path,JSON.stringify(input));
+   assert.throws(()=>invoke('--require-cost-ceiling','prospectpilot'),error=>error.status===2&&JSON.parse(error.stdout).runs[0].cost_ceiling_assessment.status===(price===null?'unproven':'fail'));
+   assert.ok(JSON.parse(invoke()).runs.length===2);
+  }
+ }finally{await rm(directory,{recursive:true,force:true});}
+});
+
 test('benchmark CLI rejects oversized files and omits malformed file content from errors',async()=>{
  const directory=await mkdtemp(join(tmpdir(),'contact-benchmark-input-'));
  try{
