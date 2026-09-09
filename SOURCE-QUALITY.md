@@ -24,6 +24,8 @@ Verification and email-only enrichment skip non-public `.invalid`, `.test`, `.lo
 
 ## Interpreting the reports
 
+The job worker and paid provider adapters use the same email syntax validation as contact imports. Malformed addresses already present in stored contacts are skipped before a new email-based paid request or cost reservation; existing contact data is preserved for review. Profile-based enrichment can still use a valid LinkedIn identifier.
+
 Contact normalization rejects email local parts above 64 UTF-8 bytes, complete addresses above 254 bytes and hostname labels above 63 ASCII characters. The same hostname label limit applies to company websites. These length checks follow [SMTP size limits](https://www.rfc-editor.org/rfc/rfc5321#section-4.5.3.1) and [DNS label limits](https://www.rfc-editor.org/rfc/rfc1035#section-2.3.4); passing them is syntax validation, not mailbox verification. Existing stored records are not rewritten by this import safeguard.
 
 - **Source import results:** counts of new, matched, conflicting and rejected rows. Matches are repeat records, not new leads. Exact repeat uploads do not inflate counts.

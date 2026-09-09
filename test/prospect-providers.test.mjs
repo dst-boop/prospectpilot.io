@@ -3,6 +3,15 @@ import {createProspectProviders,professionalRecord} from '../prospect-providers.
 const raw={id:'provider-id',first_name:'Jamie',last_name:'Rivera',job_company_name:'Example',work_email:'jamie@example.com',linkedin_url:'linkedin.com/in/jamie-example',phone_numbers:['+12125551234'],birth_date:'private',estimated_net_worth:1000000};
 const contact={...professionalRecord(raw),suppressed:false};
 
+test('direct paid adapters reject malformed legacy email inputs without a network request',async()=>{
+ let calls=0;const p=createProspectProviders({pdlKey:'key',hunterKey:'key',fetcher:async()=>{calls++;return Response.json({likelihood:9,data:raw});}});
+ for(const email of ['a'.repeat(65)+'@example.com','a@'+'b'.repeat(64)+'.com','.bad@example.com','a..b@example.com','a@-example.com']){
+  const c={...contact,email,linkedin_url:''};await assert.rejects(p.verifyEmail(c),{status:422});await assert.rejects(p.enrich(c),{status:422});
+ }
+ assert.equal(calls,0);
+ const result=await p.enrich({...contact,email:'a'.repeat(65)+'@example.com'});assert.equal(result.contact.linkedin_url,contact.linkedin_url);assert.equal(calls,1);
+});
+
 test('direct adapters do not send non-public email domains to paid providers',async()=>{
  let calls=0;const p=createProspectProviders({pdlKey:'key',hunterKey:'key',fetcher:async()=>{calls++;return Response.json({likelihood:9,data:raw});}});
  for(const domain of ['example.invalid','team.test','server.localhost','company.internal','service.local']){
