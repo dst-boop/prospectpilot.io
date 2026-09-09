@@ -30,14 +30,14 @@ A usable contact must match the requested person's professional identity, match 
 
 Measure distinct usable contacts divided by all requested candidates; confirmed identity errors divided by reviewed outputs; total attributable cost divided by distinct usable contacts; and elapsed user time to create the same usable list. Record confidence intervals and segment-level results. Count unknowns and duplicates separately. If no usable contacts are established, cost per usable contact is undefined, not zero.
 
-Working targets: no higher observed identity-error rate and no lower usable-contact coverage than the comparison, with either at least 20% lower total cost per usable contact or at least 25% less user time. A claim needs adequate evidence for the difference, not only a favorable point estimate. These are proposed product targets pending user priorities, not facts about either system.
+Working targets: no higher observed identity-error rate and no lower usable-contact coverage than the comparison, with at least 20% lower total cost per usable contact. At least 25% less user time is a secondary workflow target. The user explicitly prioritized data quality and cost per usable contact; the numeric thresholds remain proposed product targets, not facts about either system. A claim needs adequate evidence for the difference, not only a favorable point estimate.
 
 Workflow acceptance also requires suppression-aware exports, tenant isolation, no unapproved paid requests, visible provider failures and no inflated verification statuses. Missing core workflows must be disclosed even if one metric wins.
 
 ## Execution queue
 
-1. CI passed for commit `ad0df9438bc2dff3350c7719ff32bc10c7431e4c`; deployment needs Google reauthentication, then custom-domain verification.
-2. Reconcile local checkout with the published commit without discarding local documentation.
+1. CI passed through commit `b784ce7ef62f76e20d9a37079df2e6fb95c840c4`, including the export evidence, comparison evaluator and non-public-domain cost guard. Deployment needs Google reauthentication, then custom-domain verification.
+2. The local checkout is reconciled with published history and has an origin remote; local handoff documentation is preserved.
 3. This branch's CSV exports include source dates, historical verification context and review flags; local tests pass, live verification pending.
 4. The local comparison evaluator is implemented with four passing regression tests; it accepts measured outcomes and actual costs, refuses unsupported winners and needs no personal data in the repository. A real comparison remains pending licensed inputs and reviewed evidence.
 5. Validate permitted real provider data when credentials and source samples are available; do not buy access or contact third parties without authorization.

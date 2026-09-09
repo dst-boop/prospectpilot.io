@@ -18,6 +18,8 @@ Provider search applies the same namesake safeguard before attributing source hi
 
 CSV exports retain the original contact columns, followed by the contact ID, source observation date, last-seen time, last email/domain check evidence and data-review issue codes. Columns prefixed `last_` describe historical checks, including the exact checked address or domain. They do not confer current verification on a changed address. Unknown dates stay blank, expired valid statuses become unverified, and suppressed contacts are omitted.
 
+A delayed valid verifier response cannot restore a valid badge over a newer, recent definitive domain failure for the same address domain. Both checks remain available as evidence, and the job result explains why the email remains unverified.
+
 Verification and email-only enrichment skip non-public `.invalid`, `.test`, `.localhost`, `.local` and `.internal` domains before a new paid request or cost reservation. Domain checks also skip network queries for these domains. A valid LinkedIn profile can still be used for profile-based enrichment. This safeguard avoids needless requests; it does not measure provider accuracy or actual subscription savings.
 
 ## Interpreting the reports
