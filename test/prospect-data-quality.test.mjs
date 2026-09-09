@@ -65,6 +65,18 @@ test('review filters, detail flags and summary counts agree on dates and matchin
  assert.equal((await app.qualitySummary(user)).summary.domain_checks,1);
 }));
 
+test('CSV exports preserve source dates and historical check evidence without fresh verification claims',()=>fixture(async(app,db)=>{
+ await app.importCSV(user,{csv:basic,source:'=Untrusted source label',source_observed_at:'2020-01-01'});
+ const contact=(await app.search(user)).contacts[0],checked=new Date(Date.now()-31*86400000).toISOString();
+ await db.query('UPDATE prospect_contacts SET payload=payload||$1::jsonb WHERE id=$2',[JSON.stringify({email_status:'valid',email_verification:{email:contact.email,checked_at:checked,provider:'hunter'},email_domain_check:{domain:'former.example.com',status:'null_mx',checked_at:checked}}),contact.id]);
+ const parsed=parseContactCSV(await (await app.exportCSV(user,{ids:[contact.id]})).text());
+ const row=Object.fromEntries(parsed.headers.map((key,i)=>[key,parsed.records[0].cells[i]]));
+ assert.equal(row.email_status,'unverified');assert.equal(row.contact_id,contact.id);assert.equal(row.source_observed_at,'2020-01-01');
+ assert.equal(row.last_email_checked_at,checked);assert.equal(row.last_email_checked_address,contact.email);assert.equal(row.last_email_verifier,'hunter');
+ assert.equal(row.last_domain_checked,'former.example.com');assert.equal(row.last_domain_status,'null_mx');assert.match(row.data_review_issues,/stale_source/);assert.doesNotMatch(row.data_review_issues,/domain_mail_issue/);
+ assert.ok(row.source.startsWith("'="));
+}));
+
 test('preview simulates duplicates and rejects rows without writing contacts, imports or memberships',()=>fixture(async(app,db)=>{
  const list=await app.createList(user,{name:'Preview'});
  const input={csv:basic+'\nAvery,Example,Sample Co,avery@example.com,US,NY\nMorgan,Sample,Sample Co,invalid,US,NY',list_id:list.id};

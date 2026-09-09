@@ -129,7 +129,20 @@ export function createProspectWorkspace({pool,jobs}) {
    if(!preview)await c.query('INSERT INTO prospect_imports(id,user_id,fingerprint,source,result) VALUES($1,$2,$3,$4,$5::jsonb)',[result.id,user.uid,fingerprint,source,JSON.stringify(result)]);return result;
   });
  }
- async function exportCSV(user,input){await expireVerification(user);const selected=ids(input.ids),rows=(await pool.query('SELECT id,payload FROM prospect_contacts WHERE user_id=$1 AND id=ANY($2::text[]) ORDER BY id',[user.uid,selected])).rows;if(rows.length!==selected.length)throw fail(404,'One or more contacts are unavailable.');const fields=['first_name','last_name','title','company','company_domain','industry','seniority','city','state','country','email','email_status','phone','phone_status','linkedin_url','source'];const included=rows.filter(r=>r.payload.suppressed!==true);return new Response('\uFEFF'+[fields,...included.map(r=>fields.map(k=>r.payload[k]))].map(row=>row.map(csvCell).join(',')).join('\r\n'),{headers:{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="prospectpilot-contacts.csv"','Cache-Control':'private, no-store','X-Excluded-Suppressed':String(rows.length-included.length)}});}
+ async function exportCSV(user,input){
+  await expireVerification(user);
+  const selected=ids(input.ids),rows=(await pool.query('SELECT id,payload FROM prospect_contacts WHERE user_id=$1 AND id=ANY($2::text[]) ORDER BY id',[user.uid,selected])).rows;
+  if(rows.length!==selected.length)throw fail(404,'One or more contacts are unavailable.');
+  // Keep the original contact columns first for existing CSV consumers. Last
+  // check columns are explicitly historical and never refresh verification.
+  const fields=['first_name','last_name','title','company','company_domain','industry','seniority','city','state','country','email','email_status','phone','phone_status','linkedin_url','source','contact_id','source_observed_at','last_seen_at','last_email_checked_at','last_email_checked_address','last_email_verifier','last_domain_checked_at','last_domain_checked','last_domain_status','data_review_issues'];
+  const included=rows.filter(r=>r.payload.suppressed!==true),now=new Date();
+  const values=included.map(({id,payload:c})=>{
+   const record={...c,contact_id:id,last_email_checked_at:c.email_verification?.checked_at,last_email_checked_address:c.email_verification?.email,last_email_verifier:c.email_verification?.provider,last_domain_checked_at:c.email_domain_check?.checked_at,last_domain_checked:c.email_domain_check?.domain,last_domain_status:c.email_domain_check?.status,data_review_issues:contactQuality(c,now).issues.map(issue=>issue.code).join(';')};
+   return fields.map(key=>record[key]);
+  });
+  return new Response('\uFEFF'+[fields,...values].map(row=>row.map(csvCell).join(',')).join('\r\n'),{headers:{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="prospectpilot-contacts.csv"','Cache-Control':'private, no-store','X-Excluded-Suppressed':String(rows.length-included.length)}});
+ }
  async function qualitySummary(user){
   await expireVerification(user);
   const summary=(await pool.query(`SELECT count(*)::int AS contacts,
