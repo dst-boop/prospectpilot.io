@@ -1,10 +1,11 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';import {PGlite} from '@electric-sql/pglite';
 import {createProspectJobs} from '../prospect-jobs.mjs';import {createProspectWorkspace} from '../prospect-workspace.mjs';
 const user={uid:'owner'},other={uid:'stranger'};
-test('paid searches reject directory-only filters before creating jobs or reservations',()=>fixture(async({jobs,calls})=>{
- for(const filters of [{source:'ZoomInfo'},{quality_issue:'shared_mailbox'},{suppressed:'false'},{email_status:'valid'},{q:'Jamie'},{list_id:'a-list'}]){
+test('paid searches reject unsupported or malformed filters before creating jobs or reservations',()=>fixture(async({jobs,calls})=>{
+ for(const filters of [{source:'ZoomInfo'},{quality_issue:'shared_mailbox'},{suppressed:'false'},{email_status:'valid'},{q:'Jamie'},{list_id:'a-list'},{job_titel:'Director'},{first_name:'Jamie'}]){
   await assert.rejects(jobs.enqueue(user,{action:'search',filters:{company:'Example',...filters},size:1,max_cost_micros:1000,idempotency_key:'unsupported-filter'}),{status:422});
  }
+ for(const filters of [null,[],true,'company=Example'])await assert.rejects(jobs.enqueue(user,{action:'search',filters,size:1,max_cost_micros:1000,idempotency_key:'malformed-filter'}),{status:422});
  assert.equal((await jobs.jobs(user)).jobs.length,0);assert.equal((await jobs.summary(user)).reserved_today_micros,0);assert.equal(calls(),0);
 }));
 const record={first_name:'Jamie',last_name:'Rivera',company:'Example',title:'Director',email:'jamie@example.com',linkedin_url:'https://www.linkedin.com/in/jamie-rivera',phone:'+12125551234',provider_id:'p1'};
