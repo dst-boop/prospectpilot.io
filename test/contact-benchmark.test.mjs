@@ -4,6 +4,17 @@ import {evaluateContactBenchmark} from '../contact-benchmark.mjs';
 const now=Date.parse('2026-09-09T13:00:00.000Z');
 const review={identity:'match',route:'usable',in_segment:true,suppressed:false,evidence_ref:'review-fixture',reviewed_at:'2026-09-09T12:00:00.000Z'};
 const costs={provider:1000000,subscription:0,labor:0,infrastructure:0,export:0};
+test('benchmark intervals retain uncertainty at zero and full coverage and omit unreviewed identity rates',()=>{
+ for(const [successes,lower,upper] of [[0,0,0.2775327998628892],[5,0.236593090512564,0.763406909487436],[10,0.7224672001371107,1]]){
+  const input=fixture();input.candidate_ids=Array.from({length:10},(_,i)=>'id_'+i);
+  for(const run of input.runs)run.outcomes=input.candidate_ids.map((candidate_id,i)=>({candidate_id,returned:i<successes,...i<successes?{review:{...review}}:{}}));
+  const result=evaluateContactBenchmark(input,{now}),interval=result.runs[0].usable_coverage_interval;
+  assert.equal(interval.method,'wilson_score');assert.equal(interval.confidence_level,0.95);assert.ok(Math.abs(interval.lower-lower)<1e-12);assert.ok(Math.abs(interval.upper-upper)<1e-12);
+  if(successes===0)assert.equal(result.runs[0].identity_error_rate_interval,null);
+  else assert.ok(result.runs[0].identity_error_rate_interval.upper>0);
+  assert.equal(result.superiority_established,false);
+ }
+});
 const fixture=()=>({schema_version:1,cohort_id:'fictional',candidate_ids:['a','b','c'],runs:[{label:'first',outcomes:[{candidate_id:'a',returned:true,review:{...review}},{candidate_id:'b',returned:true},{candidate_id:'c',returned:false}],costs_micros:{...costs},user_seconds:60},{label:'second',outcomes:[{candidate_id:'a',returned:false},{candidate_id:'b',returned:true,review:{...review}},{candidate_id:'c',returned:true,review:{...review}}],costs_micros:{...costs,provider:4000000},user_seconds:120}]});
 
 test('paired benchmark uses every requested candidate and actual all-in costs without declaring a winner',()=>{

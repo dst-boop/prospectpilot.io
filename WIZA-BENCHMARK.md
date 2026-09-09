@@ -59,6 +59,12 @@ Each run's `costs_micros` has `provider`, `subscription`, `labor`, `infrastructu
 
 The output preserves all candidates in denominators, reports unknown reviews, and includes paired usable-contact counts and observed cost/time differences. It always leaves `superiority_established` false: representative sampling, independent evidence review and statistical uncertainty still need assessment. The four regression tests use fictional outcomes solely to verify evaluator behavior.
 
+## Interpreting uncertainty
+
+Each run includes approximate two-sided 95% Wilson score intervals for confirmed usable-contact coverage and the identity-error rate among identity-reviewed outputs. The calculation follows the [NIST proportion confidence-interval formula](https://www.itl.nist.gov/div898/handbook/prc/section2/prc241.htm). Zero observed errors still have a positive upper bound; no reviewed identities produces a null identity-error interval.
+
+These intervals assume independent representative candidates. They do not repair selection bias, correlated contacts within companies, missing reviews or inconsistent evidence standards. Coverage describes confirmed usable outcomes under the review rules, not unknowable true usability of unreviewed records. Separate run intervals do not test the paired difference; interval overlap or non-overlap must not be used as the evaluator's winner rule. Cost uncertainty and a defensible paired superiority analysis remain outstanding, and `superiority_established` stays false.
+
 ## Continuing work
 
 The existing task automation is active every 10 minutes with the old cutoff removed. Keep working on independent authorized engineering when one external dependency is missing. Record every batch's tests, publication/deployment state and remaining gaps. Do not mark the objective achieved because of a checklist or fictional demo results.

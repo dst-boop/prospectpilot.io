@@ -4,6 +4,13 @@ const requireThat=(condition,message)=>{if(!condition)throw Error(message);};
 const opaque=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(value);
 const amount=value=>Number.isSafeInteger(value)&&value>=0;
 const rate=(n,d)=>d?n/d:null;
+// Two-sided Wilson score interval; see the NIST reference in WIZA-BENCHMARK.md.
+function proportionInterval(successes,total){
+ if(!total)return null;
+ const z=1.959963984540054,z2=z*z,p=successes/total,denominator=1+z2/total;
+ const center=(p+z2/(2*total))/denominator,margin=z*Math.sqrt(p*(1-p)/total+z2/(4*total*total))/denominator;
+ return {method:'wilson_score',confidence_level:0.95,lower:successes===0?0:Math.max(0,center-margin),upper:successes===total?1:Math.min(1,center+margin)};
+}
 
 export function evaluateContactBenchmark(input,{now=Date.now()}={}){
  requireThat(input?.schema_version===1,'Use benchmark schema_version 1.');
@@ -47,6 +54,7 @@ export function evaluateContactBenchmark(input,{now=Date.now()}={}){
  });
  const [a,b]=runs,paired={both_usable:0,first_only:0,second_only:0,neither_usable:0};
  for(const id of cohort){const first=a.usable.has(id),second=b.usable.has(id);paired[first?(second?'both_usable':'first_only'):(second?'second_only':'neither_usable')]++;}
+ for(const run of runs){run.usable_coverage_interval=proportionInterval(run.usable_contacts,run.requested);run.identity_error_rate_interval=proportionInterval(run.identity_errors,run.identity_reviewed);}
  const aCost=a.cost_per_usable_contact_micros,bCost=b.cost_per_usable_contact_micros;
- return {schema_version:1,cohort_id:input.cohort_id,assessment_basis:'Reviewer-supplied evidence; this evaluator does not independently verify claims.',runs:runs.map(({usable,...summary})=>summary),paired_coverage:paired,observed_comparison:{first_minus_second_coverage:a.usable_coverage-b.usable_coverage,first_cost_reduction_fraction:aCost!==null&&bCost!==null&&bCost>0?1-aCost/bCost:null,first_time_reduction_fraction:a.user_seconds!==null&&b.user_seconds>0?1-a.user_seconds/b.user_seconds:null},superiority_established:false,limitations:['Observed differences are not a statistical superiority finding.','Review source evidence, cohort representativeness, comparison timing and uncertainty before making a competitive claim.','All requested candidates remain in coverage denominators; unknown reviews never count as usable.','Missing costs remain unknown; zero usable contacts have undefined unit cost.']};
+ return {schema_version:1,cohort_id:input.cohort_id,assessment_basis:'Reviewer-supplied evidence; this evaluator does not independently verify claims.',runs:runs.map(({usable,...summary})=>summary),paired_coverage:paired,observed_comparison:{first_minus_second_coverage:a.usable_coverage-b.usable_coverage,first_cost_reduction_fraction:aCost!==null&&bCost!==null&&bCost>0?1-aCost/bCost:null,first_time_reduction_fraction:a.user_seconds!==null&&b.user_seconds>0?1-a.user_seconds/b.user_seconds:null},superiority_established:false,limitations:['Intervals are approximate binomial ranges assuming independent representative candidates; they do not correct biased selection, unknown reviews or clustering.','Per-run intervals do not test the paired difference or establish cost superiority.','Observed differences are not a statistical superiority finding.','Review source evidence, cohort representativeness, comparison timing and uncertainty before making a competitive claim.','All requested candidates remain in coverage denominators; unknown reviews never count as usable.','Missing costs remain unknown; zero usable contacts have undefined unit cost.']};
 }
