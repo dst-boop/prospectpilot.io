@@ -14,6 +14,8 @@ Status columns such as `Verified` are ignored. CSV text never creates a valid em
 
 Shared mailboxes are not individual identity keys. A name/company match alone cannot attach a new email, phone or LinkedIn identifier. Conflicting identifiers stay separate for review. Matching records retain existing values, current verification and suppression; missing fields can be added when identity checks permit it.
 
+Provider search applies the same namesake safeguard before attributing source history or adding an existing contact to the requested list. A new identifier without a matching individual email or LinkedIn profile is counted as an identity conflict, not a duplicate.
+
 ## Interpreting the reports
 
 - **Source import results:** counts of new, matched, conflicting and rejected rows. Matches are repeat records, not new leads. Exact repeat uploads do not inflate counts.
@@ -23,7 +25,7 @@ Shared mailboxes are not individual identity keys. A name/company match alone ca
 - **Field sources:** the origin of initially supplied or subsequently filled fields is stored separately. Provider retrieval time is not treated as the provider's underlying observation date.
 - **Valid email check:** current verifier output for that exact address, no more than 30 days old. Catch-all and unknown remain distinct. Repeating a current valid check skips the request and its reservation.
 
-Example/test domains and shared mailboxes are review flags. Source dates older than 180 days are flagged for review. These thresholds are workflow rules, not measured probabilities of correctness.
+Example/test domains and shared mailboxes are review flags. Source dates older than 180 whole UTC calendar days are flagged for review consistently in details, filters and summaries. A date exactly 180 days ago is not yet flagged. Domain-check counts and mail-route issue filters refer to the contact's current email domain; historical results for a different domain are not counted. These thresholds are workflow rules, not measured probabilities of correctness.
 
 ## Selecting sources
 

@@ -28,6 +28,22 @@ test('provider rejection counts and enrichment field sources remain visible',()=
  await jobs.enqueue(user,{action:'enrich',ids:[c.id],idempotency_key:'quality-enrich',max_cost_micros:2000});await jobs.tick();
  const enriched=(await app.search(user,{q:'Taylor'})).contacts[0];assert.equal(enriched.field_sources.company.kind,'provider');assert.equal(enriched.field_sources.email.kind,'import');assert.equal(enriched.source_observed_at,null);assert.equal(enriched.enrichment.match_likelihood,9);
 }));
+
+test('provider search does not attach a weak namesake match to a list or source history',()=>fixture(async({app,jobs,providers})=>{
+ await app.importCSV(user,{csv:'First Name,Last Name,Company\nJamie,Rivera,Example'});
+ const original=(await app.search(user)).contacts[0],list=await app.createList(user,{name:'Provider candidates'});
+ const request={action:'search',filters:{company:'Example'},size:1,list_id:list.id,max_cost_micros:1000};
+ const weak=await jobs.enqueue(user,{...request,idempotency_key:'weak-namesake'});await jobs.tick();
+ const rejected=(await jobs.jobs(user,weak.id)).tasks[0].result;
+ assert.equal(rejected.conflicts,1);assert.equal(rejected.duplicates,0);assert.deepEqual(rejected.contact_ids,[]);
+ assert.equal((await app.search(user,{list_id:list.id})).total,0);
+ assert.deepEqual((await app.search(user)).contacts[0].source_history,original.source_history);
+ // An exact repeat of the same identifier-free record is still a duplicate.
+ providers.search=async()=>({contacts:[{first_name:'Jamie',last_name:'Rivera',company:'Example'}],retrieved:1,total:1});
+ const repeat=await jobs.enqueue(user,{...request,idempotency_key:'exact-weak-repeat'});await jobs.tick();
+ assert.equal((await jobs.jobs(user,repeat.id)).tasks[0].result.duplicates,1);
+ assert.equal((await app.search(user,{list_id:list.id})).contacts[0].id,original.id);
+}));
 test('daily caps and explicit ceilings prevent requests, active tasks deduplicate, changed requests conflict',()=>fixture(async({app,jobs,config,calls})=>{
  await assert.rejects(jobs.enqueue(user,{action:'search',filters:{company:'Example'},size:10,max_cost_micros:9999,idempotency_key:'too-small-1'}),{status:422});
  config.dailyBudgetMicros=500;const denied=await jobs.enqueue(user,{action:'search',filters:{company:'Example'},size:1,max_cost_micros:1000,idempotency_key:'budget-001'});await jobs.tick();assert.equal(calls(),0);assert.equal((await jobs.jobs(user,denied.id)).tasks[0].status,'skipped');

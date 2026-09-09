@@ -80,6 +80,14 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   for(const raw of result.contacts){let contact;try{contact=normalizeContact(raw,'People Data Labs');}catch{rejected++;continue;}const keys=contactIdentities(contact);if(!keys.length){rejected++;continue;}
    const matches=(await c.query('SELECT id,payload FROM prospect_contacts WHERE user_id=$1 AND identity_keys ?| $2::text[] FOR UPDATE',[task.user_id,identityLookupKeys(contact)])).rows;
    if(matches.length>1||matches.some(r=>['first_name','last_name'].some(k=>nameKey(r.payload[k])!==nameKey(contact[k]))||['email','linkedin_url'].some(k=>r.payload[k]&&contact[k]&&r.payload[k]!==contact[k]))){conflicts++;continue;}
+   if(matches.length){
+    const old=matches[0].payload,oldKeys=contactIdentities(old);
+    const strong=keys.some(key=>(key.startsWith('email:')||key.startsWith('linkedin:'))&&oldKeys.includes(key));
+    const newIdentifier=['email','linkedin_url','phone'].some(key=>contact[key]&&contact[key]!==old[key]);
+    // A provider result must meet the same namesake safeguard as a CSV import
+    // before we attribute its source history or list membership to this person.
+    if(!strong&&newIdentifier){conflicts++;continue;}
+   }
    const evidence={source:'People Data Labs',kind:'provider',job_id:task.job_id,imported_at:result.checked_at||new Date().toISOString(),observed_at:null,provider_id:raw.provider_id||null};
    let id=matches[0]?.id;if(id){duplicates++;
     const old=matches[0].payload,differing=['title','company','country','state','city','phone'].filter(key=>old[key]&&contact[key]&&nameKey(old[key])!==nameKey(contact[key]));
