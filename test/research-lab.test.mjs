@@ -188,3 +188,28 @@ test('inventory retries prioritize unassessed and oldest records within the curr
   assert.equal((await lab.enqueue({uid:'other',email:'other@example.com'},{kind:'inventory'})).status,'completed');
  }finally{await db.close();}
 });
+
+for(const paid of [false,true])test(`${paid?'paid':'free'} recovery rejects a late result from the expired worker`,async()=>{
+ let finishOld,started;
+ const waiting=new Promise(resolve=>{started=resolve;});let calls=0;
+ const candidate=name=>({name,company:'Example Manufacturing',current_title:'Director',country:'US'});
+ const sources={readiness:{web_search:paid},quote:()=>paid?5000:0,run:async()=>{
+  calls++;if(calls===1){started();return new Promise(resolve=>{finishOld=resolve;});}
+  return {status:'completed',candidates:[candidate('Morgan Chen')]};
+ }};
+ const {db,lab,user}=await fixture({sources});let old;
+ try{
+  const run=await lab.enqueue(user,{employers:['Example Manufacturing'],sources:[paid?'web_search':'public_web'],daily_budget_micros:5000});
+  old=lab.tick();await waiting;
+  await db.query("UPDATE lab_tasks SET lease_until=now()-interval '1 minute' WHERE run_id=$1",[run.id]);
+  await lab.tick();
+  finishOld({status:'completed',candidates:[candidate('Jamie Rivera')]});await old;
+  const detail=await lab.runDetail(user,run.id),rows=(await lab.list(user)).leads;
+  assert.equal(calls,paid?1:2);
+  assert.equal(rows.length,paid?0:1);
+  if(!paid)assert.equal(rows[0].lead.first_name,'Morgan');
+  assert.equal(detail.tasks[0].status,paid?'skipped':'completed');
+  assert.equal(detail.run.status,paid?'completed_with_gaps':'completed');
+  assert.equal(Number((await db.query('SELECT COALESCE(sum(amount_micros),0) AS n FROM lab_costs')).rows[0].n),paid?5000:0);
+ }finally{finishOld?.({status:'failed',candidates:[]});if(old)await old;await db.close();}
+});
