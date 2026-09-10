@@ -6,6 +6,13 @@ import {robotsAllowed} from './robots-policy.mjs';
 const plain = html => String(html).replace(/<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>/gi,' ').replace(/<[^>]+>/g,' ').replace(/&nbsp;|&#160;/g,' ').replace(/&amp;/g,'&').replace(/\s+/g,' ').trim();
 const blockedHost = host => /(^|\.)(linkedin\.com|facebook\.com|instagram\.com|fastpeoplesearch\.com|familytreenow\.com|whitepages\.com|fec\.gov)$/.test(host);
 const companyKey = value => nameKey(value).replace(/\b(incorporated|corporation|company|inc|corp|llc|ltd|limited|co)\b/g,'').replace(/\s+/g,' ').trim();
+const biographyPriority = value => {
+  const path=new URL(value).pathname;
+  if(/leadership|executive|biograph|\bbios?\b/i.test(path))return 0;
+  if(/team|management|board-of-directors/i.test(path))return 1;
+  if(/people/i.test(path))return 2;
+  return 3;
+};
 
 export function proxyCandidates(html, url, company, filedAt) {
   const results=[];
@@ -117,10 +124,16 @@ export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicr
         }
         documents.push({url:result.url,scope:'professional',people_found:found.length});
         const base=new URL(result.url);
+        const discovered=new Set();
         for(const match of result.text.matchAll(/href=["']([^"'<>]+)["']/gi)) {
           let link;try{link=new URL(match[1],base);}catch{continue;}
-          if (link.origin===base.origin&&/team|leadership|executive|people|about|management/i.test(link.pathname)&&!queued.has(link.href)&&urls.length<9) {queued.add(link.href);urls.push(link.href);}
+          link.hash='';
+          if (link.origin===base.origin&&/team|leadership|executive|people|about|management|biograph|board-of-directors/i.test(link.pathname)&&!queued.has(link.href)&&!seen.has(link.href))discovered.add(link.href);
         }
+        // Navigation order must not spend the page budget on general news and
+        // responsibility pages before leadership links later in the same menu.
+        const pending=[...new Set([...urls.slice(i+1),...discovered])].sort((a,b)=>biographyPriority(a)-biographyPriority(b)).slice(0,Math.max(0,9-i-1));
+        pending.forEach(url=>queued.add(url));urls.splice(i+1,urls.length,...pending);
       } catch(error) {errors.push(/Publisher|source|format|redirect/i.test(error.message)?error.message:'Public page unavailable.');}
     }
     if(!urls.length) errors.push('No official website was found in the free index. Add an employer website or enable licensed web search.');

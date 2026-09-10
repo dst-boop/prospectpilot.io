@@ -70,3 +70,15 @@ test('redirect loops terminate with a visible source gap',async()=>{
  const result=await createLabSources({get}).run('public_web',{company:'Example Manufacturing',website:'https://example.org/'});
  assert.equal(result.candidates.length,0);assert.match(result.errors.join(' '),/redirect limit/);
 });
+
+test('leadership pages outrank earlier general navigation within the crawl budget',async()=>{
+ const seen=[];const get=async(url)=>{
+  url=String(url);if(url.endsWith('/robots.txt'))return response('',url,'text/plain');seen.push(url);
+  if(url==='https://example.org/')return response('<title>Example Manufacturing</title>'+Array.from({length:12},(_,i)=>`<a href="/about/news-${i}">News</a>`).join('')+'<a href="/about/leadership#top">Leadership</a><a href="/about/leadership#people">Leadership again</a>',url,'text/html');
+  if(url==='https://example.org/about/leadership')return response('<title>Example Manufacturing</title><script type="application/ld+json">{"@type":"Person","name":"Jamie Rivera","jobTitle":"Director","worksFor":{"name":"Example Manufacturing"}}</script>',url,'text/html');
+  return response('<title>Example Manufacturing</title>',url,'text/html');
+ };
+ const result=await createLabSources({get}).run('public_web',{company:'Example Manufacturing',website:'https://example.org/'});
+ assert.equal(seen[1],'https://example.org/about/leadership');assert.equal(seen.filter(u=>u.includes('/leadership')).length,1);
+ assert.equal(result.candidates.length,1);assert.equal(seen.length,5);
+});
