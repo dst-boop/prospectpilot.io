@@ -14,6 +14,7 @@ const origin=`http://127.0.0.1:${port}`,db=new PGlite();
 const read=file=>readFileSync(new URL('../'+file,import.meta.url),'utf8');
 await db.exec(read('generated/schema.sql'));
 await db.exec(read('migrations/006-research-lab.sql'));
+await db.exec(read('migrations/012-plan-catalog-summary.sql'));
 await db.exec(read('migrations/007-quality-v2.sql'));
 await db.exec(read('migrations/008-prospect-workspace.sql'));
 await db.exec(read('migrations/009-prospect-jobs.sql'));

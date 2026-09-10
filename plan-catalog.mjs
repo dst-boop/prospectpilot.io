@@ -23,9 +23,19 @@ export async function importPlanRecords(client, records) {
     }
     await flush();
     if(!total)throw Error('Empty plan catalog; previous catalog retained');
+    if(written)await client.query(`INSERT INTO employer_plan_catalog_summary(id,plans,filings,latest_plan_year,imported_at)
+      SELECT 1,count(DISTINCT (payload->>'ein',payload->>'plan_number'))::int,count(*)::int,max(plan_year),max(imported_at) FROM employer_plan_catalog
+      ON CONFLICT(id) DO UPDATE SET plans=EXCLUDED.plans,filings=EXCLUDED.filings,
+      latest_plan_year=EXCLUDED.latest_plan_year,imported_at=EXCLUDED.imported_at,calculated_at=now()`);
     await client.query('COMMIT');
     return {employer_plans_processed:total,filings_written:written,older_filings_skipped:total-written,individual_leads:0};
   }catch(error){await client.query('ROLLBACK');throw error;}
+}
+
+export async function catalogSummary(pool) {
+  const row=(await pool.query('SELECT plans,filings,latest_plan_year,imported_at,calculated_at FROM employer_plan_catalog_summary WHERE id=1')).rows[0];
+  if(!row)throw Error('Catalog summary migration is required.');
+  return row;
 }
 
 export async function matchPlans(pool, lead) {

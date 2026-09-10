@@ -36,9 +36,21 @@ async function loadLeads(){const query=new URLSearchParams({offset,limit:50,stat
 function sourceIssues(run){return (run.source_results||[]).filter(t=>(t.errors||[]).length).map(t=>`<p class="muted"><strong>${esc(title(t.source))}${t.company?' · '+esc(t.company):''}:</strong> ${esc(t.errors.join(' '))}</p>`).join('');}
 function renderRuns(data){runs=data.runs;$('runs').innerHTML=runs.length?runs.map(r=>`<div class="run"><div><strong>${esc(title(r.kind))}</strong> ${badge(r.status)}<small>${esc(new Date(r.created_at).toLocaleString())} · ${num(r.finished_tasks)}/${num(r.tasks)} checks · ${num(r.new_people)} new people</small>${r.kind==='discovery'&&!Number(r.new_people)&&!['queued','running'].includes(r.status)?'<p>No people were added. Review the source results below; this does not establish that no prospects exist.</p>':''}${sourceIssues(r)}</div><button class="secondary" data-run="${esc(r.id)}">Details</button></div>`).join(''):'<p class="empty">No experiments yet.</p>';
   document.querySelectorAll('[data-run]').forEach(e=>e.onclick=()=>openRun(e.dataset.run));
-  if(pollTimer)clearTimeout(pollTimer);if(runs.some(r=>['queued','running'].includes(r.status)))pollTimer=setTimeout(()=>refresh(false),8000);
+
 }
-async function refresh(showNotice=true){if(busy)return;busy=true;$('refresh').disabled=true;try{const result=await Promise.all([request('/api/lab/summary'),request('/api/lab/runs'),loadLeads()]);renderSummary(result[0]);renderRuns(result[1]);if(showNotice)notice('Results updated. Verified counts require reviewed evidence for all five criteria.');}catch(e){notice(e.message,true);}finally{busy=false;$('refresh').disabled=false;}}
+async function refresh(showNotice=true){
+  if(busy)return;busy=true;clearTimeout(pollTimer);$('refresh').disabled=true;
+  const sections=[['Summary',()=>request('/api/lab/summary').then(renderSummary)],['Run history',()=>request('/api/lab/runs').then(renderRuns)],['Lead results',loadLeads]];
+  try{
+    const results=await Promise.allSettled(sections.map(([,load])=>load()));
+    const failures=results.flatMap((r,i)=>r.status==='rejected'?[sections[i][0]+': '+r.reason.message]:[]);
+    if(failures.length)notice('Some sections could not refresh. Successfully loaded results are shown. '+failures.join(' '),true);
+    else if(showNotice)notice('Results updated. Verified counts require reviewed evidence for all five criteria.');
+  }finally{
+    busy=false;$('refresh').disabled=false;
+    if(!document.hidden&&runs.some(r=>['queued','running'].includes(r.status)))pollTimer=setTimeout(()=>refresh(false),8000);
+  }
+}
 async function openLead(id){try{current=await request('/api/lab/leads/'+encodeURIComponent(id));renderPerson();$('reviewForm').reset();$('observedAt').value=new Date().toISOString().slice(0,10);$('observedAt').max=new Date().toISOString().slice(0,10);$('reviewError').textContent='';reviewFields();$('detail').showModal();}catch(e){notice(e.message,true);}}
 function renderPerson(){const {lead:l,quality:q}=current;$('personName').textContent=[l.first_name,l.last_name].join(' ');$('personRole').textContent=[l.current_title,l.company].filter(Boolean).join(' · ');$('personGates').innerHTML=Object.entries(q.gates).map(([f,g])=>`<div class="gate-card"><strong>${esc(labels[f])}</strong> ${badge(g.state)}<p>${esc(g.reason)}</p>${g.evidence?`<small>${esc(g.evidence.source)} · ${esc(g.evidence.observed_at.slice(0,10))}</small><p>${esc(g.evidence.note)}</p>${link(g.evidence.url,'Review original source')}`:''}</div>`).join('');
   const evidence=(l.evidence||[]).filter(e=>e.source_url).slice(-8);$('personSources').innerHTML=(q.warnings.length?`<p>${esc(q.warnings.join(' '))}</p>`:'')+'<h3>Available source material</h3>'+[l.linkedin_url?`<p>${link(l.linkedin_url,'LinkedIn profile')}</p>`:'',...evidence.map(e=>`<p>${link(e.source_url,e.source||'Source')} · ${esc(e.field)}: ${esc(e.value)} <small>${esc(e.source_date||'Publication date not supplied')} · reported, not independently verified</small></p>`)].join('');
