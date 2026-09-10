@@ -33,8 +33,8 @@ function renderLeads(data){leads=data.leads;total=data.total;
   $('pageInfo').textContent=total?`${num(offset+1)}–${num(Math.min(offset+50,total))} of ${num(total)} · assessed filter, live evidence`:'0 records';$('previous').disabled=offset===0;$('next').disabled=offset+50>=total;
 }
 async function loadLeads(){
-  const version=++leadLoadVersion,query=new URLSearchParams({offset,limit:50,status:$('qualityFilter').value,search:$('search').value});
-  try{const data=await request('/api/lab/leads?'+query);if(version===leadLoadVersion)renderLeads(data);}
+  const version=++leadLoadVersion,query=new URLSearchParams({offset,limit:50,compact:'true',status:$('qualityFilter').value,search:$('search').value});
+  try{const data=await request('/api/lab/leads?'+query);if(version!==leadLoadVersion)return;if(offset>0&&!data.leads.length&&data.total>0){const lastOffset=Math.floor((data.total-1)/50)*50;if(lastOffset!==offset){offset=lastOffset;return loadLeads();}}if(!data.total)offset=0;renderLeads(data);}
   catch(error){if(version===leadLoadVersion)throw error;}
 }
 function sourceIssues(run){return (run.source_results||[]).filter(t=>(t.errors||[]).length).map(t=>`<p class="muted"><strong>${esc(title(t.source))}${t.company?' · '+esc(t.company):''}:</strong> ${esc(t.errors.join(' '))}</p>`).join('');}

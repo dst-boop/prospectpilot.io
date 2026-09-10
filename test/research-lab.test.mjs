@@ -118,3 +118,30 @@ test('active inventory assessments are reused per user, while completed runs can
   assert.notEqual(other.id,next.id);assert.equal(other.status,'completed');assert.equal(other.dispatched,false);assert.equal(other.message,'No saved leads to assess.');
  }finally{await db.close();}
 });
+
+test('research search matches full names and treats wildcard characters literally',async()=>{
+ const {db,lab,user}=await fixture();try{
+  await lab.importCSV(user,{csv:csv+'\nMorgan,Chen,100% Engineering,Manager,morgan@example.com,60,US'});
+  assert.equal((await lab.list(user,{search:'Jamie Rivera'})).total,1);
+  assert.equal((await lab.list(user,{search:'  jamie   rivera  '})).total,1);
+  assert.equal((await lab.list(user,{search:'%'})).total,1);
+  assert.equal((await lab.list(user,{search:'_'})).total,0);
+  assert.equal((await lab.list(user,{search:'\\'})).total,0);
+ }finally{await db.close();}
+});
+
+test('compact research pages preserve displayed quality and out-of-range totals without returning full records',async()=>{
+ const {db,lab,user}=await fixture();try{
+  await lab.importCSV(user,{csv});const id=(await lab.list(user)).leads[0].lead.id;
+  await db.query("UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{notes}',$1::jsonb)::text WHERE id=$2",[JSON.stringify('Private source note '.repeat(1000)),id]);
+  const full=await lab.list(user),small=await lab.list(user,{compact:'true'});
+  assert.equal(small.total,full.total);assert.equal(small.leads[0].quality.status,full.leads[0].quality.status);assert.equal(small.leads[0].quality.score,full.leads[0].quality.score);
+  for(const [key,gate] of Object.entries(full.leads[0].quality.gates))assert.deepEqual(small.leads[0].quality.gates[key],{state:gate.state,reason:gate.reason});
+  assert.equal(small.leads[0].lead.notes,undefined);assert.equal(small.leads[0].lead.email,undefined);
+  assert.ok(JSON.stringify(small).length<JSON.stringify(full).length/4);
+  assert.equal((await lab.detail(user,id)).lead.notes,'Private source note '.repeat(1000));
+  const beyond=await lab.list(user,{offset:100,search:'Jamie Rivera',compact:true});assert.equal(beyond.total,1);assert.equal(beyond.leads.length,0);
+  assert.equal((await lab.list({uid:'other',email:'other@example.com'},{offset:100,compact:true})).total,0);
+  await assert.rejects(lab.list(user,{compact:'sometimes'}),{status:422});
+ }finally{await db.close();}
+});

@@ -34,3 +34,9 @@ test('older search successes and failures cannot replace newer results',async()=
  assert.equal(rendered.length,2);assert.equal(rendered[1].total,2);
  const currentError=context.loadLeads();calls[4].reject(Error('Current failure'));await assert.rejects(currentError,/Current failure/);
 });
+
+test('an emptied final page reloads the last valid page instead of claiming zero records',async()=>{
+ const calls=[],rendered=[],context=vm.createContext({offset:100,leadLoadVersion:0,URLSearchParams,$:()=>({value:''}),renderLeads:d=>rendered.push(d),request:url=>{calls.push(url);return Promise.resolve(calls.length===1?{total:51,leads:[]}:{total:51,leads:[{lead:{id:'last'}}]});}});
+ vm.runInContext(client.slice(client.indexOf('async function loadLeads('),client.indexOf('\nfunction sourceIssues')),context);
+ await context.loadLeads();assert.equal(context.offset,50);assert.equal(calls.length,2);assert.match(calls[1],/offset=50/);assert.equal(rendered.length,1);assert.equal(rendered[0].leads[0].lead.id,'last');
+});
