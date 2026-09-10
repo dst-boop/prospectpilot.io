@@ -8,6 +8,7 @@ const matchingDomainCheck="(COALESCE(payload->>'email','')<>'' AND payload->'ema
 export function contactIdentities(c){return [c.linkedin_url&&`linkedin:${c.linkedin_url}`,c.email&&!sharedMailbox(c.email)&&`email:${c.email}`,c.company&&`person:${nameKey(c.first_name)}|${nameKey(c.last_name)}|${nameKey(c.company)}|${nameKey(normalizeCountry(c.country))}|${nameKey(normalizeState(c.state,c.country))}|${nameKey(c.city)}`].filter(Boolean);}
 export function identityLookupKeys(c){return [...new Set([...contactIdentities(c),...(c.company?countryAliases(c.country).flatMap(country=>stateAliases(c.state,c.country).map(state=>`person:${nameKey(c.first_name)}|${nameKey(c.last_name)}|${nameKey(c.company)}|${nameKey(country)}|${nameKey(state)}|${nameKey(c.city)}`)):[])])];}
 const identities=contactIdentities;
+const editableFields=['first_name','last_name','title','company','company_domain','industry','seniority','city','state','country','email','phone','linkedin_url'];
 export function searchFilters(input={}) {
  const allowed=['q','title','company','country','state','city','industry','seniority','email_status','has_email','has_phone','list_id','suppressed','source','quality_issue'];
  const filters=Object.fromEntries(allowed.map(k=>[k,text(input[k],k==='source'?200:150)]));
@@ -104,7 +105,7 @@ export function createProspectWorkspace({pool,jobs}) {
      merged.suppressed=old.suppressed||contact.suppressed;
      if(!old.email&&merged.email)merged.email_status='unverified';if(!old.phone&&merged.phone)merged.phone_status='unverified';
      const differing=['title','company','country','state','city','phone'].filter(key=>old[key]&&contact[key]&&nameKey(old[key])!==nameKey(contact[key]));
-     merged.source_history=[...(old.source_history||[{source:old.source,kind:old.source_kind,imported_at:null,observed_at:old.source_observed_at||null}]),{...evidence,differing_fields:differing}].slice(-20);
+     merged.source_history=[...(old.source_history||[{source:old.source,kind:old.source_kind,imported_at:null,observed_at:old.source_observed_at||null}]),{...evidence,differing_fields:differing,...differing.length?{proposed_values:Object.fromEntries(differing.map(key=>[key,contact[key]]))}:{}}].slice(-20);
      merged.last_seen_at=now;
      merged.field_sources={...(old.field_sources||{})};for(const key of Object.keys(contact))if(!old[key]&&contact[key]&&parsed.mapped_columns.includes(key))merged.field_sources[key]=evidence;
      // Import recency never refreshes the observation date of existing field values.
@@ -128,6 +129,37 @@ export function createProspectWorkspace({pool,jobs}) {
     if(input.list_id&&writes.length)await c.query('INSERT INTO prospect_list_members(list_id,contact_id) SELECT $1,unnest($2::text[]) ON CONFLICT DO NOTHING',[input.list_id,writes.map(row=>row.id)]);
    }
    if(!preview)await c.query('INSERT INTO prospect_imports(id,user_id,fingerprint,source,result) VALUES($1,$2,$3,$4,$5::jsonb)',[result.id,user.uid,fingerprint,source,JSON.stringify(result)]);return result;
+  });
+ }
+ async function correctContact(user,id,input){
+  if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!['fields','revision','reason','resolve_history_index','decision'].includes(k)))throw fail(422,'Provide contact corrections and a review reason.');
+  if(typeof input.reason!=='string'||!input.reason.trim()||input.reason.length>1000)throw fail(422,'Provide a review reason of 1�1,000 characters.');
+  return tx(pool,async c=>{
+   await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`prospect:${user.uid}`]);
+   const row=(await c.query('SELECT payload FROM prospect_contacts WHERE id=$1 AND user_id=$2 FOR UPDATE',[id,user.uid])).rows[0];if(!row)throw fail(404,'Contact not found.');
+   const old=row.payload;if(input.revision!==hash(JSON.stringify(old)))throw fail(409,'Contact changed. Reopen it and review the latest values before saving.');
+   let fields=input.fields,event;
+   if(input.resolve_history_index!==undefined){
+    if(fields!==undefined||!Number.isInteger(input.resolve_history_index)||!['accept','keep'].includes(input.decision))throw fail(422,'Choose whether to accept the source values or keep current values.');
+    event=old.source_history?.[input.resolve_history_index];
+    if(!event?.proposed_values||event.resolution)throw fail(409,'This source conflict is unavailable or already reviewed.');
+    fields=input.decision==='accept'?event.proposed_values:{};
+   }else if(input.decision!==undefined)throw fail(422,'Select a source conflict to resolve.');
+   if(!fields||typeof fields!=='object'||Array.isArray(fields)||Object.keys(fields).some(k=>!editableFields.includes(k)||typeof fields[k]!=='string'||fields[k].length>1000)||(!event&&!Object.keys(fields).length))throw fail(422,'Provide editable contact fields only.');
+   const normalized=normalizeContact({...old,...fields},old.source),next={...old};
+   const changes={};for(const key of editableFields){if(normalized[key]!==old[key]){changes[key]={before:old[key]||'',after:normalized[key]};next[key]=normalized[key];}}
+   if(!identities(next).length)throw fail(422,'Keep a company, individual email or LinkedIn profile for identity matching.');
+   if((await c.query('SELECT id FROM prospect_contacts WHERE user_id=$1 AND id<>$2 AND identity_keys ?| $3::text[]',[user.uid,id,identityLookupKeys(next)])).rows.length)throw fail(409,'These identifiers match another contact. Review both records before correcting their identities. No records were merged.');
+   if(!event&&!Object.keys(changes).length)return {id,changed:false};
+   const evidence={source:'User correction',kind:'manual_review',imported_at:new Date().toISOString(),observed_at:null,reason:input.reason.trim(),changes};
+   next.field_sources={...(old.field_sources||{})};for(const key of Object.keys(changes))next.field_sources[key]=evidence;
+   if(changes.email){next.email_status=next.email?'unverified':'missing';}
+   if(changes.phone){next.phone_status=next.phone?'unverified':'missing';}
+   if(changes.first_name||changes.last_name){next.email_status=next.email?'unverified':'missing';next.phone_status=next.phone?'unverified':'missing';}
+   const history=[...(old.source_history||[])];if(event)history[input.resolve_history_index]={...event,resolution:{decision:input.decision,reviewed_at:evidence.imported_at,reason:evidence.reason}};
+   next.source_history=[...history,evidence].slice(-20);
+   await c.query('UPDATE prospect_contacts SET payload=$1::jsonb,identity_keys=$2::jsonb,updated_at=now() WHERE id=$3 AND user_id=$4',[JSON.stringify(next),JSON.stringify(identities(next)),id,user.uid]);
+   return {id,changed:true};
   });
  }
  async function exportCSV(user,input){
@@ -188,10 +220,10 @@ export function createProspectWorkspace({pool,jobs}) {
    const row=(await pool.query('SELECT id,payload,created_at,updated_at FROM prospect_contacts WHERE id=$1 AND user_id=$2',[contact[1],user.uid])).rows[0];
    if(!row)throw fail(404,'Contact not found.');
    const memberships=(await pool.query('SELECT l.id,l.name FROM prospect_lists l JOIN prospect_list_members m ON m.list_id=l.id WHERE m.contact_id=$1 AND l.user_id=$2 ORDER BY l.name',[row.id,user.uid])).rows;
-   return {contact:{id:row.id,...row.payload,created_at:row.created_at,updated_at:row.updated_at,quality:contactQuality({...row.payload,created_at:row.created_at})},lists:memberships};
+   return {contact:{id:row.id,...row.payload,created_at:row.created_at,updated_at:row.updated_at,quality:contactQuality({...row.payload,created_at:row.created_at}),edit_revision:hash(JSON.stringify(row.payload))},lists:memberships};
   }
   if(contact&&method==='PATCH'){
-   const input=await body();if(typeof input.suppressed!=='boolean'||Object.keys(input).some(k=>k!=='suppressed'))throw fail(422,'Provide only a boolean suppression setting.');
+   const input=await body();if(!input||typeof input!=='object'||Array.isArray(input))throw fail(422,'Provide a contact update object.');if(input.suppressed===undefined)return correctContact(user,contact[1],input);if(typeof input.suppressed!=='boolean'||Object.keys(input).some(k=>k!=='suppressed'))throw fail(422,'Provide only a boolean suppression setting.');
    const result=await pool.query("UPDATE prospect_contacts SET payload=jsonb_set(payload,'{suppressed}',$1::jsonb),updated_at=now() WHERE id=$2 AND user_id=$3 RETURNING id",[JSON.stringify(input.suppressed),contact[1],user.uid]);
    if(!result.rows.length)throw fail(404,'Contact not found.');return {id:contact[1],suppressed:input.suppressed};
   }
