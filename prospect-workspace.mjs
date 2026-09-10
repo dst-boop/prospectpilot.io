@@ -15,6 +15,7 @@ export function searchFilters(input={}) {
  if(filters.email_status&&!['missing','unverified','valid','invalid','catch_all','unknown'].includes(filters.email_status))throw fail(422,'Invalid email status.');
  for(const key of ['has_email','has_phone','suppressed'])if(filters[key]&&!['true','false'].includes(filters[key]))throw fail(422,'Invalid contact filter.');
  if(filters.quality_issue&&!['no_contact_route','unknown_source_date','stale_source','domain_issue','shared_mailbox'].includes(filters.quality_issue))throw fail(422,'Invalid data-review filter.');
+ filters.q=filters.q.replace(/\s+/g,' ');
  filters.country=normalizeCountry(filters.country);filters.state=normalizeState(filters.state,filters.country);
  return filters;
 }

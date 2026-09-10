@@ -119,6 +119,9 @@ test('idempotency, suppression, false verification and conflicting identifiers f
 }));
 test('filters bind values, malformed imports are reported, and saved searches isolate users',()=>fixture(async app=>{
  await app.importCSV(user,{csv});assert.equal((await app.search(user,{q:"' OR 1=1 --"})).total,0);
+ assert.equal((await app.search(user,{q:"  Jamie \t  Rivera  "})).total,1);
+ assert.equal((await app.search(user,{q:"%"})).total,0);
+ assert.equal((await app.search(other,{q:"Jamie Rivera"})).total,0);
  await assert.rejects(app.search(user,{limit:-1}),{status:422});await assert.rejects(app.importCSV(user,{csv:'First Name,FirstName,Last Name\nA,A,B'}),{status:422});
  const bad=await app.importCSV(user,{csv:csv.replace('jamie@example.com','not-an-email')});assert.equal(bad.rejected,1);assert.equal(bad.errors[0].row,2);
  const call=(method,who,body)=>app.route(new Request('https://example.com/api/prospect/saved-searches',{method,...(body?{body:JSON.stringify(body)}:{})}),who);
