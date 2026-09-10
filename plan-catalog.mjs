@@ -41,7 +41,20 @@ export async function catalogSummary(pool) {
 export async function matchPlans(pool, lead) {
   const names = [...new Set([lead.company, ...(lead.former_employers || [])].filter(Boolean).map(nameKey))].slice(0, 20);
   if (!names.length) return [];
-  const result = await pool.query(`WITH latest AS (
+  // Find candidate plan identities using the sponsor index, then inspect each
+  // identity's latest filing. Filtering the latest row by name afterward keeps
+  // renamed sponsors from matching an old employer name.
+  const keys=(await pool.query(`SELECT DISTINCT payload->>'ein' AS ein,payload->>'plan_number' AS plan_number
+    FROM employer_plan_catalog WHERE sponsor_key=ANY($1::text[])`,[names])).rows;
+  if(!keys.length)return [];
+  const result = keys.every(k=>k.ein!==null&&k.plan_number!==null)
+    ? await pool.query(`SELECT latest.payload FROM jsonb_to_recordset($2::jsonb) AS keys(ein text,plan_number text)
+      CROSS JOIN LATERAL (SELECT c.* FROM employer_plan_catalog c
+        WHERE c.payload->>'ein'=keys.ein AND c.payload->>'plan_number'=keys.plan_number
+        ORDER BY c.plan_year DESC,c.payload->>'period_start' DESC,c.payload->>'filed_at' DESC,c.id DESC LIMIT 1) latest
+      WHERE latest.sponsor_key=ANY($1::text[]) ORDER BY latest.plan_year DESC,latest.id LIMIT 30`,[names,JSON.stringify(keys)])
+    // Preserve existing grouping for legacy records without complete plan IDs.
+    : await pool.query(`WITH latest AS (
     SELECT DISTINCT ON(payload->>'ein',payload->>'plan_number') * FROM employer_plan_catalog
     ORDER BY payload->>'ein',payload->>'plan_number',plan_year DESC,payload->>'period_start' DESC,payload->>'filed_at' DESC,id DESC)
     SELECT payload FROM latest WHERE sponsor_key=ANY($1::text[])

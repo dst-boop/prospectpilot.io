@@ -18,6 +18,8 @@ The dashboard defaults to 14 UTC calendar days. Compare unique acquisitions, qua
 
 Catalog totals are maintained transactionally during catalog imports. Migration 012 backfills the existing catalog once; run migrations before deploying this version. Dashboard requests read that summary instead of recounting all filings. Failed imports roll back both records and totals. Dashboard sections refresh independently, and a failed summary does not hide successful lead or run results or stop polling active runs.
 
+Biography discovery follows up to four page requests in a redirect chain, checking each destination's host and robots rules before fetching its content. Publisher denials remain source gaps. Plan matching first identifies relevant plan identities, selects their latest filings, and then checks the sponsor name; a historic employer name cannot override a later renamed filing.
+
 Before declaring a winning source, conduct a separate blinded review of a randomly chosen sample from both qualified and nonqualified groups using authorized ground truth. Report sample size, disagreement rate, unresolved records, review latency and confidence intervals. Functional software tests do not measure real-world lead accuracy. No calibrated 'moderately high confidence' probability is claimed until that study exists.
 
 ## Current operational limits
