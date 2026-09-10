@@ -36,3 +36,37 @@ test('SEC short employer names offer legal-name suggestions without assigning an
  assert.match(result.errors[0],/EXAMPLE COMMUNICATIONS INC/);
  assert.doesNotMatch(result.errors[0],/UNRELATED/);
 });
+
+test('biography redirects check destination rules before fetching the page and retain final provenance',async()=>{
+ const seen=[];
+ const get=async(url,options)=>{
+  url=String(url);seen.push(url);
+  if(url.endsWith('/robots.txt'))return response('',url,'text/plain');
+  assert.equal(options.followRedirects,false);
+  if(url==='https://example.org/')return {url,redirect:'https://www.example.org/team'};
+  return response('<title>Example Manufacturing</title><script type="application/ld+json">{"@type":"Person","name":"Jamie Rivera","jobTitle":"Director","worksFor":{"name":"Example Manufacturing"}}</script>',url,'text/html');
+ };
+ const result=await createLabSources({get}).run('public_web',{company:'Example Manufacturing',website:'https://example.org/'});
+ assert.equal(result.candidates.length,1);
+ assert.equal(result.documents[0].url,'https://www.example.org/team');
+ assert.deepEqual(seen.slice(0,4),['https://example.org/robots.txt','https://example.org/','https://www.example.org/robots.txt','https://www.example.org/team']);
+});
+
+test('redirects cannot bypass same-origin robots paths or restricted destination hosts',async()=>{
+ for(const target of ['https://example.org/private/team','https://www.linkedin.com/in/example','https://blocked.example.org/team']){
+  const seen=[];const get=async(url)=>{
+   url=String(url);seen.push(url);
+   if(url.endsWith('/robots.txt'))return response(url.includes('blocked.')?'User-agent: *\nDisallow: /':'User-agent: *\nDisallow: /private/',url,'text/plain');
+   if(url==='https://example.org/')return {url,redirect:target};
+   throw Error('Forbidden destination must not be fetched');
+  };
+  const result=await createLabSources({get}).run('public_web',{company:'Example Manufacturing',website:'https://example.org/'});
+  assert.equal(result.candidates.length,0);assert.equal(result.status,'partial');assert.ok(!seen.includes(target));
+ }
+});
+
+test('redirect loops terminate with a visible source gap',async()=>{
+ const get=async url=>String(url).endsWith('/robots.txt')?response('',url,'text/plain'):{url:String(url),redirect:String(url)};
+ const result=await createLabSources({get}).run('public_web',{company:'Example Manufacturing',website:'https://example.org/'});
+ assert.equal(result.candidates.length,0);assert.match(result.errors.join(' '),/redirect limit/);
+});

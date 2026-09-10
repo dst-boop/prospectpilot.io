@@ -27,10 +27,12 @@ export function proxyCandidates(html, url, company, filedAt) {
 export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicros=null,apiFetch=fetch}={}) {
   const cached=createCachedGet(get,{ttl:3600000,maxEntries:150,maxBytes:20000000});
   const robots=new Map();
-  async function read(url, signal, maxBytes=2*1024*1024) {return cached(url,{signal,maxBytes});}
+  async function read(url, signal, maxBytes=2*1024*1024,options={}) {return cached(url,{signal,maxBytes,...options});}
   async function json(url,signal,maxBytes) {const r=await read(url,signal,maxBytes);return JSON.parse(r.text);}
   async function page(value,signal) {
-    const url=new URL(value);
+    let url=new URL(value);
+    for(let hop=0;hop<4;hop++){
+    if(!publicURL(url.href))throw Error('Unsupported public source address.');
     if (blockedHost(url.hostname)) throw Error('This source requires a permitted export or licensed integration.');
     if (!robots.has(url.origin)) {
       try { robots.set(url.origin,(await read(new URL('/robots.txt',url).href,signal,100000)).text); }
@@ -38,11 +40,15 @@ export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicr
       if (robots.size>150) robots.delete(robots.keys().next().value);
     }
     if (!robotsAllowed(robots.get(url.origin),url.pathname+url.search)) throw Error('Publisher disallows automated access to this page.');
-    const result=await read(url.href,signal);
-    // A redirect is fetched by the safe transport, but do not parse a cross-origin destination without checking its rules.
-    if (new URL(result.url).origin!==url.origin) throw Error('Page redirects to another site; review its source separately.');
+    // Follow each redirect here so the destination's host and robots rules are
+    // checked before its page is fetched, including same-origin restricted paths.
+    const result=await read(url.href,signal,2*1024*1024,{followRedirects:false});
+    if(result.redirect){url=new URL(result.redirect,url);continue;}
+    if(new URL(result.url).href!==url.href){url=new URL(result.url);continue;}
     if (!/text\/html|text\/plain/.test(result.type)) throw Error('This page format requires a manual excerpt or import.');
     return result;
+    }
+    throw Error('Public source exceeded the redirect limit.');
   }
   async function officialSites(company, signal) {
     const search=await json('https://www.wikidata.org/w/api.php?'+new URLSearchParams({action:'wbsearchentities',search:company,language:'en',format:'json',limit:'5'}),signal);
