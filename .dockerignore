@@ -6,6 +6,7 @@
 !server.mjs
 !linkedin.mjs
 !native-research.mjs
+!robots-policy.mjs
 !research-jobs.mjs
 !research-worker.mjs
 !warn.mjs
@@ -49,4 +50,14 @@
 !lead-quality.mjs
 !source-catalog.mjs
 !plan-catalog.mjs
+!contact-benchmark.mjs
 !research-lab.mjs
+!prospect.html
+!prospect.css
+!prospect-client.js
+!prospect-workspace.mjs
+!prospect-data-quality.mjs
+!prospect-domain-check.mjs
+!prospect-providers.mjs
+!prospect-jobs.mjs
+!prospect-jobs-client.js

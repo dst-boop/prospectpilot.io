@@ -19,3 +19,66 @@ test('robots denials, unrelated search pages and provider failures remain visibl
 test('WARN results always remain employer-level context and never emit individual layoffs',async()=>{
   const sources=createLabSources({warn:{research:async()=>({status:'matched',records:[{scope:'company',excerpt:'Employer notice'}]})}});const r=await sources.run('warn',{company:'Example'});assert.deepEqual(r.candidates,[]);assert.equal(r.scope,'employer');
 });
+
+test('public pages use applicable robots groups and query restrictions',async()=>{
+ let reads=0;const get=async url=>String(url).endsWith('/robots.txt')?response('User-agent: OtherBot\nDisallow: /\nUser-agent: *\nDisallow: /*?private=',url,'text/plain'):(reads++,response('<title>Example Company</title>',url,'text/html'));
+ const sources=createLabSources({get});await sources.run('public_web',{company:'Example Company',website:'https://example.org/team'});assert.equal(reads,1);
+ const blocked=await sources.run('public_web',{company:'Example Company',website:'https://example.org/team?private=yes'});assert.equal(reads,1);assert.equal(blocked.status,'partial');
+});
+
+test('SEC short employer names offer legal-name suggestions without assigning another entity',async()=>{
+ const sources=createLabSources({get:async url=>{
+  assert.equal(String(url),'https://www.sec.gov/files/company_tickers.json');
+  return response({0:{title:'EXAMPLE COMMUNICATIONS INC',cik_str:123},1:{title:'UNRELATED INC',cik_str:456}},url);
+ }});
+ const result=await sources.run('sec',{company:'Example'});
+ assert.equal(result.status,'no_match');assert.equal(result.candidates.length,0);
+ assert.match(result.errors[0],/EXAMPLE COMMUNICATIONS INC/);
+ assert.doesNotMatch(result.errors[0],/UNRELATED/);
+});
+
+test('biography redirects check destination rules before fetching the page and retain final provenance',async()=>{
+ const seen=[];
+ const get=async(url,options)=>{
+  url=String(url);seen.push(url);
+  if(url.endsWith('/robots.txt'))return response('',url,'text/plain');
+  assert.equal(options.followRedirects,false);
+  if(url==='https://example.org/')return {url,redirect:'https://www.example.org/team'};
+  return response('<title>Example Manufacturing</title><script type="application/ld+json">{"@type":"Person","name":"Jamie Rivera","jobTitle":"Director","worksFor":{"name":"Example Manufacturing"}}</script>',url,'text/html');
+ };
+ const result=await createLabSources({get}).run('public_web',{company:'Example Manufacturing',website:'https://example.org/'});
+ assert.equal(result.candidates.length,1);
+ assert.equal(result.documents[0].url,'https://www.example.org/team');
+ assert.deepEqual(seen.slice(0,4),['https://example.org/robots.txt','https://example.org/','https://www.example.org/robots.txt','https://www.example.org/team']);
+});
+
+test('redirects cannot bypass same-origin robots paths or restricted destination hosts',async()=>{
+ for(const target of ['https://example.org/private/team','https://www.linkedin.com/in/example','https://blocked.example.org/team']){
+  const seen=[];const get=async(url)=>{
+   url=String(url);seen.push(url);
+   if(url.endsWith('/robots.txt'))return response(url.includes('blocked.')?'User-agent: *\nDisallow: /':'User-agent: *\nDisallow: /private/',url,'text/plain');
+   if(url==='https://example.org/')return {url,redirect:target};
+   throw Error('Forbidden destination must not be fetched');
+  };
+  const result=await createLabSources({get}).run('public_web',{company:'Example Manufacturing',website:'https://example.org/'});
+  assert.equal(result.candidates.length,0);assert.equal(result.status,'partial');assert.ok(!seen.includes(target));
+ }
+});
+
+test('redirect loops terminate with a visible source gap',async()=>{
+ const get=async url=>String(url).endsWith('/robots.txt')?response('',url,'text/plain'):{url:String(url),redirect:String(url)};
+ const result=await createLabSources({get}).run('public_web',{company:'Example Manufacturing',website:'https://example.org/'});
+ assert.equal(result.candidates.length,0);assert.match(result.errors.join(' '),/redirect limit/);
+});
+
+test('leadership pages outrank earlier general navigation within the crawl budget',async()=>{
+ const seen=[];const get=async(url)=>{
+  url=String(url);if(url.endsWith('/robots.txt'))return response('',url,'text/plain');seen.push(url);
+  if(url==='https://example.org/')return response('<title>Example Manufacturing</title>'+Array.from({length:12},(_,i)=>`<a href="/about/news-${i}">News</a>`).join('')+'<a href="/about/leadership#top">Leadership</a><a href="/about/leadership#people">Leadership again</a>',url,'text/html');
+  if(url==='https://example.org/about/leadership')return response('<title>Example Manufacturing</title><script type="application/ld+json">{"@type":"Person","name":"Jamie Rivera","jobTitle":"Director","worksFor":{"name":"Example Manufacturing"}}</script>',url,'text/html');
+  return response('<title>Example Manufacturing</title>',url,'text/html');
+ };
+ const result=await createLabSources({get}).run('public_web',{company:'Example Manufacturing',website:'https://example.org/'});
+ assert.equal(seen[1],'https://example.org/about/leadership');assert.equal(seen.filter(u=>u.includes('/leadership')).length,1);
+ assert.equal(result.candidates.length,1);assert.equal(seen.length,5);
+});

@@ -2,14 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
-import {createResearchLab} from '../research-lab.mjs';
+import {createResearchLab,assessInventory} from '../research-lab.mjs';
 import {leadIdentity} from '../lead-quality.mjs';
 async function fixture(options={}) {
   const db=new PGlite();
   await db.exec(readFileSync(new URL('../generated/schema.sql',import.meta.url),'utf8'));
   await db.exec(readFileSync(new URL('../migrations/006-research-lab.sql',import.meta.url),'utf8'));
+  await db.exec(readFileSync(new URL('../migrations/012-plan-catalog-summary.sql',import.meta.url),'utf8'));
   await db.exec(readFileSync(new URL('../migrations/007-quality-v2.sql',import.meta.url),'utf8'));
-  const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
+  const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>pool.query(...a),release(){}})};
   const sources=options.sources||{readiness:{},quote:()=>0,run:async()=>({status:'completed',candidates:[{name:'Jamie Rivera',company:'Example Manufacturing',current_title:'Director',email:'jamie@example.com',estimated_age_range:'62',country:'US'}]})};
   return {db,pool,lab:createResearchLab({pool,sources,...options}),user:{uid:'owner',email:'owner@example.com'}};
 }
@@ -72,7 +73,7 @@ test('rule migration invalidates previous verification and retains observations 
 test('paid lookup budget is reserved before calls and never silently retried after interruption',async()=>{
   let calls=0;const source={readiness:{web_search:true},quote:()=>5000,run:async()=>{calls++;return {status:'failed',errors:['Unavailable'],candidates:[]};}};
   const {db,lab,user}=await fixture({sources:source});try{
-    await lab.enqueue(user,{employers:['Example Manufacturing'],sources:['web_search'],daily_budget_micros:0,idempotency_key:'zero'});await lab.tick();assert.equal(calls,0);
+    await assert.rejects(lab.enqueue(user,{employers:['Example Manufacturing'],sources:['web_search'],daily_budget_micros:0,idempotency_key:'zero'}),{status:422});assert.equal(await lab.tick(),false);assert.equal(calls,0);
     await lab.enqueue(user,{employers:['Example Manufacturing'],sources:['web_search'],daily_budget_micros:5000,idempotency_key:'one'});await lab.tick();assert.equal(calls,1);
     await lab.enqueue(user,{employers:['Example Manufacturing'],sources:['web_search'],daily_budget_micros:5000,idempotency_key:'two'});await lab.tick();assert.equal(calls,1);
     assert.equal(Number((await db.query('SELECT sum(amount_micros) AS n FROM lab_costs')).rows[0].n),5000);
@@ -84,4 +85,181 @@ test('source failures remain gaps; expired free tasks recover and daily settings
     await lab.settings(user,{daily_enabled:true,daily_hour:0,configuration:{employers:['Example Manufacturing'],sources:['public_web']}});await lab.scheduleDue();await lab.scheduleDue();assert.equal((await db.query('SELECT * FROM lab_runs')).rows.length,1);
     await db.exec("UPDATE lab_tasks SET status='running',lease_until=now()-interval '5 minutes',attempts=1");await lab.tick();assert.equal((await db.query('SELECT status FROM lab_runs')).rows[0].status,'completed_with_gaps');assert.equal((await db.query('SELECT status FROM lab_tasks')).rows[0].status,'failed');
   }finally{await db.close();}
+});
+
+test('unconfigured discovery is rejected before queueing and source gaps remain available in run summaries',async()=>{
+  let employer;
+  const sources={readiness:{web_search:false},quote:s=>s==='web_search'?null:0,run:async(s,e)=>{employer=e;return {status:'partial',candidates:[],errors:['Official website index unavailable.']};}};
+  const {db,lab,user}=await fixture({sources});try{
+    await assert.rejects(lab.enqueue(user,{employers:['Example'],sources:['web_search']}),{status:422});
+    assert.equal((await db.query('SELECT count(*)::int AS n FROM lab_runs')).rows[0].n,0);
+    const run=await lab.enqueue(user,{employers:['Example'],states:['NY'],sources:['public_web']});
+    await lab.tick();assert.equal(employer.state,'NY');
+    const result=await lab.route(new Request('https://example.org/api/lab/runs'),user);
+    assert.deepEqual(result.runs[0].source_results[0].errors,['Official website index unavailable.']);
+    assert.equal(result.runs[0].source_results[0].company,'Example');
+    const detail=await lab.route(new Request('https://example.org/api/lab/runs/'+run.id),user);
+    assert.equal((await Response.json(detail).json()).tasks[0].result.errors[0],'Official website index unavailable.');
+    assert.equal((await lab.route(new Request('https://example.org/api/lab/runs'),{uid:'other',email:'other@example.org'})).runs.length,0);
+    await assert.rejects(lab.runDetail({uid:'other',email:'other@example.org'},run.id),{status:404});
+  }finally{await db.close();}
+});
+
+test('active inventory assessments are reused per user, while completed runs can be restarted',async()=>{
+ const {db,lab,user}=await fixture();try{
+  await lab.importCSV(user,{csv});
+  const first=await lab.enqueue(user,{kind:'inventory',idempotency_key:'first'});
+  const second=await lab.enqueue(user,{kind:'inventory',idempotency_key:'second'});
+  assert.equal(second.id,first.id);assert.equal(second.reused_active,true);
+  assert.equal((await db.query("SELECT count(*)::int AS n FROM lab_tasks WHERE source='inventory'")).rows[0].n,1);
+  await lab.tick();
+  const next=await lab.enqueue(user,{kind:'inventory',idempotency_key:'next'});assert.notEqual(next.id,first.id);
+  const other=await lab.enqueue({uid:'other',email:'other@example.com'},{kind:'inventory'});
+  assert.notEqual(other.id,next.id);assert.equal(other.status,'completed');assert.equal(other.dispatched,false);assert.equal(other.message,'No saved leads to assess.');
+ }finally{await db.close();}
+});
+
+test('research search matches full names and treats wildcard characters literally',async()=>{
+ const {db,lab,user}=await fixture();try{
+  await lab.importCSV(user,{csv:csv+'\nMorgan,Chen,100% Engineering,Manager,morgan@example.com,60,US'});
+  assert.equal((await lab.list(user,{search:'Jamie Rivera'})).total,1);
+  assert.equal((await lab.list(user,{search:'  jamie   rivera  '})).total,1);
+  assert.equal((await lab.list(user,{search:'%'})).total,1);
+  assert.equal((await lab.list(user,{search:'_'})).total,0);
+  assert.equal((await lab.list(user,{search:'\\'})).total,0);
+ }finally{await db.close();}
+});
+
+test('compact research pages preserve displayed quality and out-of-range totals without returning full records',async()=>{
+ const {db,lab,user}=await fixture();try{
+  await lab.importCSV(user,{csv});const id=(await lab.list(user)).leads[0].lead.id;
+  await db.query("UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{notes}',$1::jsonb)::text WHERE id=$2",[JSON.stringify('Private source note '.repeat(1000)),id]);
+  const full=await lab.list(user),small=await lab.list(user,{compact:'true'});
+  assert.equal(small.total,full.total);assert.equal(small.leads[0].quality.status,full.leads[0].quality.status);assert.equal(small.leads[0].quality.score,full.leads[0].quality.score);
+  for(const [key,gate] of Object.entries(full.leads[0].quality.gates))assert.deepEqual(small.leads[0].quality.gates[key],{state:gate.state,reason:gate.reason});
+  assert.equal(small.leads[0].lead.notes,undefined);assert.equal(small.leads[0].lead.email,undefined);
+  assert.ok(JSON.stringify(small).length<JSON.stringify(full).length/4);
+  assert.equal((await lab.detail(user,id)).lead.notes,'Private source note '.repeat(1000));
+  const beyond=await lab.list(user,{offset:100,search:'Jamie Rivera',compact:true});assert.equal(beyond.total,1);assert.equal(beyond.leads.length,0);
+  assert.equal((await lab.list({uid:'other',email:'other@example.com'},{offset:100,compact:true})).total,0);
+  await assert.rejects(lab.list(user,{compact:'sometimes'}),{status:422});
+ }finally{await db.close();}
+});
+
+test('inventory preserves partial progress and bounds new work without exposing record errors',async()=>{
+ const result=await assessInventory(['good','gone','bad','later'],async id=>{if(id==='gone')throw Object.assign(Error('Private identity'),{status:404});if(id==='bad')throw Error('Secret database detail');});
+ assert.equal(result.assessed,2);assert.equal(result.failed,1);assert.equal(result.skipped,1);assert.equal(result.remaining,0);assert.equal(result.status,'partial');
+ assert.doesNotMatch(JSON.stringify(result),/Private identity|Secret database detail/);
+ let time=0,calls=0;const bounded=await assessInventory(['a','b','c'],async()=>{calls++;time=61000;},{clock:()=>time});
+ assert.equal(calls,1);assert.equal(bounded.assessed,1);assert.equal(bounded.remaining,2);assert.equal(bounded.status,'partial');
+});
+
+test('a single record failure persists batch counts while other inventory records finish',async()=>{
+ const {db,pool,lab,user}=await fixture();try{
+  await lab.importCSV(user,{csv:csv+'\nMorgan,Chen,Other,Manager,morgan@example.com,60,US\nTaylor,Brooks,Other,Director,taylor@example.com,61,US'});
+  const bad=(await lab.list(user)).leads[0].lead.id;
+  await db.query('DELETE FROM lab_qualification');
+  const query=pool.query;pool.query=(sql,args)=>sql.startsWith('SELECT * FROM discovery_leads WHERE')&&args?.[3]===bad?Promise.reject(Error('Internal details')):query(sql,args);
+  const run=await lab.enqueue(user,{kind:'inventory'});await lab.tick();
+  const detail=await lab.runDetail(user,run.id),result=detail.tasks[0].result;
+  assert.equal(detail.run.status,'completed_with_gaps');assert.equal(result.assessed,2);assert.equal(result.failed,1);assert.equal(result.remaining,0);
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM lab_qualification')).rows[0].n,2);
+  assert.doesNotMatch(JSON.stringify(detail),/Internal details/);
+ }finally{await db.close();}
+});
+
+test('inventory retries prioritize unassessed and oldest records within the current user scope',async()=>{
+ const {db,lab,user}=await fixture();try{
+  await lab.importCSV(user,{csv:csv+'\nMorgan,Chen,Other,Manager,morgan@example.com,60,US\nTaylor,Brooks,Other,Director,taylor@example.com,61,US'});
+  const ids=(await db.query('SELECT id FROM discovery_leads ORDER BY id')).rows.map(r=>r.id);
+  await db.query('DELETE FROM lab_qualification');
+  await lab.detail(user,ids[0]);await lab.detail(user,ids[2]);
+  await db.query("UPDATE lab_qualification SET evaluated_at='2020-01-01' WHERE lead_id=$1",[ids[2]]);
+  await db.query(`INSERT INTO lab_qualification(lead_id,user_id,status,score,identity_signature)
+    SELECT $1,'other',status,score,identity_signature FROM lab_qualification WHERE lead_id=$2`,[ids[1],ids[0]]);
+  const first=await lab.enqueue(user,{kind:'inventory'}),task=(await lab.runDetail(user,first.id)).tasks[0];
+  assert.deepEqual(task.payload.ids,[ids[1],ids[2],ids[0]]);
+  let time=0;const result=await assessInventory(task.payload.ids,async id=>{await lab.detail(user,id);time=61000;},{clock:()=>time});
+  assert.equal(result.assessed,1);assert.equal(result.remaining,2);
+  // Simulate persistence of the bounded runner's completion before another run.
+  await db.query("UPDATE lab_runs SET status='completed_with_gaps' WHERE id=$1",[first.id]);
+  const next=await lab.enqueue(user,{kind:'inventory'}),nextTask=(await lab.runDetail(user,next.id)).tasks[0];
+  assert.deepEqual(nextTask.payload.ids,[ids[2],ids[0],ids[1]]);
+  assert.equal((await lab.enqueue({uid:'other',email:'other@example.com'},{kind:'inventory'})).status,'completed');
+ }finally{await db.close();}
+});
+
+for(const paid of [false,true])test(`${paid?'paid':'free'} recovery rejects a late result from the expired worker`,async()=>{
+ let finishOld,started;
+ const waiting=new Promise(resolve=>{started=resolve;});let calls=0;
+ const candidate=name=>({name,company:'Example Manufacturing',current_title:'Director',country:'US'});
+ const sources={readiness:{web_search:paid},quote:()=>paid?5000:0,run:async()=>{
+  calls++;if(calls===1){started();return new Promise(resolve=>{finishOld=resolve;});}
+  return {status:'completed',candidates:[candidate('Morgan Chen')]};
+ }};
+ const {db,lab,user}=await fixture({sources});let old;
+ try{
+  const run=await lab.enqueue(user,{employers:['Example Manufacturing'],sources:[paid?'web_search':'public_web'],daily_budget_micros:5000});
+  old=lab.tick();await waiting;
+  await db.query("UPDATE lab_tasks SET lease_until=now()-interval '1 minute' WHERE run_id=$1",[run.id]);
+  await lab.tick();
+  finishOld({status:'completed',candidates:[candidate('Jamie Rivera')]});await old;
+  const detail=await lab.runDetail(user,run.id),rows=(await lab.list(user)).leads;
+  assert.equal(calls,paid?1:2);
+  assert.equal(rows.length,paid?0:1);
+  if(!paid)assert.equal(rows[0].lead.first_name,'Morgan');
+  assert.equal(detail.tasks[0].status,paid?'skipped':'completed');
+  assert.equal(detail.run.status,paid?'completed_with_gaps':'completed');
+  assert.equal(Number((await db.query('SELECT COALESCE(sum(amount_micros),0) AS n FROM lab_costs')).rows[0].n),paid?5000:0);
+ }finally{finishOld?.({status:'failed',candidates:[]});if(old)await old;await db.close();}
+});
+
+test('assessment failure rolls back qualification writes instead of leaving partial detail state',async()=>{
+ const {db,pool,lab,user}=await fixture();try{
+  await lab.importCSV(user,{csv});await db.query('DELETE FROM lab_qualification');const id=(await db.query('SELECT id FROM discovery_leads')).rows[0].id;
+  const query=pool.query;let reads=0;
+  pool.query=(sql,args)=>sql==='SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2'&&++reads===2?Promise.reject(Error('Interrupted detail response')):query(sql,args);
+  await assert.rejects(lab.detail(user,id),/Interrupted detail response/);
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM lab_qualification')).rows[0].n,0);
+  pool.query=query;assert.ok((await lab.detail(user,id)).quality);
+ }finally{await db.close();}
+});
+
+test('an inventory worker that loses its lease cannot persist an assessment',async()=>{
+ const {db,pool,lab,user}=await fixture();try{
+  await lab.importCSV(user,{csv});await db.query('DELETE FROM lab_qualification');const run=await lab.enqueue(user,{kind:'inventory'});
+  const query=pool.query;let lost=false,begins=0;
+  pool.query=async(sql,args)=>{
+   if(sql==='BEGIN'&&++begins===2){
+    lost=true;await db.query("UPDATE lab_tasks SET lease_token='replacement-worker' WHERE run_id=$1",[run.id]);
+   }
+   return query(sql,args);
+  };
+  await lab.tick();assert.equal(lost,true);
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM lab_qualification')).rows[0].n,0);
+  assert.equal((await lab.runDetail(user,run.id)).tasks[0].status,'running');
+ }finally{await db.close();}
+});
+
+test('dashboard revalidation cannot overwrite a newer assessment version',async()=>{
+ const {db,pool,lab,user}=await fixture();try{
+  await lab.importCSV(user,{csv});const id=(await db.query('SELECT id FROM discovery_leads')).rows[0].id;
+  await db.query("UPDATE lab_qualification SET status='verified',score=100,evaluated_at='2026-09-10 01:00:00.123456+00' WHERE lead_id=$1",[id]);
+  const query=pool.query;let advanced=false;
+  pool.query=async(sql,args)=>{
+   const result=await query(sql,args);
+   if(!advanced&&sql==='SELECT lead_id,payload FROM lab_observations WHERE user_id=$1 AND lead_id=ANY($2::text[])'){
+    advanced=true;
+    // Another assessment commits after the dashboard read its old snapshot.
+    await db.query("UPDATE lab_qualification SET score=99,evaluated_at=evaluated_at+interval '1 microsecond' WHERE lead_id=$1",[id]);
+   }
+   return result;
+  };
+  await lab.metrics(user);assert.equal(advanced,true);
+  const stored=(await db.query('SELECT status,score FROM lab_qualification WHERE lead_id=$1',[id])).rows[0];
+  assert.equal(stored.status,'verified');assert.equal(stored.score,99);
+  // The next refresh can still downgrade unsupported evidence if no newer write intervenes.
+  pool.query=query;await lab.metrics(user);
+  assert.notEqual((await db.query('SELECT status FROM lab_qualification WHERE lead_id=$1',[id])).rows[0].status,'verified');
+ }finally{await db.close();}
 });

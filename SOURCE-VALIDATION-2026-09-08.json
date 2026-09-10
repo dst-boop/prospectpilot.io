@@ -1,0 +1,35 @@
+{
+  "input_rows": 656994,
+  "employer_plans": 595002,
+  "with_account_average": 559317,
+  "with_separated_future_benefits": 20152,
+  "with_reported_in_service_distributions": 0,
+  "sha256": "85fdbf91e494b64f83c8808fcb81f15d7ff8d7ba3a58e7fa6945d2589470f9b5",
+  "source_url": "https://www.dol.gov/agencies/ebsa/about-ebsa/our-activities/public-disclosure/foia/form-5500-datasets",
+  "generated_at": "2026-09-08T21:07:30.622864+00:00",
+  "person_leads": 0,
+  "source_archives": [
+    {
+      "file": "F_5500_2025_Latest.zip",
+      "bytes": 10105454,
+      "sha256": "ca02e1f9e2d2f5f00600fd85c497d4ecce5e0ede9aa58872b188a1ae247f6b20"
+    },
+    {
+      "file": "F_SCH_H_2025_Latest.zip",
+      "bytes": 2055797,
+      "sha256": "d601aeb56084b9aa19eff44e85b01da6fdef48142e92f97d77c6f1ad23ea712a"
+    },
+    {
+      "file": "F_SCH_I_2025_Latest.zip",
+      "bytes": 1913688,
+      "sha256": "b25c538fa076cd0cc184eda1706fe60902a9877aa1113c0275b6efaa309d8995"
+    },
+    {
+      "file": "F_5500_SF_2025_Latest.zip",
+      "bytes": 93765736,
+      "sha256": "41b09388b696835a46bbebbde09b222851fd8cf94cf941da9dffe01e2aa892b4"
+    }
+  ],
+  "distinct_plans": 584266,
+  "source_date_unknown": 0
+}

@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {normalizeLead, mergeLead, isUsableStoredLead} from './generated/worker.mjs';
 import {assessLead, candidateKeys, leadIdentity, validateObservation, nameKey, US_STATES, researchCSV, hash, QUALITY_VERSION} from './lead-quality.mjs';
-import {matchPlans, selectEmployers} from './plan-catalog.mjs';
+import {matchPlans, selectEmployers, catalogSummary} from './plan-catalog.mjs';
 import {SOURCE_CATALOG} from './source-catalog.mjs';
 import {csvRows} from './warn.mjs';
 
@@ -34,6 +34,19 @@ async function transaction(pool,fn) {
 }
 const visibleSQL=`team=$1 AND (owner_user_id=$2 OR lower(owner_email)=lower($3) OR EXISTS(SELECT 1 FROM discovery_users WHERE user_id=$2 AND role='admin'))`;
 
+export async function assessInventory(ids,assess,{clock=()=>performance.now(),budgetMs=60000}={}) {
+  const started=clock();let assessed=0,failed=0,skipped=0;
+  for(const id of ids){
+    // Stop starting new work well before the two-minute task lease expires.
+    if(clock()-started>=budgetMs)break;
+    try{await assess(id);assessed++;}catch(error){if(error.status===404)skipped++;else failed++;}
+  }
+  const remaining=ids.length-assessed-failed-skipped,errors=[];
+  if(failed)errors.push(`${failed} records could not be assessed. Run Assess saved leads again to retry.`);
+  if(remaining)errors.push(`The batch time limit left ${remaining} records unattempted. Run Assess saved leads again to continue.`);
+  return {status:failed||remaining?'partial':'completed',assessed,failed,skipped,remaining,errors,candidates:[]};
+}
+
 export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>new Date()}={}) {
   async function accessible(user,id,client=pool,lock=false) {
     const row=(await client.query(`SELECT * FROM discovery_leads WHERE ${visibleSQL} AND id=$4${lock?' FOR UPDATE':''}`,[TEAM,user.uid,user.email,id])).rows[0];
@@ -49,7 +62,17 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       first_verified_at=CASE WHEN lab_qualification.rule_version=EXCLUDED.rule_version THEN COALESCE(lab_qualification.first_verified_at,EXCLUDED.first_verified_at) ELSE EXCLUDED.first_verified_at END,rule_version=EXCLUDED.rule_version,evaluated_at=now()`,[lead.id,user.uid,quality.status,quality.score,quality.identity_signature,now().toISOString(),QUALITY_VERSION]);
     return quality;
   }
-  async function detail(user,id) {const {lead}=await accessible(user,id);return {lead,quality:await evaluate(user,lead),observations:await observations(user,id)};}
+  async function detail(user,id,task=null) {
+    return transaction(pool,async client=>{
+      if(task){
+        const owned=(await client.query("SELECT id FROM lab_tasks WHERE id=$1 AND lease_token=$2 AND status='running' AND lease_until>now() FOR UPDATE",[task.id,task.lease_token])).rows[0];
+        if(!owned)throw fail(409,'Assessment lease is no longer current.');
+      }
+      // Serialize persisted assessments with evidence reviews and lead edits.
+      const {lead}=await accessible(user,id,client,true);
+      return {lead,quality:await evaluate(user,lead,client),observations:await observations(user,id,client)};
+    });
+  }
   async function review(user,id,input) {
     return transaction(pool,async client=>{
       const {lead}=await accessible(user,id,client,true),identity=leadIdentity(lead);
@@ -60,19 +83,30 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       return {quality:await evaluate(user,lead,client)};
     });
   }
-  async function list(user,{offset=0,limit=50,status='',search=''}={}) {
+  async function list(user,{offset=0,limit=50,status='',search='',compact=false}={}) {
     offset=integer(offset,0,1000000,0);limit=integer(limit,1,100,50);
     if(status&&!['verified','promising','incomplete','excluded','identity_review','unassessed'].includes(status))throw fail(422,'Invalid quality filter.');
-    const rows=(await pool.query(`SELECT d.id,d.payload,q.status AS recorded_status,count(*) OVER()::int AS total
-      FROM discovery_leads d LEFT JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2
+    if(![true,false,'true','false'].includes(compact))throw fail(422,'Invalid compact result setting.');
+    const needle=String(search).trim().replace(/\s+/g,' ').slice(0,100),params=[TEAM,user.uid,user.email,status,needle];
+    const scope=`FROM discovery_leads d LEFT JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2
       WHERE ${visibleSQL} AND ($4='' OR COALESCE(q.status,'unassessed')=$4)
-      AND ($5='' OR d.payload::jsonb->>'first_name' ILIKE $5 OR d.payload::jsonb->>'last_name' ILIKE $5 OR d.payload::jsonb->>'company' ILIKE $5)
-      ORDER BY q.score DESC NULLS LAST,d.id LIMIT $6 OFFSET $7`,[TEAM,user.uid,user.email,status,search?`%${String(search).slice(0,100).replace(/[%_\\]/g,'')}%`:'',limit,offset])).rows;
+      AND ($5='' OR strpos(lower(concat_ws(' ',d.payload::jsonb->>'first_name',d.payload::jsonb->>'last_name')),lower($5))>0
+        OR strpos(lower(d.payload::jsonb->>'company'),lower($5))>0)`;
+    const rows=(await pool.query(`SELECT d.id,d.payload,q.status AS recorded_status,count(*) OVER()::int AS total ${scope}
+      ORDER BY q.score DESC NULLS LAST,d.id LIMIT $6 OFFSET $7`,[...params,limit,offset])).rows;
+    const total=rows[0]?.total??(offset>0?(await pool.query(`SELECT count(*)::int AS total ${scope}`,params)).rows[0].total:0);
     const ids=rows.map(r=>r.id);
     const records=ids.length?(await pool.query('SELECT lead_id,payload FROM lab_observations WHERE user_id=$1 AND lead_id=ANY($2::text[])',[user.uid,ids])).rows:[];
     // Live assessment prevents an expired or edited record from displaying an old verified badge.
-    const leads=rows.map(row=>{const lead={...parse(row.payload),id:row.id};return {lead,quality:assessLead(lead,records.filter(o=>o.lead_id===row.id).map(o=>parse(o.payload)),{now:now()})};});
-    return {leads,total:rows[0]?.total||0,offset,limit,filter_basis:'Last inventory assessment; displayed evidence is re-evaluated now.'};
+    const leads=rows.map(row=>{
+      const lead={...parse(row.payload),id:row.id},quality=assessLead(lead,records.filter(o=>o.lead_id===row.id).map(o=>parse(o.payload)),{now:now()});
+      if(compact===true||compact==='true')return {
+        lead:Object.fromEntries(['id','first_name','last_name','current_title','company'].map(k=>[k,lead[k]])),
+        quality:{status:quality.status,score:quality.score,gaps:quality.gaps,gates:Object.fromEntries(Object.entries(quality.gates).map(([k,g])=>[k,{state:g.state,reason:g.reason}]))}
+      };
+      return {lead,quality};
+    });
+    return {leads,total,offset,limit,filter_basis:'Last inventory assessment; displayed evidence is re-evaluated now.'};
   }
   async function saveCandidates(client,user,candidates,run,source) {
     if(!candidates.length)return {added:0,duplicates:0,rejected:0,ambiguous:0};
@@ -122,12 +156,14 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     let employers=[];
     if(kind==='discovery') {
       if(!config.sources.length)throw fail(422,'Select at least one discovery source.');
+      if(config.sources.includes('web_search')&&sources.quote('web_search')==null)throw fail(422,'Licensed web search is not configured. Deselect it to use free sources.');
+      if(config.sources.includes('web_search')&&sources.quote('web_search')>config.daily_budget_micros)throw fail(422,'The daily provider budget cannot cover one search query. Increase the budget or deselect licensed web search.');
       const plans=await selectEmployers(pool,config,user.uid);
       employers=plans.map(p=>({company:p.sponsor,city:p.city,state:p.state,plan_id:p.id}));
       for(const [i,company] of config.employers.entries()) {
         const target=employers.find(e=>nameKey(e.company)===nameKey(company));
         if(target)target.website=config.websites[i]||'';
-        else employers.push({company,website:config.websites[i]||''});
+        else employers.push({company,website:config.websites[i]||'',state:config.states.length===1?config.states[0]:''});
       }
       if(!employers.length) {
         const saved=(await pool.query(`SELECT payload FROM discovery_leads WHERE ${visibleSQL} ORDER BY updated_at DESC LIMIT 2000`,[TEAM,user.uid,user.email])).rows;
@@ -139,12 +175,17 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     let run;
     try {
       run=await transaction(pool,async client=>{
+        if(kind==='inventory'){
+          await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",['lab-inventory:'+user.uid]);
+          const active=(await client.query("SELECT * FROM lab_runs WHERE user_id=$1 AND kind='inventory' AND status IN ('queued','running') ORDER BY created_at,id LIMIT 1",[user.uid])).rows[0];
+          if(active)return {...active,reused_active:true};
+        }
         const id=randomUUID();
         const row=(await client.query(`INSERT INTO lab_runs(id,user_id,user_email,kind,idempotency_key,configuration,budget_micros) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7) RETURNING *`,[id,user.uid,user.email,kind,key,JSON.stringify(config),config.daily_budget_micros])).rows[0];
         if(kind==='inventory') {
-          const ids=(await client.query(`SELECT id FROM discovery_leads WHERE ${visibleSQL} ORDER BY id`,[TEAM,user.uid,user.email])).rows.map(r=>r.id);
+          const ids=(await client.query(`SELECT d.id FROM discovery_leads d LEFT JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2 WHERE ${visibleSQL} ORDER BY q.evaluated_at ASC NULLS FIRST,d.id`,[TEAM,user.uid,user.email])).rows.map(r=>r.id);
           for(let i=0;i<ids.length;i+=100)await client.query('INSERT INTO lab_tasks(id,run_id,task_key,source,payload) VALUES($1,$2,$3,$4,$5::jsonb)',[randomUUID(),id,`inventory:${i}`,'inventory',JSON.stringify({ids:ids.slice(i,i+100)})]);
-          if(!ids.length)await client.query("UPDATE lab_runs SET status='completed',completed_at=now(),message='No saved leads to assess.' WHERE id=$1",[id]);
+          if(!ids.length)return (await client.query("UPDATE lab_runs SET status='completed',completed_at=now(),message='No saved leads to assess.' WHERE id=$1 RETURNING *",[id])).rows[0];
         } else for(const employer of employers)for(const source of config.sources)await client.query('INSERT INTO lab_tasks(id,run_id,task_key,source,payload) VALUES($1,$2,$3,$4,$5::jsonb) ON CONFLICT(run_id,task_key) DO NOTHING',[randomUUID(),id,hash(`${source}:${nameKey(employer.company)}`),source,JSON.stringify(employer)]);
         return row;
       });
@@ -153,8 +194,9 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       const active=(await pool.query("SELECT * FROM lab_runs WHERE user_id=$1 AND (idempotency_key=$2 OR (kind='discovery' AND status IN ('queued','running'))) ORDER BY created_at DESC LIMIT 1",[user.uid,key])).rows[0];
       if(active)return {...active,replayed:true};throw error;
     }
+    if(run.status==='completed')return {...run,dispatched:false};
     let dispatched=false;try{dispatched=await dispatch();}catch{}
-    return {...run,dispatched,message:dispatched?'Research queued. You can close this page.':'Research queued. The background worker or recovery schedule must be active.'};
+    return {...run,dispatched,message:run.reused_active?'Your existing assessment is still queued or running. Its progress is shown in the run history.':dispatched?'Research queued. You can close this page.':'Research queued. The background worker or recovery schedule must be active.'};
   }
   async function importCSV(user,input) {
     if(typeof input.csv!=='string'||Buffer.byteLength(input.csv)>4000000)throw fail(422,'Upload a CSV smaller than 4 MB.');
@@ -214,8 +256,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     const user={uid:task.user_id,email:task.user_email},started=performance.now();let result;
     try {
       if(task.source==='inventory') {
-        let assessed=0;for(const id of parse(task.payload).ids) {try{const {lead}=await accessible(user,id);await evaluate(user,lead);assessed++;}catch(e){if(e.status!==404)throw e;}}
-        result={status:'completed',assessed,candidates:[]};
+        result=await assessInventory(parse(task.payload).ids,async id=>{await detail(user,id,task);});
       } else result=await sources.run(task.source,parse(task.payload));
     } catch {result={status:'failed',candidates:[],errors:['Source unavailable or timed out. No lead evidence was fabricated.']};}
     await transaction(pool,async client=>{
@@ -241,7 +282,8 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
   async function runs(user) {return (await pool.query(`SELECT r.*, (SELECT count(*)::int FROM lab_tasks WHERE run_id=r.id) AS tasks,
     (SELECT count(*)::int FROM lab_tasks WHERE run_id=r.id AND status NOT IN ('pending','running')) AS finished_tasks,
     (SELECT count(*)::int FROM lab_run_leads WHERE run_id=r.id AND is_new) AS new_people,
-    (SELECT COALESCE(sum(amount_micros),0) FROM lab_costs WHERE run_id=r.id) AS cost_micros
+    (SELECT COALESCE(sum(amount_micros),0) FROM lab_costs WHERE run_id=r.id) AS cost_micros,
+    (SELECT COALESCE(jsonb_agg(jsonb_build_object('source',t.source,'company',t.payload->>'company','status',t.status,'errors',COALESCE(t.result->'errors','[]'::jsonb)) ORDER BY t.id),'[]'::jsonb) FROM lab_tasks t WHERE t.run_id=r.id) AS source_results
     FROM lab_runs r WHERE user_id=$1 ORDER BY created_at DESC LIMIT 30`,[user.uid])).rows;}
   async function runDetail(user,id) {
     const run=(await pool.query('SELECT * FROM lab_runs WHERE id=$1 AND user_id=$2',[id,user.uid])).rows[0];if(!run)throw fail(404,'Research run not found.');
@@ -259,11 +301,12 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     // Revalidate previously verified rows against live identity and expiry before reporting totals.
     let cursor='';
     for(;;) {
-      const rows=(await pool.query(`SELECT d.id,d.payload FROM discovery_leads d JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2
+      const rows=(await pool.query(`SELECT d.id,d.payload,q.evaluated_at::text AS assessment_version FROM discovery_leads d JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2
         WHERE ${visibleSQL} AND q.status='verified' AND d.id>$4 ORDER BY d.id LIMIT 100`,[TEAM,user.uid,user.email,cursor])).rows;
       if(!rows.length)break;
       const ids=rows.map(r=>r.id),obs=(await pool.query('SELECT lead_id,payload FROM lab_observations WHERE user_id=$1 AND lead_id=ANY($2::text[])',[user.uid,ids])).rows;
-      for(const row of rows){const quality=assessLead({...parse(row.payload),id:row.id},obs.filter(o=>o.lead_id===row.id).map(o=>parse(o.payload)),{now:now()});if(quality.status!=='verified')await pool.query('UPDATE lab_qualification SET status=$1,score=$2,evaluated_at=now() WHERE lead_id=$3 AND user_id=$4',[quality.status,quality.score,row.id,user.uid]);}
+      // Preserve timestamp precision and only downgrade the exact assessment we read.
+      for(const row of rows){const quality=assessLead({...parse(row.payload),id:row.id},obs.filter(o=>o.lead_id===row.id).map(o=>parse(o.payload)),{now:now()});if(quality.status!=='verified')await pool.query('UPDATE lab_qualification SET status=$1,score=$2,evaluated_at=now() WHERE lead_id=$3 AND user_id=$4 AND evaluated_at=$5::timestamptz AND status=\'verified\'',[quality.status,quality.score,row.id,user.uid,row.assessment_version]);}
       cursor=ids.at(-1);
     }
     const daily=(await pool.query(`WITH days AS (SELECT generate_series((now() AT TIME ZONE 'UTC')::date-($2::int-1),(now() AT TIME ZONE 'UTC')::date,'1 day'::interval)::date AS day),
@@ -289,7 +332,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       row.reserved_cost_per_qualified=c.qualified&&row.cost_micros!==null?Number(row.cost_micros)/1000000/c.qualified:null;
     }
     const sum=(k)=>daily.reduce((s,r)=>s+Number(r[k]),0),verified=sum('newly_verified'),costs=sum('cost_micros');
-    const catalog=(await pool.query('SELECT count(*)::int AS plans,max(imported_at) AS imported_at FROM employer_plan_catalog')).rows[0];
+    const catalog=await catalogSummary(pool);
     return {daily,inventory,sources:sourceRows,catalog,period_days:days,totals:{new_sourced:sum('new_sourced'),imported:sum('imported'),newly_verified:verified,cost_usd:costs/1000000,cost_per_verified:verified?costs/1000000/verified:null,verified_per_calendar_day:verified/days},
       notes:['Newly verified counts each currently qualified person once under the current five-criterion rule. Expired, corrected and deleted records are excluded.','Source qualified yield measures the current qualification of new people acquired in this period; repeated lookups do not create new people. It is not a predictive accuracy estimate.','Imported records are separate from newly sourced people.','Costs include only recorded provider, labor, infrastructure and subscription amounts; unrecorded costs are unknown. Source costs show reserved provider charges only.','Nonverified inventory totals reflect the last assessment; run Assess saved leads to refresh all evidence. UTC calendar days.']};
   }

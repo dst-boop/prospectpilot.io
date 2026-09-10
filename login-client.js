@@ -1,13 +1,18 @@
 import {initializeApp} from 'firebase/app';
-import {getAuth,GoogleAuthProvider,signInWithPopup,setPersistence,inMemoryPersistence,signOut} from 'firebase/auth';
+import {getAuth,GoogleAuthProvider,signInWithPopup,setPersistence,inMemoryPersistence,signOut,createUserWithEmailAndPassword,signInWithEmailAndPassword,sendEmailVerification,sendPasswordResetEmail} from 'firebase/auth';
 import config from './firebase-config.json';
 const auth=getAuth(initializeApp(config));
-const button=document.querySelector('button'),message=document.querySelector('[role=status]');
-button.onclick=async()=>{button.disabled=true;message.textContent='Opening Google sign-in…';try{
-  await setPersistence(auth,inMemoryPersistence);
-  const result=await signInWithPopup(auth,new GoogleAuthProvider());
-  const response=await fetch('/auth/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idToken:await result.user.getIdToken()})});
-  await signOut(auth);
-  if(!response.ok){const body=await response.json();throw Error(body.detail||'Sign-in failed.');}
-  location.assign('/');
-}catch(error){message.textContent=error.code==='auth/popup-blocked'?'Allow the Google sign-in popup and try again.':error.message||'Sign-in failed. Please try again.';}finally{button.disabled=false;}};
+const $=id=>document.getElementById(id),message=document.querySelector('[role=status]');let mode='signin';
+const errors={'auth/popup-blocked':'Allow the Google sign-in popup and try again.','auth/popup-closed-by-user':'Sign-in was cancelled.','auth/operation-not-allowed':'This sign-in method is not enabled yet. Try Google sign-in.','auth/invalid-credential':'Could not sign in. Check your email and password.','auth/user-not-found':'Could not sign in. Check your email and password.','auth/wrong-password':'Could not sign in. Check your email and password.','auth/weak-password':'Choose a stronger password.','auth/email-already-in-use':'Could not create this account. Try signing in or resetting your password.','auth/too-many-requests':'Too many attempts. Please wait before trying again.','auth/network-request-failed':'Connection failed. Check your network and try again.'};
+const setMode=value=>{mode=value;$('formTitle').textContent=value==='signup'?'Create your account':'Sign in with email';$('submitEmail').textContent=value==='signup'?'Create account':'Sign in';$('password').autocomplete=value==='signup'?'new-password':'current-password';$('signInMode').setAttribute('aria-pressed',String(value==='signin'));$('signUpMode').setAttribute('aria-pressed',String(value==='signup'));message.textContent='';};
+$('signInMode').onclick=()=>setMode('signin');$('signUpMode').onclick=()=>setMode('signup');
+async function run(operation){document.querySelectorAll('button').forEach(b=>b.disabled=true);message.textContent='Working…';try{await setPersistence(auth,inMemoryPersistence);await operation();}catch(e){message.textContent=errors[e.code]||'Could not complete this request. Please try again.';}finally{await signOut(auth).catch(()=>{});$('password').value='';document.querySelectorAll('button').forEach(b=>b.disabled=false);}}
+async function session(user){const response=await fetch('/auth/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idToken:await user.getIdToken(true)})});if(!response.ok){message.textContent=(await response.json()).detail||'Sign-in failed.';return;}await signOut(auth);location.assign('/prospect');}
+$('google').onclick=()=>run(async()=>{message.textContent='Opening Google sign-in…';const result=await signInWithPopup(auth,new GoogleAuthProvider());await session(result.user);});
+$('emailForm').onsubmit=e=>{e.preventDefault();const email=$('email').value.trim(),password=$('password').value;run(async()=>{
+ const result=await(mode==='signup'?createUserWithEmailAndPassword(auth,email,password):signInWithEmailAndPassword(auth,email,password));
+ if(!result.user.emailVerified){$('resendVerification').hidden=false;if(mode==='signup')await sendEmailVerification(result.user);message.textContent=mode==='signup'?'Account created. Check your email to verify your address, then sign in.':'Verify your email address before signing in. You can resend the verification email below.';return;}
+ await session(result.user);
+});};
+$('resendVerification').onclick=()=>{if(!$('emailForm').reportValidity())return;const email=$('email').value.trim(),password=$('password').value;run(async()=>{const {user}=await signInWithEmailAndPassword(auth,email,password);if(user.emailVerified){await session(user);return;}await sendEmailVerification(user);message.textContent='Verification email sent. Check your inbox, then sign in.';});};
+$('resetPassword').onclick=()=>{if(!$('email').reportValidity())return;run(async()=>{try{await sendPasswordResetEmail(auth,$('email').value.trim());}catch(e){if(!['auth/user-not-found','auth/invalid-email'].includes(e.code))throw e;}message.textContent='If this address has an account, a password-reset email will arrive shortly.';});};

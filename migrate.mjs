@@ -12,7 +12,7 @@ export async function migrate(pool){
   await client.query("SET LOCAL statement_timeout = '120s'");
   await client.query('SELECT pg_advisory_xact_lock(505002)');
   await client.query('CREATE TABLE IF NOT EXISTS prospectpilot_migrations (id TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())');
-  for(const [id,file] of [['001','generated/schema.sql'],['002','migrations/002-query-indexes.sql'],['003','migrations/003-linkedin.sql'],['004','migrations/004-research-jobs.sql'],['005','migrations/005-research-history-index.sql'],['006','migrations/006-research-lab.sql'],['007','migrations/007-quality-v2.sql']]){
+  for(const [id,file] of [['001','generated/schema.sql'],['002','migrations/002-query-indexes.sql'],['003','migrations/003-linkedin.sql'],['004','migrations/004-research-jobs.sql'],['005','migrations/005-research-history-index.sql'],['006','migrations/006-research-lab.sql'],['007','migrations/007-quality-v2.sql'],['008','migrations/008-prospect-workspace.sql'],['009','migrations/009-prospect-jobs.sql'],['010','migrations/010-plan-latest-filing.sql'],['011','migrations/011-email-domain-check.sql'],['012','migrations/012-plan-catalog-summary.sql']]){
    if((await client.query('SELECT id FROM prospectpilot_migrations WHERE id=$1',[id])).rowCount)continue;
    await client.query(readFileSync(new URL(file,import.meta.url),'utf8'));
    await client.query('INSERT INTO prospectpilot_migrations(id) VALUES($1)',[id]);
