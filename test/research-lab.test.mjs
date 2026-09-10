@@ -10,7 +10,7 @@ async function fixture(options={}) {
   await db.exec(readFileSync(new URL('../migrations/006-research-lab.sql',import.meta.url),'utf8'));
   await db.exec(readFileSync(new URL('../migrations/012-plan-catalog-summary.sql',import.meta.url),'utf8'));
   await db.exec(readFileSync(new URL('../migrations/007-quality-v2.sql',import.meta.url),'utf8'));
-  const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
+  const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>pool.query(...a),release(){}})};
   const sources=options.sources||{readiness:{},quote:()=>0,run:async()=>({status:'completed',candidates:[{name:'Jamie Rivera',company:'Example Manufacturing',current_title:'Director',email:'jamie@example.com',estimated_age_range:'62',country:'US'}]})};
   return {db,pool,lab:createResearchLab({pool,sources,...options}),user:{uid:'owner',email:'owner@example.com'}};
 }
@@ -212,4 +212,31 @@ for(const paid of [false,true])test(`${paid?'paid':'free'} recovery rejects a la
   assert.equal(detail.run.status,paid?'completed_with_gaps':'completed');
   assert.equal(Number((await db.query('SELECT COALESCE(sum(amount_micros),0) AS n FROM lab_costs')).rows[0].n),paid?5000:0);
  }finally{finishOld?.({status:'failed',candidates:[]});if(old)await old;await db.close();}
+});
+
+test('assessment failure rolls back qualification writes instead of leaving partial detail state',async()=>{
+ const {db,pool,lab,user}=await fixture();try{
+  await lab.importCSV(user,{csv});await db.query('DELETE FROM lab_qualification');const id=(await db.query('SELECT id FROM discovery_leads')).rows[0].id;
+  const query=pool.query;let reads=0;
+  pool.query=(sql,args)=>sql==='SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2'&&++reads===2?Promise.reject(Error('Interrupted detail response')):query(sql,args);
+  await assert.rejects(lab.detail(user,id),/Interrupted detail response/);
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM lab_qualification')).rows[0].n,0);
+  pool.query=query;assert.ok((await lab.detail(user,id)).quality);
+ }finally{await db.close();}
+});
+
+test('an inventory worker that loses its lease cannot persist an assessment',async()=>{
+ const {db,pool,lab,user}=await fixture();try{
+  await lab.importCSV(user,{csv});await db.query('DELETE FROM lab_qualification');const run=await lab.enqueue(user,{kind:'inventory'});
+  const query=pool.query;let lost=false,begins=0;
+  pool.query=async(sql,args)=>{
+   if(sql==='BEGIN'&&++begins===2){
+    lost=true;await db.query("UPDATE lab_tasks SET lease_token='replacement-worker' WHERE run_id=$1",[run.id]);
+   }
+   return query(sql,args);
+  };
+  await lab.tick();assert.equal(lost,true);
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM lab_qualification')).rows[0].n,0);
+  assert.equal((await lab.runDetail(user,run.id)).tasks[0].status,'running');
+ }finally{await db.close();}
 });

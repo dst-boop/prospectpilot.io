@@ -62,7 +62,17 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       first_verified_at=CASE WHEN lab_qualification.rule_version=EXCLUDED.rule_version THEN COALESCE(lab_qualification.first_verified_at,EXCLUDED.first_verified_at) ELSE EXCLUDED.first_verified_at END,rule_version=EXCLUDED.rule_version,evaluated_at=now()`,[lead.id,user.uid,quality.status,quality.score,quality.identity_signature,now().toISOString(),QUALITY_VERSION]);
     return quality;
   }
-  async function detail(user,id) {const {lead}=await accessible(user,id);return {lead,quality:await evaluate(user,lead),observations:await observations(user,id)};}
+  async function detail(user,id,task=null) {
+    return transaction(pool,async client=>{
+      if(task){
+        const owned=(await client.query("SELECT id FROM lab_tasks WHERE id=$1 AND lease_token=$2 AND status='running' AND lease_until>now() FOR UPDATE",[task.id,task.lease_token])).rows[0];
+        if(!owned)throw fail(409,'Assessment lease is no longer current.');
+      }
+      // Serialize persisted assessments with evidence reviews and lead edits.
+      const {lead}=await accessible(user,id,client,true);
+      return {lead,quality:await evaluate(user,lead,client),observations:await observations(user,id,client)};
+    });
+  }
   async function review(user,id,input) {
     return transaction(pool,async client=>{
       const {lead}=await accessible(user,id,client,true),identity=leadIdentity(lead);
@@ -246,7 +256,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     const user={uid:task.user_id,email:task.user_email},started=performance.now();let result;
     try {
       if(task.source==='inventory') {
-        result=await assessInventory(parse(task.payload).ids,async id=>{const {lead}=await accessible(user,id);await evaluate(user,lead);});
+        result=await assessInventory(parse(task.payload).ids,async id=>{await detail(user,id,task);});
       } else result=await sources.run(task.source,parse(task.payload));
     } catch {result={status:'failed',candidates:[],errors:['Source unavailable or timed out. No lead evidence was fabricated.']};}
     await transaction(pool,async client=>{
