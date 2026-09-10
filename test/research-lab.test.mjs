@@ -240,3 +240,26 @@ test('an inventory worker that loses its lease cannot persist an assessment',asy
   assert.equal((await lab.runDetail(user,run.id)).tasks[0].status,'running');
  }finally{await db.close();}
 });
+
+test('dashboard revalidation cannot overwrite a newer assessment version',async()=>{
+ const {db,pool,lab,user}=await fixture();try{
+  await lab.importCSV(user,{csv});const id=(await db.query('SELECT id FROM discovery_leads')).rows[0].id;
+  await db.query("UPDATE lab_qualification SET status='verified',score=100,evaluated_at='2026-09-10 01:00:00.123456+00' WHERE lead_id=$1",[id]);
+  const query=pool.query;let advanced=false;
+  pool.query=async(sql,args)=>{
+   const result=await query(sql,args);
+   if(!advanced&&sql==='SELECT lead_id,payload FROM lab_observations WHERE user_id=$1 AND lead_id=ANY($2::text[])'){
+    advanced=true;
+    // Another assessment commits after the dashboard read its old snapshot.
+    await db.query("UPDATE lab_qualification SET score=99,evaluated_at=evaluated_at+interval '1 microsecond' WHERE lead_id=$1",[id]);
+   }
+   return result;
+  };
+  await lab.metrics(user);assert.equal(advanced,true);
+  const stored=(await db.query('SELECT status,score FROM lab_qualification WHERE lead_id=$1',[id])).rows[0];
+  assert.equal(stored.status,'verified');assert.equal(stored.score,99);
+  // The next refresh can still downgrade unsupported evidence if no newer write intervenes.
+  pool.query=query;await lab.metrics(user);
+  assert.notEqual((await db.query('SELECT status FROM lab_qualification WHERE lead_id=$1',[id])).rows[0].status,'verified');
+ }finally{await db.close();}
+});
