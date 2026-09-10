@@ -12,6 +12,19 @@ jobs:
   suite:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: synthetic-ci-only
+          POSTGRES_DB: prospectpilot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -21,6 +34,8 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm build
       - run: pnpm test
+        env:
+          POSTGRES_TEST_URL: postgres://postgres:synthetic-ci-only@127.0.0.1:5432/prospectpilot_test
       - run: python3 -m unittest discover -s test -p 'test_*.py'
       - run: for script in release.sh setup-research-worker.sh setup-plan-catalog.sh setup-plan-catalog-schedule.sh; do bash -n "$script"; done
       - name: Build the production image
