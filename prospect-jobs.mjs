@@ -95,7 +95,7 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
    if(matches.length){
     const old=matches[0].payload,oldKeys=contactIdentities(old);
     const strong=keys.some(key=>(key.startsWith('email:')||key.startsWith('linkedin:'))&&oldKeys.includes(key));
-    const newIdentifier=['email','linkedin_url','phone'].some(key=>contact[key]&&contact[key]!==old[key]);
+    const newIdentifier=['email','linkedin_url','phone','mobile_phone'].some(key=>contact[key]&&contact[key]!==old[key]);
     // A provider result must meet the same namesake safeguard as a CSV import
     // before we attribute its source history or list membership to this person.
     if(!strong&&newIdentifier){conflicts++;continue;}
