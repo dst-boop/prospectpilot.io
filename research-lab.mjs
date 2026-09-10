@@ -34,6 +34,19 @@ async function transaction(pool,fn) {
 }
 const visibleSQL=`team=$1 AND (owner_user_id=$2 OR lower(owner_email)=lower($3) OR EXISTS(SELECT 1 FROM discovery_users WHERE user_id=$2 AND role='admin'))`;
 
+export async function assessInventory(ids,assess,{clock=()=>performance.now(),budgetMs=60000}={}) {
+  const started=clock();let assessed=0,failed=0,skipped=0;
+  for(const id of ids){
+    // Stop starting new work well before the two-minute task lease expires.
+    if(clock()-started>=budgetMs)break;
+    try{await assess(id);assessed++;}catch(error){if(error.status===404)skipped++;else failed++;}
+  }
+  const remaining=ids.length-assessed-failed-skipped,errors=[];
+  if(failed)errors.push(`${failed} records could not be assessed. Run Assess saved leads again to retry.`);
+  if(remaining)errors.push(`The batch time limit left ${remaining} records unattempted. Run Assess saved leads again to continue.`);
+  return {status:failed||remaining?'partial':'completed',assessed,failed,skipped,remaining,errors,candidates:[]};
+}
+
 export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>new Date()}={}) {
   async function accessible(user,id,client=pool,lock=false) {
     const row=(await client.query(`SELECT * FROM discovery_leads WHERE ${visibleSQL} AND id=$4${lock?' FOR UPDATE':''}`,[TEAM,user.uid,user.email,id])).rows[0];
@@ -233,8 +246,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     const user={uid:task.user_id,email:task.user_email},started=performance.now();let result;
     try {
       if(task.source==='inventory') {
-        let assessed=0;for(const id of parse(task.payload).ids) {try{const {lead}=await accessible(user,id);await evaluate(user,lead);assessed++;}catch(e){if(e.status!==404)throw e;}}
-        result={status:'completed',assessed,candidates:[]};
+        result=await assessInventory(parse(task.payload).ids,async id=>{const {lead}=await accessible(user,id);await evaluate(user,lead);});
       } else result=await sources.run(task.source,parse(task.payload));
     } catch {result={status:'failed',candidates:[],errors:['Source unavailable or timed out. No lead evidence was fabricated.']};}
     await transaction(pool,async client=>{

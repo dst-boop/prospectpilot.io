@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
-import {createResearchLab} from '../research-lab.mjs';
+import {createResearchLab,assessInventory} from '../research-lab.mjs';
 import {leadIdentity} from '../lead-quality.mjs';
 async function fixture(options={}) {
   const db=new PGlite();
@@ -143,5 +143,27 @@ test('compact research pages preserve displayed quality and out-of-range totals 
   const beyond=await lab.list(user,{offset:100,search:'Jamie Rivera',compact:true});assert.equal(beyond.total,1);assert.equal(beyond.leads.length,0);
   assert.equal((await lab.list({uid:'other',email:'other@example.com'},{offset:100,compact:true})).total,0);
   await assert.rejects(lab.list(user,{compact:'sometimes'}),{status:422});
+ }finally{await db.close();}
+});
+
+test('inventory preserves partial progress and bounds new work without exposing record errors',async()=>{
+ const result=await assessInventory(['good','gone','bad','later'],async id=>{if(id==='gone')throw Object.assign(Error('Private identity'),{status:404});if(id==='bad')throw Error('Secret database detail');});
+ assert.equal(result.assessed,2);assert.equal(result.failed,1);assert.equal(result.skipped,1);assert.equal(result.remaining,0);assert.equal(result.status,'partial');
+ assert.doesNotMatch(JSON.stringify(result),/Private identity|Secret database detail/);
+ let time=0,calls=0;const bounded=await assessInventory(['a','b','c'],async()=>{calls++;time=61000;},{clock:()=>time});
+ assert.equal(calls,1);assert.equal(bounded.assessed,1);assert.equal(bounded.remaining,2);assert.equal(bounded.status,'partial');
+});
+
+test('a single record failure persists batch counts while other inventory records finish',async()=>{
+ const {db,pool,lab,user}=await fixture();try{
+  await lab.importCSV(user,{csv:csv+'\nMorgan,Chen,Other,Manager,morgan@example.com,60,US\nTaylor,Brooks,Other,Director,taylor@example.com,61,US'});
+  const bad=(await lab.list(user)).leads[0].lead.id;
+  await db.query('DELETE FROM lab_qualification');
+  const query=pool.query;pool.query=(sql,args)=>sql.startsWith('SELECT * FROM discovery_leads WHERE')&&args?.[3]===bad?Promise.reject(Error('Internal details')):query(sql,args);
+  const run=await lab.enqueue(user,{kind:'inventory'});await lab.tick();
+  const detail=await lab.runDetail(user,run.id),result=detail.tasks[0].result;
+  assert.equal(detail.run.status,'completed_with_gaps');assert.equal(result.assessed,2);assert.equal(result.failed,1);assert.equal(result.remaining,0);
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM lab_qualification')).rows[0].n,2);
+  assert.doesNotMatch(JSON.stringify(detail),/Internal details/);
  }finally{await db.close();}
 });
