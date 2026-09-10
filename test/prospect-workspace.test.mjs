@@ -59,7 +59,7 @@ test('public signups use isolated workspaces through the authenticated transport
 test('ZoomInfo CSV profile maps professional fields without API access or verification claims',()=>fixture(async app=>{
  const input={format:'zoominfo',csv:'Contact First Name,Contact Last Name,Company Name,Job Title,Contact Email,Direct Phone Number,LinkedIn Contact Profile URL,Contact Country,Contact State,Contact City,Company Website,Primary Industry,Management Level,Email Status,Company Country,Mobile Phone\nJamie,Rivera,Example,Director,jamie@example.com,N/A,https://www.linkedin.com/in/jamie-rivera,US,NY,Albany,https://example.com/,Manufacturing,Director,valid,Canada,2125559876'};
  const result=await app.importCSV(user,input);assert.equal(result.added,1);const contact=(await app.search(user)).contacts[0];
- assert.equal(contact.source,'ZoomInfo CSV export');assert.equal(contact.source_kind,'zoominfo_csv');assert.equal(contact.company_domain,'example.com');assert.equal(contact.country,'US');assert.equal(contact.phone,'');assert.equal(contact.email_status,'unverified');assert.equal(contact.seniority,'Director');
+ assert.equal(contact.source,'ZoomInfo CSV export');assert.equal(contact.source_kind,'zoominfo_csv');assert.equal(contact.company_domain,'example.com');assert.equal(contact.country,'US');assert.equal(contact.phone,'+12125559876');assert.equal(contact.mobile_phone,'+12125559876');assert.equal(contact.email_status,'unverified');assert.equal(contact.seniority,'Director');
  assert.equal((await app.importCSV(user,input)).replayed,true);assert.equal((await app.search(other)).total,0);
  await assert.rejects(app.importCSV(user,{...input,format:'unknown'}),{status:422});
 }));

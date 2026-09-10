@@ -8,9 +8,10 @@ export const CONTACT_ALIASES = {
   title: ['title', 'job title', 'position', 'current title'],
   email: ['email', 'work email', 'email address', 'business email', 'contact email'],
   phone: ['phone', 'business phone', 'direct phone', 'direct phone number'],
+  mobile_phone: ['mobile phone', 'mobile phone number', 'contact mobile phone'],
   linkedin_url: ['linkedin url', 'linkedin profile url', 'linkedin contact profile url'],
-  country: ['country', 'contact country'], state: ['state', 'region', 'contact state'],
-  city: ['city', 'contact city'], company_domain: ['company domain', 'domain', 'company website'],
+  country: ['country', 'contact country'], state: ['state', 'region', 'contact state', 'person state'],
+  city: ['city', 'contact city', 'person city'], company_domain: ['company domain', 'domain', 'company website'],
   industry: ['industry', 'primary industry'], seniority: ['seniority', 'seniority level', 'management level'],
   suppressed: ['suppressed', 'do not contact'],
 };
@@ -61,9 +62,13 @@ export function normalizeContact(raw, source) {
   contact.email = contactEmail(contact.email);
   const rawEmail = cleanField(mapped.email, 'email');
   if (rawEmail && !contact.email) throw fail('Invalid email address.');
+  const rawMobile = contact.mobile_phone;
+  contact.mobile_phone = contactPhone(rawMobile,contact.country);
+  if(rawMobile&&!contact.mobile_phone)throw fail('Use a supported +1 mobile phone number without an extension.');
   const rawPhone = contact.phone;
   contact.phone = contactPhone(rawPhone,contact.country);
   if (rawPhone && !contact.phone) throw fail('Use a supported +1 phone number without an extension. For contacts outside the US, include +1 explicitly.');
+  if(!contact.phone)contact.phone=contact.mobile_phone;
   const rawLinkedIn = contact.linkedin_url;
   contact.linkedin_url = linkedinURL(rawLinkedIn && !/^https?:/i.test(rawLinkedIn) ? 'https://' + rawLinkedIn : rawLinkedIn);
   if (rawLinkedIn && !contact.linkedin_url) throw fail('Use a LinkedIn person profile URL.');

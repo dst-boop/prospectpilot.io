@@ -8,6 +8,17 @@ const user={uid:'quality-owner'},other={uid:'other'};
 const basic='First Name,Last Name,Company,Email,Country,State\nAvery,Example,Sample Co,avery@example.com,United States,New York';
 async function fixture(fn){const db=new PGlite();try{await db.exec(readFileSync(new URL('../migrations/008-prospect-workspace.sql',import.meta.url),'utf8'));const app=createProspectWorkspace({pool:{query:(...args)=>db.query(...args),connect:async()=>({query:(...args)=>db.query(...args),release(){}})}});await fn(app,db);}finally{await db.close();}}
 const raw={first_name:'Avery',last_name:'Example',company:'Sample Co'};
+test('ZoomInfo person locations and mobile numbers survive alongside direct phones',()=>{
+ const headers='First Name,Last Name,Company Name,Direct Phone Number,Mobile phone,Person City,Person State';
+ const parsed=parseContactCSV(headers+'\nAvery,Example,Sample Co,2125551234,2125559876,Albany,New York');
+ assert.ok(parsed.mapped_columns.includes('mobile_phone'));assert.ok(parsed.mapped_columns.includes('city'));assert.ok(parsed.mapped_columns.includes('state'));
+ const record=normalizeContact(Object.fromEntries(parsed.headers.map((key,i)=>[key,parsed.records[0].cells[i]])));
+ assert.equal(record.phone,'+12125551234');assert.equal(record.mobile_phone,'+12125559876');assert.equal(record.city,'Albany');assert.equal(record.state,'NY');
+ const fallback=normalizeContact({first_name:'Avery',last_name:'Example',company:'Sample Co','Mobile phone':'2125559876'});
+ assert.equal(fallback.phone,'+12125559876');assert.equal(fallback.phone_status,'unverified');
+ assert.throws(()=>normalizeContact({...fallback,mobile_phone:'2125559876 ext 3'}),/mobile phone/);
+});
+
 test('international contact locations do not silently turn local phone numbers into +1 numbers',()=>{
  assert.throws(()=>normalizeContact({...raw,country:'India',phone:'9876543210'}),/phone/i);
  assert.equal(normalizeContact({...raw,country:'India',phone:'+12125551234'}).phone,'+12125551234');

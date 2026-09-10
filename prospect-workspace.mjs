@@ -8,7 +8,7 @@ const matchingDomainCheck="(COALESCE(payload->>'email','')<>'' AND payload->'ema
 export function contactIdentities(c){return [c.linkedin_url&&`linkedin:${c.linkedin_url}`,c.email&&!sharedMailbox(c.email)&&`email:${c.email}`,c.company&&`person:${nameKey(c.first_name)}|${nameKey(c.last_name)}|${nameKey(c.company)}|${nameKey(normalizeCountry(c.country))}|${nameKey(normalizeState(c.state,c.country))}|${nameKey(c.city)}`].filter(Boolean);}
 export function identityLookupKeys(c){return [...new Set([...contactIdentities(c),...(c.company?countryAliases(c.country).flatMap(country=>stateAliases(c.state,c.country).map(state=>`person:${nameKey(c.first_name)}|${nameKey(c.last_name)}|${nameKey(c.company)}|${nameKey(country)}|${nameKey(state)}|${nameKey(c.city)}`)):[])])];}
 const identities=contactIdentities;
-const editableFields=['first_name','last_name','title','company','company_domain','industry','seniority','city','state','country','email','phone','linkedin_url'];
+const editableFields=['first_name','last_name','title','company','company_domain','industry','seniority','city','state','country','email','phone','mobile_phone','linkedin_url'];
 export function searchFilters(input={}) {
  const allowed=['q','title','company','country','state','city','industry','seniority','email_status','has_email','has_phone','list_id','suppressed','source','quality_issue'];
  const filters=Object.fromEntries(allowed.map(k=>[k,text(input[k],k==='source'?200:150)]));
@@ -98,13 +98,13 @@ export function createProspectWorkspace({pool,jobs}) {
     if(matches.length){const old=matches[0].payload;
      if(['first_name','last_name','linkedin_url','email'].some(k=>old[k]&&contact[k]&&(k==='email'||k==='linkedin_url'?old[k]!==contact[k]:nameKey(old[k])!==nameKey(contact[k])))){result.conflicts++;report(record.row,'conflict','Matched identifier has a different name, email or LinkedIn profile. Existing record preserved.',contact);continue;}
      const strong=keys.some(key=>(key.startsWith('email:')||key.startsWith('linkedin:'))&&identities(old).includes(key));
-     const newIdentity=['email','linkedin_url','phone'].some(key=>contact[key]&&contact[key]!==old[key]);
+     const newIdentity=['email','linkedin_url','phone','mobile_phone'].some(key=>contact[key]&&contact[key]!==old[key]);
      if(!strong&&newIdentity){result.conflicts++;report(record.row,'conflict','Name and company match only; a new contact identifier needs review to avoid merging namesakes.',contact);continue;}
      const merged={...old};for(const [k,v] of Object.entries(contact))if(!merged[k]&&v&&k!=='source_kind')merged[k]=v;
      // Never overwrite verification or clear a suppression through a CSV import.
      merged.suppressed=old.suppressed||contact.suppressed;
      if(!old.email&&merged.email)merged.email_status='unverified';if(!old.phone&&merged.phone)merged.phone_status='unverified';
-     const differing=['title','company','country','state','city','phone'].filter(key=>old[key]&&contact[key]&&nameKey(old[key])!==nameKey(contact[key]));
+     const differing=['title','company','country','state','city','phone','mobile_phone'].filter(key=>old[key]&&contact[key]&&nameKey(old[key])!==nameKey(contact[key]));
      merged.source_history=[...(old.source_history||[{source:old.source,kind:old.source_kind,imported_at:null,observed_at:old.source_observed_at||null}]),{...evidence,differing_fields:differing,...differing.length?{proposed_values:Object.fromEntries(differing.map(key=>[key,contact[key]]))}:{}}].slice(-20);
      merged.last_seen_at=now;
      merged.field_sources={...(old.field_sources||{})};for(const key of Object.keys(contact))if(!old[key]&&contact[key]&&parsed.mapped_columns.includes(key))merged.field_sources[key]=evidence;
@@ -114,7 +114,7 @@ export function createProspectWorkspace({pool,jobs}) {
      indexRow({id,payload:merged,identity_keys:identities(merged)});result.duplicates++;
      report(record.row,'duplicate',differing.length?`Existing values preserved; source differs in: ${differing.join(', ')}.`:'Matched an existing contact; missing fields can be added without replacing verified data.',merged);
     }else{
-     contact.source_history=[evidence];contact.field_sources=Object.fromEntries(parsed.mapped_columns.filter(key=>contact[key]).map(key=>[key,evidence]));
+     contact.source_history=[evidence];contact.field_sources=Object.fromEntries(parsed.mapped_columns.filter(key=>contact[key]).map(key=>[key,evidence]));if(contact.phone&&!contact.field_sources.phone&&contact.mobile_phone===contact.phone)contact.field_sources.phone=evidence;
      changed.set(id,{id,payload:contact,identity_keys:identities(contact)});
      indexRow({id,payload:contact,identity_keys:identities(contact)});result.added++;report(record.row,'added','New contact; imported contact channels remain unverified.',contact);
     }
@@ -168,7 +168,7 @@ export function createProspectWorkspace({pool,jobs}) {
   if(rows.length!==selected.length)throw fail(404,'One or more contacts are unavailable.');
   // Keep the original contact columns first for existing CSV consumers. Last
   // check columns are explicitly historical and never refresh verification.
-  const fields=['first_name','last_name','title','company','company_domain','industry','seniority','city','state','country','email','email_status','phone','phone_status','linkedin_url','source','contact_id','source_observed_at','last_seen_at','last_email_checked_at','last_email_checked_address','last_email_verifier','last_domain_checked_at','last_domain_checked','last_domain_status','data_review_issues'];
+  const fields=['first_name','last_name','title','company','company_domain','industry','seniority','city','state','country','email','email_status','phone','phone_status','linkedin_url','source','contact_id','source_observed_at','last_seen_at','last_email_checked_at','last_email_checked_address','last_email_verifier','last_domain_checked_at','last_domain_checked','last_domain_status','data_review_issues','mobile_phone'];
   const included=rows.filter(r=>r.payload.suppressed!==true),now=new Date();
   const values=included.map(({id,payload:c})=>{
    const record={...c,contact_id:id,last_email_checked_at:c.email_verification?.checked_at,last_email_checked_address:c.email_verification?.email,last_email_verifier:c.email_verification?.provider,last_domain_checked_at:c.email_domain_check?.checked_at,last_domain_checked:c.email_domain_check?.domain,last_domain_status:c.email_domain_check?.status,data_review_issues:contactQuality(c,now).issues.map(issue=>issue.code).join(';')};
