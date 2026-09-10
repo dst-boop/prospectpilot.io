@@ -133,7 +133,7 @@ export function createProspectWorkspace({pool,jobs}) {
  }
  async function correctContact(user,id,input){
   if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!['fields','revision','reason','resolve_history_index','decision'].includes(k)))throw fail(422,'Provide contact corrections and a review reason.');
-  if(typeof input.reason!=='string'||!input.reason.trim()||input.reason.length>1000)throw fail(422,'Provide a review reason of 1�1,000 characters.');
+  if(typeof input.reason!=='string'||!input.reason.trim()||input.reason.length>1000)throw fail(422,'Provide a review reason of 1-1,000 characters.');
   return tx(pool,async c=>{
    await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`prospect:${user.uid}`]);
    const row=(await c.query('SELECT payload FROM prospect_contacts WHERE id=$1 AND user_id=$2 FOR UPDATE',[id,user.uid])).rows[0];if(!row)throw fail(404,'Contact not found.');
