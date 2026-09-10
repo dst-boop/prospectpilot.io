@@ -141,12 +141,17 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     let run;
     try {
       run=await transaction(pool,async client=>{
+        if(kind==='inventory'){
+          await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",['lab-inventory:'+user.uid]);
+          const active=(await client.query("SELECT * FROM lab_runs WHERE user_id=$1 AND kind='inventory' AND status IN ('queued','running') ORDER BY created_at,id LIMIT 1",[user.uid])).rows[0];
+          if(active)return {...active,reused_active:true};
+        }
         const id=randomUUID();
         const row=(await client.query(`INSERT INTO lab_runs(id,user_id,user_email,kind,idempotency_key,configuration,budget_micros) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7) RETURNING *`,[id,user.uid,user.email,kind,key,JSON.stringify(config),config.daily_budget_micros])).rows[0];
         if(kind==='inventory') {
           const ids=(await client.query(`SELECT id FROM discovery_leads WHERE ${visibleSQL} ORDER BY id`,[TEAM,user.uid,user.email])).rows.map(r=>r.id);
           for(let i=0;i<ids.length;i+=100)await client.query('INSERT INTO lab_tasks(id,run_id,task_key,source,payload) VALUES($1,$2,$3,$4,$5::jsonb)',[randomUUID(),id,`inventory:${i}`,'inventory',JSON.stringify({ids:ids.slice(i,i+100)})]);
-          if(!ids.length)await client.query("UPDATE lab_runs SET status='completed',completed_at=now(),message='No saved leads to assess.' WHERE id=$1",[id]);
+          if(!ids.length)return (await client.query("UPDATE lab_runs SET status='completed',completed_at=now(),message='No saved leads to assess.' WHERE id=$1 RETURNING *",[id])).rows[0];
         } else for(const employer of employers)for(const source of config.sources)await client.query('INSERT INTO lab_tasks(id,run_id,task_key,source,payload) VALUES($1,$2,$3,$4,$5::jsonb) ON CONFLICT(run_id,task_key) DO NOTHING',[randomUUID(),id,hash(`${source}:${nameKey(employer.company)}`),source,JSON.stringify(employer)]);
         return row;
       });
@@ -155,8 +160,9 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       const active=(await pool.query("SELECT * FROM lab_runs WHERE user_id=$1 AND (idempotency_key=$2 OR (kind='discovery' AND status IN ('queued','running'))) ORDER BY created_at DESC LIMIT 1",[user.uid,key])).rows[0];
       if(active)return {...active,replayed:true};throw error;
     }
+    if(run.status==='completed')return {...run,dispatched:false};
     let dispatched=false;try{dispatched=await dispatch();}catch{}
-    return {...run,dispatched,message:dispatched?'Research queued. You can close this page.':'Research queued. The background worker or recovery schedule must be active.'};
+    return {...run,dispatched,message:run.reused_active?'Your existing assessment is still queued or running. Its progress is shown in the run history.':dispatched?'Research queued. You can close this page.':'Research queued. The background worker or recovery schedule must be active.'};
   }
   async function importCSV(user,input) {
     if(typeof input.csv!=='string'||Buffer.byteLength(input.csv)>4000000)throw fail(422,'Upload a CSV smaller than 4 MB.');

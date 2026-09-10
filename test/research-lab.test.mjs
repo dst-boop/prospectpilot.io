@@ -104,3 +104,17 @@ test('unconfigured discovery is rejected before queueing and source gaps remain 
     await assert.rejects(lab.runDetail({uid:'other',email:'other@example.org'},run.id),{status:404});
   }finally{await db.close();}
 });
+
+test('active inventory assessments are reused per user, while completed runs can be restarted',async()=>{
+ const {db,lab,user}=await fixture();try{
+  await lab.importCSV(user,{csv});
+  const first=await lab.enqueue(user,{kind:'inventory',idempotency_key:'first'});
+  const second=await lab.enqueue(user,{kind:'inventory',idempotency_key:'second'});
+  assert.equal(second.id,first.id);assert.equal(second.reused_active,true);
+  assert.equal((await db.query("SELECT count(*)::int AS n FROM lab_tasks WHERE source='inventory'")).rows[0].n,1);
+  await lab.tick();
+  const next=await lab.enqueue(user,{kind:'inventory',idempotency_key:'next'});assert.notEqual(next.id,first.id);
+  const other=await lab.enqueue({uid:'other',email:'other@example.com'},{kind:'inventory'});
+  assert.notEqual(other.id,next.id);assert.equal(other.status,'completed');assert.equal(other.dispatched,false);assert.equal(other.message,'No saved leads to assess.');
+ }finally{await db.close();}
+});
