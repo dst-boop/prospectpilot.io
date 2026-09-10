@@ -25,3 +25,14 @@ test('public pages use applicable robots groups and query restrictions',async()=
  const sources=createLabSources({get});await sources.run('public_web',{company:'Example Company',website:'https://example.org/team'});assert.equal(reads,1);
  const blocked=await sources.run('public_web',{company:'Example Company',website:'https://example.org/team?private=yes'});assert.equal(reads,1);assert.equal(blocked.status,'partial');
 });
+
+test('SEC short employer names offer legal-name suggestions without assigning another entity',async()=>{
+ const sources=createLabSources({get:async url=>{
+  assert.equal(String(url),'https://www.sec.gov/files/company_tickers.json');
+  return response({0:{title:'EXAMPLE COMMUNICATIONS INC',cik_str:123},1:{title:'UNRELATED INC',cik_str:456}},url);
+ }});
+ const result=await sources.run('sec',{company:'Example'});
+ assert.equal(result.status,'no_match');assert.equal(result.candidates.length,0);
+ assert.match(result.errors[0],/EXAMPLE COMMUNICATIONS INC/);
+ assert.doesNotMatch(result.errors[0],/UNRELATED/);
+});

@@ -1,4 +1,5 @@
 import {QUALITY_VERSION} from './lead-quality.mjs';
+import {randomUUID} from 'node:crypto';
 const responseJSON=(detail,status)=>Response.json({detail},{status,headers:{'Cache-Control':'no-store'}});
 export function createHandler({auth,db,worker,loginHtml,loginScript,ownerEmail,origins,providerKey='',linkedin,nativeResearch,warn,warnPage,warnScript,researchJobs,lab,labPage,labScript,labStyle,prospect,prospectPage,prospectScript,prospectJobsScript,prospectStyle,releaseId=''}) {
   const allowed=new Set(origins);
@@ -43,7 +44,12 @@ export function createHandler({auth,db,worker,loginHtml,loginScript,ownerEmail,o
     }
     if(lab && url.pathname.startsWith('/api/lab/')) {
       try {const result=await lab.route(request,claims);const response=result instanceof Response?result:Response.json(result);response.headers.set('Cache-Control','private, no-store');response.headers.set('X-Content-Type-Options','nosniff');return response;}
-      catch(error){return responseJSON(error.status?error.message:'Research could not be completed. Please retry.',error.status||500);}
+      catch(error){
+        if(error.status)return responseJSON(error.message,error.status);
+        const reference=randomUUID();
+        console.error(JSON.stringify({event:'research_request_failed',reference,method:request.method,operation:url.pathname.replace(/\/(runs|leads)\/[^/]+/,'/$1/:id'),code:/^[A-Z0-9_]{1,40}$/i.test(error.code||'')?error.code:'unknown'}));
+        return responseJSON('Research request failed. Retry or report reference '+reference+'.',500);
+      }
     }
     if(warn&&url.pathname==='/warn'&&request.method==='GET')return new Response(warnPage,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});
     if(warn&&url.pathname==='/warn-client.js'&&request.method==='GET')return new Response(warnScript,{headers:{'Content-Type':'text/javascript','Cache-Control':'no-store'}});

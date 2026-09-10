@@ -70,7 +70,11 @@ export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicr
     if (source==='sec') {
       const tickers=await json('https://www.sec.gov/files/company_tickers.json',signal,5000000);
       const match=Object.values(tickers).filter(c=>companyKey(c.title)===companyKey(employer.company));
-      if(match.length!==1)return {status:'no_match',candidates:[],errors:['No unique SEC registrant matched the employer name.']};
+      if(match.length!==1){
+        const key=companyKey(employer.company);
+        const suggestions=key.length>=3?Object.values(tickers).filter(c=>companyKey(c.title).startsWith(key+' ')).slice(0,5).map(c=>c.title):[];
+        return {status:'no_match',candidates:[],errors:['No unique SEC registrant matched the employer name.'+(suggestions.length?' Try the full legal employer name: '+suggestions.join('; ')+'.':' Use the full legal employer name shown in SEC filings.')]};
+      }
       const cik=String(match[0].cik_str).padStart(10,'0');
       const sub=await json(`https://data.sec.gov/submissions/CIK${cik}.json`,signal,4000000);
       const recent=sub.filings?.recent, index=recent?.form?.findIndex(f=>f==='DEF 14A');
