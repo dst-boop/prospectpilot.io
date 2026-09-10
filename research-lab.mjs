@@ -173,7 +173,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
         const id=randomUUID();
         const row=(await client.query(`INSERT INTO lab_runs(id,user_id,user_email,kind,idempotency_key,configuration,budget_micros) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7) RETURNING *`,[id,user.uid,user.email,kind,key,JSON.stringify(config),config.daily_budget_micros])).rows[0];
         if(kind==='inventory') {
-          const ids=(await client.query(`SELECT id FROM discovery_leads WHERE ${visibleSQL} ORDER BY id`,[TEAM,user.uid,user.email])).rows.map(r=>r.id);
+          const ids=(await client.query(`SELECT d.id FROM discovery_leads d LEFT JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2 WHERE ${visibleSQL} ORDER BY q.evaluated_at ASC NULLS FIRST,d.id`,[TEAM,user.uid,user.email])).rows.map(r=>r.id);
           for(let i=0;i<ids.length;i+=100)await client.query('INSERT INTO lab_tasks(id,run_id,task_key,source,payload) VALUES($1,$2,$3,$4,$5::jsonb)',[randomUUID(),id,`inventory:${i}`,'inventory',JSON.stringify({ids:ids.slice(i,i+100)})]);
           if(!ids.length)return (await client.query("UPDATE lab_runs SET status='completed',completed_at=now(),message='No saved leads to assess.' WHERE id=$1 RETURNING *",[id])).rows[0];
         } else for(const employer of employers)for(const source of config.sources)await client.query('INSERT INTO lab_tasks(id,run_id,task_key,source,payload) VALUES($1,$2,$3,$4,$5::jsonb) ON CONFLICT(run_id,task_key) DO NOTHING',[randomUUID(),id,hash(`${source}:${nameKey(employer.company)}`),source,JSON.stringify(employer)]);

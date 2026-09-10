@@ -167,3 +167,24 @@ test('a single record failure persists batch counts while other inventory record
   assert.doesNotMatch(JSON.stringify(detail),/Internal details/);
  }finally{await db.close();}
 });
+
+test('inventory retries prioritize unassessed and oldest records within the current user scope',async()=>{
+ const {db,lab,user}=await fixture();try{
+  await lab.importCSV(user,{csv:csv+'\nMorgan,Chen,Other,Manager,morgan@example.com,60,US\nTaylor,Brooks,Other,Director,taylor@example.com,61,US'});
+  const ids=(await db.query('SELECT id FROM discovery_leads ORDER BY id')).rows.map(r=>r.id);
+  await db.query('DELETE FROM lab_qualification');
+  await lab.detail(user,ids[0]);await lab.detail(user,ids[2]);
+  await db.query("UPDATE lab_qualification SET evaluated_at='2020-01-01' WHERE lead_id=$1",[ids[2]]);
+  await db.query(`INSERT INTO lab_qualification(lead_id,user_id,status,score,identity_signature)
+    SELECT $1,'other',status,score,identity_signature FROM lab_qualification WHERE lead_id=$2`,[ids[1],ids[0]]);
+  const first=await lab.enqueue(user,{kind:'inventory'}),task=(await lab.runDetail(user,first.id)).tasks[0];
+  assert.deepEqual(task.payload.ids,[ids[1],ids[2],ids[0]]);
+  let time=0;const result=await assessInventory(task.payload.ids,async id=>{await lab.detail(user,id);time=61000;},{clock:()=>time});
+  assert.equal(result.assessed,1);assert.equal(result.remaining,2);
+  // Simulate persistence of the bounded runner's completion before another run.
+  await db.query("UPDATE lab_runs SET status='completed_with_gaps' WHERE id=$1",[first.id]);
+  const next=await lab.enqueue(user,{kind:'inventory'}),nextTask=(await lab.runDetail(user,next.id)).tasks[0];
+  assert.deepEqual(nextTask.payload.ids,[ids[2],ids[0],ids[1]]);
+  assert.equal((await lab.enqueue({uid:'other',email:'other@example.com'},{kind:'inventory'})).status,'completed');
+ }finally{await db.close();}
+});
