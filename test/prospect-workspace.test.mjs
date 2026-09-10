@@ -5,6 +5,40 @@ import {PGlite} from '@electric-sql/pglite';
 import {createProspectWorkspace} from '../prospect-workspace.mjs';
 import {createHandler} from '../handler.mjs';
 const user={uid:'one'},other={uid:'two'};
+test('contact corrections preserve suppression and history, invalidate routes and reject stale or colliding edits',()=>fixture(async (app,db)=>{
+ await app.importCSV(user,{csv});
+ const contact=(await app.search(user)).contacts[0],url='https://example.com/api/prospect/contacts/'+contact.id;
+ const get=async()=> (await app.route(new Request(url),user)).contact;
+ const patch=(input,who=user)=>app.route(new Request(url,{method:'PATCH',body:JSON.stringify(input)}),who);
+ await patch({suppressed:true});
+ await db.query("UPDATE prospect_contacts SET payload=payload || $1::jsonb WHERE id=$2",[JSON.stringify({email_status:'valid',phone_status:'valid',email_verification:{email:'jamie@example.com',provider:'test',checked_at:new Date().toISOString()}}),contact.id]);
+ const before=await get();assert.equal(before.email_status,'valid');
+ await patch({fields:{title:'VP Operations',email:'new@example.com',phone:'+12125559876'},revision:before.edit_revision,reason:'Reviewed source'});
+ const after=await get();assert.equal(after.title,'VP Operations');assert.equal(after.email,'new@example.com');assert.equal(after.email_status,'unverified');assert.equal(after.suppressed,true);assert.equal(after.phone_status,'unverified');assert.equal(after.email_verification.email,'jamie@example.com');
+ assert.equal(after.source_history.at(-1).changes.email.before,'jamie@example.com');assert.equal(after.field_sources.title.kind,'manual_review');
+ await assert.rejects(patch({fields:{title:'Old edit'},revision:before.edit_revision,reason:'Stale'}),{status:409});
+ await assert.rejects(patch({fields:{email_status:'valid'},revision:after.edit_revision,reason:'Not evidence'}),{status:422});
+ await assert.rejects(patch({fields:{title:'Other'},revision:after.edit_revision,reason:'Wrong user'},other),{status:404});
+ await app.importCSV(user,{csv:'First Name,Last Name,Email\nOther,Person,other@example.com'});
+ await assert.rejects(patch({fields:{email:'other@example.com'},revision:after.edit_revision,reason:'Collision'}),{status:409});
+ assert.equal((await get()).email,'new@example.com');
+}));
+
+test('source differences can be explicitly accepted or kept without replaying a stale review',()=>fixture(async app=>{
+ await app.importCSV(user,{csv});const contact=(await app.search(user)).contacts[0],url='https://example.com/api/prospect/contacts/'+contact.id;
+ const get=async()=> (await app.route(new Request(url),user)).contact;
+ const resolve=input=>app.route(new Request(url,{method:'PATCH',body:JSON.stringify(input)}),user);
+ await app.importCSV(user,{csv:csv.replace('Operations Director','VP Operations'),source:'New source'});
+ let c=await get(),index=c.source_history.findIndex(e=>e.proposed_values);assert.equal(c.title,'Operations Director');assert.equal(c.source_history[index].proposed_values.title,'VP Operations');
+ const input={resolve_history_index:index,decision:'accept',revision:c.edit_revision,reason:'Confirmed role on company page'};
+ await resolve(input);c=await get();assert.equal(c.title,'VP Operations');assert.equal(c.source_history[index].resolution.decision,'accept');
+ await assert.rejects(resolve(input),{status:409});
+ await app.importCSV(user,{csv:csv.replace('Operations Director','Outdated Role'),source:'Older source'});
+ c=await get();index=c.source_history.findIndex(e=>e.proposed_values&&!e.resolution);
+ await resolve({resolve_history_index:index,decision:'keep',revision:c.edit_revision,reason:'Source is outdated'});
+ c=await get();assert.equal(c.title,'VP Operations');assert.equal(c.source_history[index].resolution.decision,'keep');
+}));
+
 test('saved searches reject unavailable lists and retain valid quality and suppression filters',()=>fixture(async app=>{
  const own=await app.createList(user,{name:'Owned'}),foreign=await app.createList(other,{name:'Other list'});
  const save=filters=>app.route(new Request('https://example.com/api/prospect/saved-searches',{method:'POST',body:JSON.stringify({name:'Review',filters})}),user);
