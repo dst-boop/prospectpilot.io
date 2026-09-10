@@ -122,12 +122,14 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     let employers=[];
     if(kind==='discovery') {
       if(!config.sources.length)throw fail(422,'Select at least one discovery source.');
+      if(config.sources.includes('web_search')&&sources.quote('web_search')==null)throw fail(422,'Licensed web search is not configured. Deselect it to use free sources.');
+      if(config.sources.includes('web_search')&&sources.quote('web_search')>config.daily_budget_micros)throw fail(422,'The daily provider budget cannot cover one search query. Increase the budget or deselect licensed web search.');
       const plans=await selectEmployers(pool,config,user.uid);
       employers=plans.map(p=>({company:p.sponsor,city:p.city,state:p.state,plan_id:p.id}));
       for(const [i,company] of config.employers.entries()) {
         const target=employers.find(e=>nameKey(e.company)===nameKey(company));
         if(target)target.website=config.websites[i]||'';
-        else employers.push({company,website:config.websites[i]||''});
+        else employers.push({company,website:config.websites[i]||'',state:config.states.length===1?config.states[0]:''});
       }
       if(!employers.length) {
         const saved=(await pool.query(`SELECT payload FROM discovery_leads WHERE ${visibleSQL} ORDER BY updated_at DESC LIMIT 2000`,[TEAM,user.uid,user.email])).rows;
@@ -241,7 +243,8 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
   async function runs(user) {return (await pool.query(`SELECT r.*, (SELECT count(*)::int FROM lab_tasks WHERE run_id=r.id) AS tasks,
     (SELECT count(*)::int FROM lab_tasks WHERE run_id=r.id AND status NOT IN ('pending','running')) AS finished_tasks,
     (SELECT count(*)::int FROM lab_run_leads WHERE run_id=r.id AND is_new) AS new_people,
-    (SELECT COALESCE(sum(amount_micros),0) FROM lab_costs WHERE run_id=r.id) AS cost_micros
+    (SELECT COALESCE(sum(amount_micros),0) FROM lab_costs WHERE run_id=r.id) AS cost_micros,
+    (SELECT COALESCE(jsonb_agg(jsonb_build_object('source',t.source,'company',t.payload->>'company','status',t.status,'errors',COALESCE(t.result->'errors','[]'::jsonb)) ORDER BY t.id),'[]'::jsonb) FROM lab_tasks t WHERE t.run_id=r.id) AS source_results
     FROM lab_runs r WHERE user_id=$1 ORDER BY created_at DESC LIMIT 30`,[user.uid])).rows;}
   async function runDetail(user,id) {
     const run=(await pool.query('SELECT * FROM lab_runs WHERE id=$1 AND user_id=$2',[id,user.uid])).rows[0];if(!run)throw fail(404,'Research run not found.');

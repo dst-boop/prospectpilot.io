@@ -72,7 +72,7 @@ test('rule migration invalidates previous verification and retains observations 
 test('paid lookup budget is reserved before calls and never silently retried after interruption',async()=>{
   let calls=0;const source={readiness:{web_search:true},quote:()=>5000,run:async()=>{calls++;return {status:'failed',errors:['Unavailable'],candidates:[]};}};
   const {db,lab,user}=await fixture({sources:source});try{
-    await lab.enqueue(user,{employers:['Example Manufacturing'],sources:['web_search'],daily_budget_micros:0,idempotency_key:'zero'});await lab.tick();assert.equal(calls,0);
+    await assert.rejects(lab.enqueue(user,{employers:['Example Manufacturing'],sources:['web_search'],daily_budget_micros:0,idempotency_key:'zero'}),{status:422});assert.equal(await lab.tick(),false);assert.equal(calls,0);
     await lab.enqueue(user,{employers:['Example Manufacturing'],sources:['web_search'],daily_budget_micros:5000,idempotency_key:'one'});await lab.tick();assert.equal(calls,1);
     await lab.enqueue(user,{employers:['Example Manufacturing'],sources:['web_search'],daily_budget_micros:5000,idempotency_key:'two'});await lab.tick();assert.equal(calls,1);
     assert.equal(Number((await db.query('SELECT sum(amount_micros) AS n FROM lab_costs')).rows[0].n),5000);
@@ -83,5 +83,23 @@ test('source failures remain gaps; expired free tasks recover and daily settings
   const {db,lab,user}=await fixture({sources:{quote:()=>0,readiness:{},run:async()=>{throw Error('network');}}});try{
     await lab.settings(user,{daily_enabled:true,daily_hour:0,configuration:{employers:['Example Manufacturing'],sources:['public_web']}});await lab.scheduleDue();await lab.scheduleDue();assert.equal((await db.query('SELECT * FROM lab_runs')).rows.length,1);
     await db.exec("UPDATE lab_tasks SET status='running',lease_until=now()-interval '5 minutes',attempts=1");await lab.tick();assert.equal((await db.query('SELECT status FROM lab_runs')).rows[0].status,'completed_with_gaps');assert.equal((await db.query('SELECT status FROM lab_tasks')).rows[0].status,'failed');
+  }finally{await db.close();}
+});
+
+test('unconfigured discovery is rejected before queueing and source gaps remain available in run summaries',async()=>{
+  let employer;
+  const sources={readiness:{web_search:false},quote:s=>s==='web_search'?null:0,run:async(s,e)=>{employer=e;return {status:'partial',candidates:[],errors:['Official website index unavailable.']};}};
+  const {db,lab,user}=await fixture({sources});try{
+    await assert.rejects(lab.enqueue(user,{employers:['Example'],sources:['web_search']}),{status:422});
+    assert.equal((await db.query('SELECT count(*)::int AS n FROM lab_runs')).rows[0].n,0);
+    const run=await lab.enqueue(user,{employers:['Example'],states:['NY'],sources:['public_web']});
+    await lab.tick();assert.equal(employer.state,'NY');
+    const result=await lab.route(new Request('https://example.org/api/lab/runs'),user);
+    assert.deepEqual(result.runs[0].source_results[0].errors,['Official website index unavailable.']);
+    assert.equal(result.runs[0].source_results[0].company,'Example');
+    const detail=await lab.route(new Request('https://example.org/api/lab/runs/'+run.id),user);
+    assert.equal((await Response.json(detail).json()).tasks[0].result.errors[0],'Official website index unavailable.');
+    assert.equal((await lab.route(new Request('https://example.org/api/lab/runs'),{uid:'other',email:'other@example.org'})).runs.length,0);
+    await assert.rejects(lab.runDetail({uid:'other',email:'other@example.org'},run.id),{status:404});
   }finally{await db.close();}
 });
