@@ -60,19 +60,30 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       return {quality:await evaluate(user,lead,client)};
     });
   }
-  async function list(user,{offset=0,limit=50,status='',search=''}={}) {
+  async function list(user,{offset=0,limit=50,status='',search='',compact=false}={}) {
     offset=integer(offset,0,1000000,0);limit=integer(limit,1,100,50);
     if(status&&!['verified','promising','incomplete','excluded','identity_review','unassessed'].includes(status))throw fail(422,'Invalid quality filter.');
-    const rows=(await pool.query(`SELECT d.id,d.payload,q.status AS recorded_status,count(*) OVER()::int AS total
-      FROM discovery_leads d LEFT JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2
+    if(![true,false,'true','false'].includes(compact))throw fail(422,'Invalid compact result setting.');
+    const needle=String(search).trim().replace(/\s+/g,' ').slice(0,100),params=[TEAM,user.uid,user.email,status,needle];
+    const scope=`FROM discovery_leads d LEFT JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2
       WHERE ${visibleSQL} AND ($4='' OR COALESCE(q.status,'unassessed')=$4)
-      AND ($5='' OR d.payload::jsonb->>'first_name' ILIKE $5 OR d.payload::jsonb->>'last_name' ILIKE $5 OR d.payload::jsonb->>'company' ILIKE $5)
-      ORDER BY q.score DESC NULLS LAST,d.id LIMIT $6 OFFSET $7`,[TEAM,user.uid,user.email,status,search?`%${String(search).slice(0,100).replace(/[%_\\]/g,'')}%`:'',limit,offset])).rows;
+      AND ($5='' OR strpos(lower(concat_ws(' ',d.payload::jsonb->>'first_name',d.payload::jsonb->>'last_name')),lower($5))>0
+        OR strpos(lower(d.payload::jsonb->>'company'),lower($5))>0)`;
+    const rows=(await pool.query(`SELECT d.id,d.payload,q.status AS recorded_status,count(*) OVER()::int AS total ${scope}
+      ORDER BY q.score DESC NULLS LAST,d.id LIMIT $6 OFFSET $7`,[...params,limit,offset])).rows;
+    const total=rows[0]?.total??(offset>0?(await pool.query(`SELECT count(*)::int AS total ${scope}`,params)).rows[0].total:0);
     const ids=rows.map(r=>r.id);
     const records=ids.length?(await pool.query('SELECT lead_id,payload FROM lab_observations WHERE user_id=$1 AND lead_id=ANY($2::text[])',[user.uid,ids])).rows:[];
     // Live assessment prevents an expired or edited record from displaying an old verified badge.
-    const leads=rows.map(row=>{const lead={...parse(row.payload),id:row.id};return {lead,quality:assessLead(lead,records.filter(o=>o.lead_id===row.id).map(o=>parse(o.payload)),{now:now()})};});
-    return {leads,total:rows[0]?.total||0,offset,limit,filter_basis:'Last inventory assessment; displayed evidence is re-evaluated now.'};
+    const leads=rows.map(row=>{
+      const lead={...parse(row.payload),id:row.id},quality=assessLead(lead,records.filter(o=>o.lead_id===row.id).map(o=>parse(o.payload)),{now:now()});
+      if(compact===true||compact==='true')return {
+        lead:Object.fromEntries(['id','first_name','last_name','current_title','company'].map(k=>[k,lead[k]])),
+        quality:{status:quality.status,score:quality.score,gaps:quality.gaps,gates:Object.fromEntries(Object.entries(quality.gates).map(([k,g])=>[k,{state:g.state,reason:g.reason}]))}
+      };
+      return {lead,quality};
+    });
+    return {leads,total,offset,limit,filter_basis:'Last inventory assessment; displayed evidence is re-evaluated now.'};
   }
   async function saveCandidates(client,user,candidates,run,source) {
     if(!candidates.length)return {added:0,duplicates:0,rejected:0,ambiguous:0};
