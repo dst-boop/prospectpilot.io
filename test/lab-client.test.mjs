@@ -7,7 +7,7 @@ function client(){
   const elements=new Map(),pending=[];
   const element=id=>{
     if(!elements.has(id))elements.set(id,{value:'',textContent:'',innerHTML:'',disabled:false,open:false,
-      classList:{toggle(){}},reset(){},showModal(){this.open=true;},
+      classList:{toggle(){}},reset(){},replaceChildren(){},showModal(){this.open=true;},
       addEventListener(event,handler){this[event+'Handler']=handler;},close(){this.open=false;this.closeHandler?.();}});
     return elements.get(id);
   };
@@ -16,7 +16,7 @@ function client(){
     fetch:(url,options)=>new Promise(resolve=>pending.push({url,options,respond:(data,status=200)=>resolve({status,ok:status===200,headers:{get:()=> 'application/json'},json:async()=>data})}))});
   vm.runInContext(readFileSync(new URL('../lab-client.js',import.meta.url),'utf8').replace(/init\(\);\s*$/,''),context);
   // Isolate dialog interactions from the independent dashboard refresh.
-  vm.runInContext('refresh=async()=>{}',context);
+  vm.runInContext('refresh=async()=>{};loadActivity=async()=>{}',context);
   return {element,pending,run:code=>vm.runInContext(code,context)};
 }
 const lead=name=>({lead:{id:name,first_name:name,last_name:'Example',evidence:[]},quality:{gates:{},warnings:[],plans:[],identity_signature:name}});
@@ -65,4 +65,15 @@ test('review refresh cannot replace a newer selection after the save succeeds',a
   c.pending[3].respond(lead('B'));await b;c.pending[2].respond(lead('A'));await save;
   assert.equal(c.element('personName').textContent,'B Example');
   assert.equal(c.element('reviewError').textContent,'');
+});
+
+test('saving an outcome cannot close a different prospect opened while the save is pending',async()=>{
+ const c=client();c.run("current={lead:{id:'A'}};currentWorkflow={action:{signature:'A'}};activityKey='one-save';leadDetailVersion=1");
+ c.element('activityOutcome').value='connected';c.element('activityNext').value='';c.element('detail').open=true;
+ const save=c.element('activityForm').onsubmit({preventDefault(){}});
+ assert.equal(c.pending[0].url,'/api/lab/leads/A/activity');
+ await c.element('activityForm').onsubmit({preventDefault(){}});assert.equal(c.pending.length,1);
+ c.run("leadDetailVersion=2;current={lead:{id:'B'}}");
+ c.pending[0].respond({saved:true});await save;
+ assert.equal(c.element('detail').open,true);assert.equal(c.run('current.lead.id'),'B');
 });

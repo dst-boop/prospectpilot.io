@@ -1,3 +1,4 @@
+import {createAdvisorWorkflow} from './advisor-workflow.mjs';
 import {randomUUID} from 'node:crypto';
 import {normalizeLead, mergeLead, isUsableStoredLead} from './generated/worker.mjs';
 import {assessLead, candidateKeys, leadIdentity, validateObservation, nameKey, US_STATES, researchCSV, hash, QUALITY_VERSION} from './lead-quality.mjs';
@@ -49,9 +50,9 @@ export async function assessInventory(ids,assess,{clock=()=>performance.now(),bu
 
 export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>new Date()}={}) {
   async function accessible(user,id,client=pool,lock=false) {
-    const row=(await client.query(`SELECT * FROM discovery_leads WHERE ${visibleSQL} AND id=$4${lock?' FOR UPDATE':''}`,[TEAM,user.uid,user.email,id])).rows[0];
+    const row=(await client.query(`SELECT discovery_leads.*,EXISTS(SELECT 1 FROM advisor_contact_links acl JOIN prospect_contacts pc ON pc.id=acl.contact_id AND pc.user_id=acl.user_id WHERE acl.lead_id=discovery_leads.id AND pc.payload->>'suppressed'='true') AS linked_suppressed FROM discovery_leads WHERE ${visibleSQL} AND id=$4${lock?' FOR UPDATE':''}`,[TEAM,user.uid,user.email,id])).rows[0];
     if(!row)throw fail(404,'Lead not found or unavailable to this account.');
-    return {...row,lead:{...parse(row.payload),id:row.id}};
+    return {...row,lead:{...parse(row.payload),id:row.id,...(row.linked_suppressed?{suppressed:true}:{})}};
   }
   async function observations(user,id,client=pool) {return (await client.query('SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows.map(r=>parse(r.payload));}
   async function evaluate(user,lead,client=pool) {
@@ -336,9 +337,38 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     return {daily,inventory,sources:sourceRows,catalog,period_days:days,totals:{new_sourced:sum('new_sourced'),imported:sum('imported'),newly_verified:verified,cost_usd:costs/1000000,cost_per_verified:verified?costs/1000000/verified:null,verified_per_calendar_day:verified/days},
       notes:['Newly verified counts each currently qualified person once under the current five-criterion rule. Expired, corrected and deleted records are excluded.','Source qualified yield measures the current qualification of new people acquired in this period; repeated lookups do not create new people. It is not a predictive accuracy estimate.','Imported records are separate from newly sourced people.','Costs include only recorded provider, labor, infrastructure and subscription amounts; unrecorded costs are unknown. Source costs show reserved provider charges only.','Nonverified inventory totals reflect the last assessment; run Assess saved leads to refresh all evidence. UTC calendar days.']};
   }
+  async function importContacts(user,input) {
+    if(!Array.isArray(input.ids)||!input.ids.length||input.ids.length>100||input.ids.some(id=>typeof id!=='string'||id.length>100))throw fail(422,'Select 1–100 directory contacts at a time.');
+    const ids=[...new Set(input.ids)].sort();
+    return transaction(pool,async client=>{
+      await client.query('SELECT pg_advisory_xact_lock(505006)');
+      const contacts=(await client.query('SELECT id,payload,updated_at FROM prospect_contacts WHERE user_id=$1 AND id=ANY($2::text[]) ORDER BY id FOR SHARE',[user.uid,ids])).rows;
+      if(contacts.length!==ids.length)throw fail(404,'One or more directory contacts are unavailable.');
+      const key='directory:'+hash(JSON.stringify(contacts));
+      const prior=(await client.query('SELECT id FROM lab_runs WHERE user_id=$1 AND idempotency_key=$2',[user.uid,key])).rows[0];if(prior)return {replayed:true,run:prior};
+      const permitted=contacts.filter(c=>!c.payload.suppressed),run={id:randomUUID()};
+      await client.query("INSERT INTO lab_runs(id,user_id,user_email,kind,idempotency_key,status) VALUES($1,$2,$3,'import',$4,'running')",[run.id,user.uid,user.email,key]);
+      const candidates=permitted.map(c=>({...c.payload,current_title:c.payload.title,source_names:['Contact directory: '+(c.payload.source||'reported identifiers')]}));
+      const result=await saveCandidates(client,user,candidates,run,'Contact directory');
+      const saved=(await client.query('SELECT d.id,d.payload FROM discovery_leads d JOIN lab_run_leads l ON l.lead_id=d.id WHERE l.run_id=$1',[run.id])).rows;
+      let linked=0;
+      for(const c of permitted){const keys=new Set(candidateKeys(c.payload));const matches=saved.filter(r=>candidateKeys(parse(r.payload)).some(k=>keys.has(k)));if(matches.length!==1)continue;
+        await client.query('INSERT INTO advisor_contact_links(contact_id,lead_id,user_id) VALUES($1,$2,$3) ON CONFLICT(contact_id,user_id) DO UPDATE SET lead_id=EXCLUDED.lead_id',[c.id,matches[0].id,user.uid]);linked++;
+      }
+      await client.query("UPDATE lab_runs SET status='completed',message=$1,completed_at=now() WHERE id=$2",[JSON.stringify({...result,linked,suppressed:contacts.length-permitted.length}),run.id]);
+      return {run,result,linked,suppressed:contacts.length-permitted.length};
+    });
+  }
+  const advisor=createAdvisorWorkflow({pool,accessible,evaluate,transaction,visibleSQL,now});
   async function route(request,user) {
     const url=new URL(request.url),path=url.pathname.replace(/\/$/,'');
     const body=async()=>{try{return await request.json();}catch{throw fail(422,'Invalid JSON request.');}};
+    if(path==='/api/lab/contact-import'&&request.method==='POST')return importContacts(user,await body());
+    if(path==='/api/lab/worklist'&&request.method==='GET')return advisor.worklist(user,Object.fromEntries(url.searchParams));
+    if(path==='/api/lab/enrichment-export'&&request.method==='POST')return advisor.exportEnrichment(user,await body());
+    const activityMatch=path.match(/^\/api\/lab\/leads\/([^/]+)\/activity$/);
+    if(activityMatch&&request.method==='GET')return advisor.detail(user,decodeURIComponent(activityMatch[1]));
+    if(activityMatch&&request.method==='POST')return advisor.save(user,decodeURIComponent(activityMatch[1]),await body());
     if(path==='/api/lab/summary'&&request.method==='GET')return metrics(user,url.searchParams.get('days')||14);
     if(path==='/api/lab/sources'&&request.method==='GET')return {sources:SOURCE_CATALOG,readiness:sources.readiness};
     if(path==='/api/lab/settings'&&request.method==='GET')return settings(user);
@@ -360,5 +390,5 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     if(runMatch&&request.method==='GET')return runDetail(user,decodeURIComponent(runMatch[1]));
     throw fail(404,'Research endpoint not found.');
   }
-  return {route,tick,scheduleDue,enqueue,importCSV,detail,list,review,metrics,settings,cost,runDetail};
+  return {importContacts,advisor,route,tick,scheduleDue,enqueue,importCSV,detail,list,review,metrics,settings,cost,runDetail};
 }
