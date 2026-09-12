@@ -10,6 +10,8 @@ async function fixture(options={}) {
   await db.exec(readFileSync(new URL('../migrations/006-research-lab.sql',import.meta.url),'utf8'));
   await db.exec(readFileSync(new URL('../migrations/012-plan-catalog-summary.sql',import.meta.url),'utf8'));
   await db.exec(readFileSync(new URL('../migrations/007-quality-v2.sql',import.meta.url),'utf8'));
+  await db.exec(readFileSync(new URL('../migrations/008-prospect-workspace.sql',import.meta.url),'utf8'));
+  await db.exec(readFileSync(new URL('../migrations/013-advisor-workflow.sql',import.meta.url),'utf8'));
   const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>pool.query(...a),release(){}})};
   const sources=options.sources||{readiness:{},quote:()=>0,run:async()=>({status:'completed',candidates:[{name:'Jamie Rivera',company:'Example Manufacturing',current_title:'Director',email:'jamie@example.com',estimated_age_range:'62',country:'US'}]})};
   return {db,pool,lab:createResearchLab({pool,sources,...options}),user:{uid:'owner',email:'owner@example.com'}};
@@ -159,7 +161,7 @@ test('a single record failure persists batch counts while other inventory record
   await lab.importCSV(user,{csv:csv+'\nMorgan,Chen,Other,Manager,morgan@example.com,60,US\nTaylor,Brooks,Other,Director,taylor@example.com,61,US'});
   const bad=(await lab.list(user)).leads[0].lead.id;
   await db.query('DELETE FROM lab_qualification');
-  const query=pool.query;pool.query=(sql,args)=>sql.startsWith('SELECT * FROM discovery_leads WHERE')&&args?.[3]===bad?Promise.reject(Error('Internal details')):query(sql,args);
+  const query=pool.query;pool.query=(sql,args)=>sql.startsWith('SELECT discovery_leads.*,EXISTS(')&&args?.[3]===bad?Promise.reject(Error('Internal details')):query(sql,args);
   const run=await lab.enqueue(user,{kind:'inventory'});await lab.tick();
   const detail=await lab.runDetail(user,run.id),result=detail.tasks[0].result;
   assert.equal(detail.run.status,'completed_with_gaps');assert.equal(result.assessed,2);assert.equal(result.failed,1);assert.equal(result.remaining,0);

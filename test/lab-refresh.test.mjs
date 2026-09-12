@@ -12,7 +12,7 @@ test('summary failure does not discard successful results or stop active-run pol
   const context=vm.createContext({busy:false,pollTimer:null,runs:[],document:{hidden:false},
     $:()=>button,clearTimeout(){},setTimeout:()=>{scheduled++;return 1;},
     request:path=>path.endsWith('/summary')?new Promise((_,reject)=>{rejectSummary=reject;}):Promise.resolve({runs:[{status:'running'}]}),
-    renderSummary(){throw Error('Failed summary must not render.');},
+    loadWorklist:async()=>{},renderSummary(){throw Error('Failed summary must not render.');},
     renderRuns:data=>{rendered++;context.runs=data.runs;},loadLeads:async()=>{loaded++;},
     notice:text=>{notice=text;}});
   vm.runInContext(refresh,context);

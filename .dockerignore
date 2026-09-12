@@ -61,3 +61,5 @@
 !prospect-providers.mjs
 !prospect-jobs.mjs
 !prospect-jobs-client.js
+
+!advisor-workflow.mjs

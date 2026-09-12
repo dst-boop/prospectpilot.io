@@ -1,14 +1,20 @@
 # ProspectPilot
 
-A professional contact workspace for discovering contacts, building lists, enriching email and phone data, verifying emails, and exporting results. Built on the existing Firebase-authenticated Cloud Run and Cloud SQL application.
+An advisor workspace for choosing the next prospect, reviewing evidence, and keeping follow-ups moving, alongside a professional contact directory and research tools. Built on the existing Firebase-authenticated Cloud Run and Cloud SQL application.
 
-The authenticated home page and `/prospect` provide directory filters, CSV import with deduplication, lists, saved searches, contact details, source and verification history, suppression controls, and CSV export. People Data Labs search/enrichment and Hunter verification run through background jobs with progress, explicit cost ceilings and shared daily budget reservations. Phone numbers remain provider-reported and unverified; email verification expires after 30 days.
+The authenticated home page now opens the advisor worklist. `/prospect` continues to provide directory filters, CSV import with deduplication, lists, saved searches, contact details, source and verification history, suppression controls, and CSV export. People Data Labs search/enrichment and Hunter verification run through background jobs with progress, explicit cost ceilings and shared daily budget reservations. Phone numbers remain provider-reported and unverified; email verification expires after 30 days.
 
 **Selected source: ZoomInfo CSV exports, without API access.** Import an authorized export using the ZoomInfo preset, then manage and export the contact list. Automated API search/enrichment and independent email verification are optional separate integrations. See [provider setup](PROVIDER-SETUP.md) for credentials, provider entitlements, pricing and worker configuration. No provider subscription or proprietary contact database is bundled. The app supports public account creation with Google or email/password. Email addresses must be verified before accessing a workspace. Contacts, lists, jobs and exports are isolated by Firebase user ID. `OWNER_EMAIL` designates the administrator for older tools; it is not a signup allowlist. Deployment and Firebase Email/Password enablement remain pending.
 
-## Separate Research Lab
+## Advisor worklist and research
 
-The existing `/lab` workflow provides daily discovery experiments, source results, evidence reviews and research exports. It is separate from the professional contact directory.
+The home page and `/lab` prioritize overdue follow-ups, prospects with reviewed age/residence/contact evidence, and the next missing evidence task. Open a prospect for its conversation brief, verified contact shortcut, outcome log, and next follow-up time. The existing daily discovery and source economics controls remain under the expandable research section.
+
+Select directory contacts and choose **Add to advisor worklist** to reuse their professional identifiers without a CSV round trip (100 at a time). This does not verify their qualification. Directory suppression is honored in linked research records; **Do not contact** in the worklist also suppresses linked directory contacts. Other directory corrections can be brought across by adding the contacts again; financial evidence is never inferred.
+
+Conversation and meeting counters reflect manually logged outcomes over seven rolling days, not sent messages or calendar attendance. Meeting counts deduplicate people. A worklist scan is capped at 2,000 candidates; larger directories show a scope notice and can be narrowed by name/company search.
+
+See [the advisor workflow release](ADVISOR-WORKFLOW-RELEASE.md) for the short usage flow and deployment status.
 
 **A verified quality lead must meet all five reviewed criteria:** age 45–73 inclusive, US residence, retained retirement assets with an eligible distribution or IRA transfer, an identified phone/email/LinkedIn contact route, and a disclosed net-worth lower bound of at least $250,000 excluding the home and net of liabilities.
 
@@ -47,7 +53,7 @@ REFRESH_PLAN_CATALOG=1 bash release.sh
 
 Read [the release handoff](RELEASE-2026-09-07.md) for prerequisites, validation, costs, source coverage and rollback. The release verifies the new version through the custom domain. Production deployment is not implied by a successful local build or GitHub push.
 
-The contact workspace requires migrations **008** and **009** before starting the service and worker; these add contacts, lists, imports, saved searches, durable tasks and cost reservations. The migration runner applies all outstanding migrations in order.
+The advisor workflow adds migration **013** for activity history and contact links. The contact workspace requires migrations **008** and **009** before starting the service and worker; these add contacts, lists, imports, saved searches, durable tasks and cost reservations. The migration runner applies all outstanding migrations in order.
 
 The separate Research Lab uses migration **007**. It preserves observations, adds the net-worth criterion, and invalidates old qualification totals so four-gate results cannot count under the new definition. Requalification records a new first-verification timestamp under rule `retirement-evidence-2`. The normal migration runner applies it once.
 

@@ -30,7 +30,7 @@ VERSION_JSON="$(curl --fail --silent --show-error --max-time 30 https://prospect
 python3 - "$RELEASE_ID" "$VERSION_JSON" <<'PY'
 import json,sys
 version=json.loads(sys.argv[2])
-if version.get('feature_set')!='research-lab-v1' or version.get('quality_version')!='retirement-evidence-2' or version.get('contact_workspace_version')!='professional-contacts-1' or version.get('release_id')!=sys.argv[1]:
+if version.get('advisor_workspace_version')!='advisor-workflow-1' or version.get('feature_set')!='research-lab-v1' or version.get('quality_version')!='retirement-evidence-2' or version.get('contact_workspace_version')!='professional-contacts-1' or version.get('release_id')!=sys.argv[1]:
     raise SystemExit('The custom domain is not serving the expected contact workspace and Research Lab release. Deployment is not verified.')
 print('Verified the contact workspace and Research Lab release at https://prospectpilot.io')
 PY

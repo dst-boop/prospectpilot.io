@@ -18,7 +18,7 @@ COPY package.json ./
 COPY contact-benchmark.mjs ./
 COPY --from=build /app/generated ./generated
 COPY scripts ./scripts
-COPY lab.html lab.css lab-client.js lead-quality.mjs source-catalog.mjs plan-catalog.mjs lab-sources.mjs robots-policy.mjs research-lab.mjs ./
+COPY advisor-workflow.mjs lab.html lab.css lab-client.js lead-quality.mjs source-catalog.mjs plan-catalog.mjs lab-sources.mjs robots-policy.mjs research-lab.mjs ./
 COPY prospect.html prospect.css prospect-client.js prospect-workspace.mjs prospect-providers.mjs prospect-data-quality.mjs prospect-domain-check.mjs ./
 COPY prospect-jobs.mjs prospect-jobs-client.js ./
 COPY migrations ./migrations

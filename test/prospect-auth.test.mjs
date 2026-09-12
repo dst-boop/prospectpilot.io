@@ -19,7 +19,7 @@ const request=(path,{method='GET',cookie='valid',site=origin,headers={}}={})=>ne
 
 test('contact workspace pages and all assets require a valid verified session',async()=>{
  const {handler}=fixture();
- for(const [path,body] of [['/','Contact workspace'],['/prospect','Contact workspace'],['/prospect-client.js','contact-script'],['/prospect-jobs-client.js','job-script'],['/prospect.css','contact-style']]){
+ for(const [path,body] of [['/','Research Lab'],['/prospect','Contact workspace'],['/prospect-client.js','contact-script'],['/prospect-jobs-client.js','job-script'],['/prospect.css','contact-style']]){
   assert.equal((await handler(request(path,{cookie:''}))).status,303);
   assert.equal((await handler(request(path,{cookie:'revoked'}))).status,303);
   const response=await handler(request(path));assert.equal(response.status,200);assert.equal(await response.text(),body);assert.equal(response.headers.get('cache-control'),'private, no-store');

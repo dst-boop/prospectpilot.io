@@ -19,7 +19,7 @@ test('PostgreSQL serializes a new review behind an in-flight assessment',{
  const wrapper={query:(...args)=>pool.query(...args),connect:async()=>{
   const client=await pool.connect();
   return {release:error=>client.release(error),query:async(sql,args)=>{
-   if(paused&&sql.startsWith('SELECT * FROM discovery_leads')&&sql.endsWith('FOR UPDATE'))reviewPid=(await client.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+   if(paused&&sql.startsWith('SELECT discovery_leads.*,EXISTS(')&&sql.endsWith('FOR UPDATE'))reviewPid=(await client.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
    const result=await client.query(sql,args);
    if(!paused&&assessment&&sql==='SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2'){
     paused=true;releaseAssessment.started();await gate;
@@ -29,7 +29,7 @@ test('PostgreSQL serializes a new review behind an in-flight assessment',{
  }};
  try{
   await admin.query(`CREATE SCHEMA ${schema}`);
-  for(const file of ['generated/schema.sql','migrations/006-research-lab.sql','migrations/007-quality-v2.sql','migrations/012-plan-catalog-summary.sql'])await pool.query(readFileSync(new URL('../'+file,import.meta.url),'utf8'));
+  for(const file of ['generated/schema.sql','migrations/006-research-lab.sql','migrations/007-quality-v2.sql','migrations/012-plan-catalog-summary.sql','migrations/008-prospect-workspace.sql','migrations/013-advisor-workflow.sql'])await pool.query(readFileSync(new URL('../'+file,import.meta.url),'utf8'));
   const lab=createResearchLab({pool:wrapper,sources:{readiness:{},quote:()=>0}}),user={uid:'synthetic',email:'synthetic@example.com'};
   await lab.importCSV(user,{csv:'First Name,Last Name,Company,Estimated Age Range,Country\nJamie,Rivera,Example Manufacturing,62,US'});
   const row=(await pool.query('SELECT id,payload FROM discovery_leads')).rows[0],lead={...JSON.parse(row.payload),id:row.id};

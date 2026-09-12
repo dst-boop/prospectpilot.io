@@ -19,6 +19,7 @@ await db.exec(read('migrations/007-quality-v2.sql'));
 await db.exec(read('migrations/008-prospect-workspace.sql'));
 await db.exec(read('migrations/009-prospect-jobs.sql'));
 await db.exec(read('migrations/011-email-domain-check.sql'));
+await db.exec(read('migrations/013-advisor-workflow.sql'));
 // Serialize requests because this embedded database has a single connection.
 const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
 const user={uid:'synthetic-demo',email:'research@example.com',name:'Synthetic demonstration'};
@@ -58,8 +59,8 @@ const handle=async request=>{
     if(url.pathname.startsWith('/api/prospect/')){const result=await prospect.route(request,user);return result instanceof Response?result:Response.json(result,{headers});}
     if(url.pathname.startsWith('/api/lab/')){const result=await lab.route(request,user);return result instanceof Response?result:Response.json(result,{headers});}
     if(assets.has(url.pathname)){const [type,body]=assets.get(url.pathname);return new Response(body,{headers:{...headers,'Content-Type':type}});}
-    if(['/', '/prospect'].includes(url.pathname))return new Response(prospectPage,{headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
-    if(url.pathname==='/lab')return new Response(page,{headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
+    if(url.pathname==='/prospect')return new Response(prospectPage,{headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
+    if(['/', '/lab'].includes(url.pathname))return new Response(page,{headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
     return new Response('This local demo exposes only the Research Lab.',{status:404,headers});
   }catch(e){return Response.json({detail:e.status?e.message:'Demo request failed.'},{status:e.status||500,headers});}
 };
