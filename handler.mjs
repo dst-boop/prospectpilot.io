@@ -8,7 +8,7 @@ export function createHandler({auth,db,worker,loginHtml,loginScript,ownerEmail,o
     const url=new URL(request.url);
     if(url.pathname==='/healthz')return new Response('ok');
     if(!allowed.has(url.origin))return responseJSON('Use the ProspectPilot website address.',403);
-    if(url.pathname==='/version'&&request.method==='GET')return Response.json({application:'ProspectPilot',feature_set:lab?'research-lab-v1':'legacy',quality_version:lab?QUALITY_VERSION:null,contact_workspace_version:prospect?'professional-contacts-1':null,release_id:releaseId},{headers:{'Cache-Control':'no-store'}});
+    if(url.pathname==='/version'&&request.method==='GET')return Response.json({application:'ProspectPilot',feature_set:lab?'research-lab-v1':'legacy',quality_version:lab?QUALITY_VERSION:null,advisor_workspace_version:lab?'advisor-workflow-1':null,contact_workspace_version:prospect?'professional-contacts-1':null,release_id:releaseId},{headers:{'Cache-Control':'no-store'}});
     const mutates=!['GET','HEAD','OPTIONS'].includes(request.method);
     if(mutates&&request.headers.get('origin')!==url.origin)return responseJSON('Please submit changes from this website.',403);
     if(url.pathname==='/login'&&request.method==='GET')return new Response(loginHtml,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});
@@ -30,7 +30,7 @@ export function createHandler({auth,db,worker,loginHtml,loginScript,ownerEmail,o
     if(!claims||!authorized(claims))return url.pathname.startsWith('/api/')?responseJSON('Sign in to ProspectPilot.',401):new Response(null,{status:303,headers:{Location:'/login','Cache-Control':'no-store'}});
     if(prospect && url.pathname==='/api/prospect/me'&&request.method==='GET')return Response.json({uid:claims.uid,email:claims.email,name:claims.name||''},{headers:{'Cache-Control':'private, no-store'}});
     if(prospect && url.pathname==='/prospect-jobs-client.js' && request.method==='GET')return new Response(prospectJobsScript,{headers:{'Content-Type':'text/javascript; charset=utf-8','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
-    if(prospect && ['/', '/prospect','/prospect-client.js','/prospect.css'].includes(url.pathname) && request.method==='GET') {
+    if(prospect && (['/prospect','/prospect-client.js','/prospect.css'].includes(url.pathname)||(!lab&&url.pathname==='/')) && request.method==='GET') {
       const script=url.pathname==='/prospect-client.js',style=url.pathname==='/prospect.css';
       return new Response(script?prospectScript:style?prospectStyle:prospectPage,{headers:{'Content-Type':script?'text/javascript; charset=utf-8':style?'text/css; charset=utf-8':'text/html; charset=utf-8','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"}});
     }
