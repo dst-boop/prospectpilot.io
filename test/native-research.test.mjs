@@ -55,3 +55,11 @@ test('public source cache reuses successful responses and respects entry limits'
 test('cache expiry refreshes content and recently used entries survive eviction',async()=>{const {createCachedGet}=await import('../native-research.mjs');let time=0,calls=0;const get=createCachedGet(async u=>({text:u+' '+(++calls)}),{ttl:10,maxEntries:2,maxBytes:100,now:()=>time});await get('a');await get('b');await get('a');await get('c');assert.equal(calls,3);await get('a');assert.equal(calls,3);time=11;await get('a');assert.equal(calls,4);assert.throws(()=>createCachedGet(async()=>{}, {maxEntries:0}),/limits/);});
 
 test('malformed API success responses are not cached across retries',async()=>{const {createCachedGet}=await import('../native-research.mjs');let calls=0;const get=createCachedGet(async()=>({text:++calls===1?'temporarily unavailable':'{\"data\":[]}'}));await assert.rejects(get('api',{format:'json'}),SyntaxError);assert.deepEqual(JSON.parse((await get('api',{format:'json'})).text),{data:[]});await get('api',{format:'json'});assert.equal(calls,2);});
+
+test('redirect-following cache entries cannot skip manual destination access checks',async()=>{
+ const {createCachedGet}=await import('../native-research.mjs');let calls=0;
+ const get=createCachedGet(async(url,options)=>{calls++;return options.followRedirects===false?{url,redirect:'https://destination.example/team'}:{url:'https://destination.example/team',text:'page',type:'text/html'};});
+ assert.equal((await get('https://example.org')).text,'page');
+ assert.equal((await get('https://example.org',{followRedirects:false})).redirect,'https://destination.example/team');
+ assert.equal(calls,2);await get('https://example.org',{followRedirects:false});assert.equal(calls,2);
+});

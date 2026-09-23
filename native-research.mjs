@@ -2,6 +2,7 @@ import https from 'node:https';
 import http from 'node:http';
 import {resolve4} from 'node:dns/promises';
 import {isIP} from 'node:net';
+import {robotsAllowed} from './robots-policy.mjs';
 
 export const normalize=v=>String(v||'').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
 const contains=(a,b)=>normalize(b).length>=3&&(' '+normalize(a)+' ').includes(' '+normalize(b)+' ');
@@ -18,7 +19,7 @@ export function publicIPv4(ip){
  if(isIP(ip)!==4)return false;const [a,b]=ip.split('.').map(Number);
  return !(a===0||a===10||a===127||a>=224||a===169&&b===254||a===172&&b>=16&&b<=31||a===192&&(b===168||b===0||b===2)||a===100&&b>=64&&b<=127||a===198&&(b===18||b===19||b===51)||a===203&&b===0);
 }
-export async function publicGet(value,{signal,maxBytes=2*1024*1024}={}){
+export async function publicGet(value,{signal,maxBytes=2*1024*1024,followRedirects=true}={}){
  signal=signal||AbortSignal.timeout(15000);
  let url=new URL(value);
  for(let hop=0;hop<4;hop++){
@@ -34,7 +35,7 @@ export async function publicGet(value,{signal,maxBytes=2*1024*1024}={}){
     const chunks=[];let size=0;res.on('data',c=>{size+=c.length;if(size>maxBytes){res.destroy(Error('Source too large'));return;}chunks.push(c);});res.on('error',reject);res.on('end',()=>resolve({text:Buffer.concat(chunks).toString(),type:res.headers['content-type']||'',url:url.href}));
    });request.on('error',reject);
   });
-  if(response.redirect){url=new URL(response.redirect,url);continue;}return response;
+  if(response.redirect){const next=new URL(response.redirect,url);if(!followRedirects)return {redirect:next.href,url:url.href};url=next;continue;}return response;
  }throw Error('Too many redirects');
 }
 const plain=s=>String(s).replace(/<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>/gi,' ').replace(/<[^>]*>/g,' ').replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&nbsp;/g,' ').replace(/\s+/g,' ').trim();
@@ -123,8 +124,7 @@ export function createNativeResearch({get=publicGet,warn}={}){
     if(!robots.has(url.origin)){
      try{const r=await read(new URL('/robots.txt',url));robots.set(url.origin,r.text);}catch(e){if(/HTTP 404/.test(e.message))robots.set(url.origin,'');else throw e;}
     }
-    // Conservative: honor any matching disallow directive. Never bypass access challenges.
-    const disallowed=robots.get(url.origin).split(/\r?\n/).some(line=>{const m=line.match(/^\s*Disallow:\s*(\S+)/i);return m&&url.pathname.startsWith(m[1].split('*')[0]);});
+    const disallowed=!robotsAllowed(robots.get(url.origin),url.pathname+url.search);
     if(disallowed){blocked++;return;}
     const page=await read(url);if(!/text\/html|text\/plain/.test(page.type))throw Error('Unsupported page type');
     const content=plain(page.text);checked++;
@@ -154,7 +154,7 @@ export function createCachedGet(get,{ttl=300000,maxEntries=64,maxBytes=8000000,n
  return async(value,options={})=>{
   options.signal?.throwIfAborted();
   if(String(value).split('?')[0].endsWith('/robots.txt'))return get(value,options);
-  const key=String(value)+'|'+(options.maxBytes||2097152)+'|'+(options.format||'text');
+  const key=String(value)+'|'+(options.maxBytes||2097152)+'|'+(options.format||'text')+'|'+(options.followRedirects!==false);
   const found=entries.get(key);
   if(found&&found.until>now()){entries.delete(key);entries.set(key,found);return {...found.result};}
   if(found){bytes-=found.size;entries.delete(key);}

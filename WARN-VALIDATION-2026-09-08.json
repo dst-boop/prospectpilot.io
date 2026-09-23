@@ -1,0 +1,818 @@
+{
+  "checked_at": "2026-09-08T21:26:55.954Z",
+  "published_at": "2026-09-08T11:26:12Z",
+  "publication_stale": false,
+  "total_notices": 41081,
+  "loaded_jurisdictions": 32,
+  "unknown_notice_dates": 4649,
+  "excluded_non_warn": 2,
+  "malformed_rows": 0,
+  "date_anomalies": 34,
+  "coverage": [
+    {
+      "state": "AK",
+      "status": "loaded",
+      "rows": 66,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/ak.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "city",
+        "county",
+        "reason",
+        "url",
+        "dba"
+      ],
+      "sha256": "433284d7cb0c4431e2ea68b491b22291615cd2ccd29ba95db60e1e07b2f3cfc0",
+      "unknown_notice_dates": 64,
+      "latest_notice_date": "2024-12-10",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "AL",
+      "status": "loaded",
+      "rows": 1073,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/al.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 2,
+      "missing_fields": [
+        "address",
+        "county",
+        "reason",
+        "url",
+        "dba"
+      ],
+      "sha256": "6d2f7b6c33643189a1783c6039f2d86235e8748992378fd25c7db3b651c02892",
+      "unknown_notice_dates": 0,
+      "latest_notice_date": "2026-08-31",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "AR",
+      "status": "not_published",
+      "rows": 0
+    },
+    {
+      "state": "AZ",
+      "status": "loaded",
+      "rows": 350,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/az.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "county",
+        "effective_date",
+        "dba"
+      ],
+      "sha256": "4cf1fb58f20bd48f522bcccca4d3ea691f38758268654ad31089bac0beecd6db",
+      "unknown_notice_dates": 0,
+      "latest_notice_date": "2026-08-21",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "CA",
+      "status": "loaded",
+      "rows": 17436,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/ca.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 2,
+      "missing_fields": [
+        "url",
+        "dba"
+      ],
+      "sha256": "ad23fc82ac79eba69a34bd1942969f4bac6f78fbbf5a19d977c3e6fb4619cc62",
+      "unknown_notice_dates": 0,
+      "latest_notice_date": "2026-09-02",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "CO",
+      "status": "not_published",
+      "rows": 0
+    },
+    {
+      "state": "CT",
+      "status": "loaded",
+      "rows": 27,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/ct.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "city",
+        "county",
+        "reason",
+        "url",
+        "dba"
+      ],
+      "sha256": "3b771ca97bc7db2a80caed83dabb202c258303d6cbc111fa57fa03df5328da31",
+      "unknown_notice_dates": 0,
+      "latest_notice_date": "2026-06-26",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "DC",
+      "status": "loaded",
+      "rows": 143,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/dc.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "city",
+        "address",
+        "county",
+        "reason",
+        "url",
+        "dba"
+      ],
+      "sha256": "68abba4fa2531889c2121792bec94cb431dc0e3260bb9332a62a4ba72225cd55",
+      "unknown_notice_dates": 3,
+      "latest_notice_date": "2026-07-27",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "DE",
+      "status": "loaded",
+      "rows": 52,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/de.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "county",
+        "effective_date",
+        "dba"
+      ],
+      "sha256": "2d58d987a617232133273db94429391c0cbc5f8971a45257aab2957a0d34d2bb",
+      "unknown_notice_dates": 0,
+      "latest_notice_date": "2026-08-10",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "FL",
+      "status": "not_published",
+      "rows": 0
+    },
+    {
+      "state": "GA",
+      "status": "not_published",
+      "rows": 0
+    },
+    {
+      "state": "HI",
+      "status": "not_published",
+      "rows": 0
+    },
+    {
+      "state": "IA",
+      "status": "loaded",
+      "rows": 431,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/ia.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "url",
+        "dba"
+      ],
+      "sha256": "203023320c932460add35a89a531d8795695a3b7f5d0d396d7141f81bbbb245b",
+      "unknown_notice_dates": 0,
+      "latest_notice_date": "2026-09-01",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "ID",
+      "status": "not_published",
+      "rows": 0
+    },
+    {
+      "state": "IL",
+      "status": "loaded",
+      "rows": 4886,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/il.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 2,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "url"
+      ],
+      "sha256": "6945f315b5b1b018e57a7b0084a86a9f8f3701f203849d7d8b13ba45cfba3fd5",
+      "unknown_notice_dates": 0,
+      "latest_notice_date": "2026-09-02",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "IN",
+      "status": "loaded",
+      "rows": 1223,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/in.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "address",
+        "county",
+        "url",
+        "dba"
+      ],
+      "sha256": "20e49417b27df63b1a97f4a80bf146c8abb471dc8656c400a4dcd9f791e25ca7",
+      "unknown_notice_dates": 204,
+      "latest_notice_date": "2026-09-02",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "KS",
+      "status": "loaded",
+      "rows": 296,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/ks.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "county",
+        "effective_date",
+        "dba"
+      ],
+      "sha256": "d9f43fb1a7f27c96ff8ac2d9d7f58ce0f570ef2ccbf6b879cb281d72308ee284",
+      "unknown_notice_dates": 0,
+      "latest_notice_date": "2026-05-01",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "KY",
+      "status": "loaded",
+      "rows": 832,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/ky.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 1,
+      "missing_fields": [
+        "city",
+        "workers",
+        "reason",
+        "dba"
+      ],
+      "sha256": "87f11215d641160fd8845c55d331f8524c950fd9836155b42ba78c46889d48f8",
+      "unknown_notice_dates": 9,
+      "latest_notice_date": "2026-08-10",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "LA",
+      "status": "not_published",
+      "rows": 0
+    },
+    {
+      "state": "MA",
+      "status": "not_published",
+      "rows": 0
+    },
+    {
+      "state": "MD",
+      "status": "loaded",
+      "rows": 1418,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/md.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "city",
+        "url",
+        "dba"
+      ],
+      "sha256": "93b301c13d712d73e5ec30b306d070b9c054133fdae1b7f7081752347b951928",
+      "unknown_notice_dates": 5,
+      "latest_notice_date": "2026-08-31",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "ME",
+      "status": "loaded",
+      "rows": 36,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/me.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "county",
+        "effective_date",
+        "dba"
+      ],
+      "sha256": "9ee56dc6dd8128ad63563956fb1ef42ba28a8b1565c95253d0da4b49e3250a3b",
+      "unknown_notice_dates": 0,
+      "latest_notice_date": "2026-08-04",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "MI",
+      "status": "not_published",
+      "rows": 0
+    },
+    {
+      "state": "MN",
+      "status": "not_published",
+      "rows": 0
+    },
+    {
+      "state": "MO",
+      "status": "loaded",
+      "rows": 374,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/mo.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 2,
+      "missing_fields": [
+        "city",
+        "url",
+        "dba"
+      ],
+      "sha256": "5c3d8f0c2f85b22889f677049183ef4be1e532f0e73d47bc5030feb9b633809e",
+      "unknown_notice_dates": 42,
+      "latest_notice_date": "2026-09-03",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "MS",
+      "status": "not_published",
+      "rows": 0
+    },
+    {
+      "state": "MT",
+      "status": "loaded",
+      "rows": 46,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/mt.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "city",
+        "address",
+        "reason",
+        "url",
+        "dba"
+      ],
+      "sha256": "05ab9e70c33f7edde305ce5fb42c832e90477f4979116f1f6dc33d5a47dbe069",
+      "unknown_notice_dates": 1,
+      "latest_notice_date": "2026-07-21",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "NC",
+      "status": "not_published",
+      "rows": 0
+    },
+    {
+      "state": "ND",
+      "status": "not_published",
+      "rows": 0
+    },
+    {
+      "state": "NE",
+      "status": "loaded",
+      "rows": 960,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/ne.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "county",
+        "notice_date",
+        "effective_date",
+        "url",
+        "dba"
+      ],
+      "sha256": "dfe6eef162f209e99703732387744bea61e54cf05df5dffc74107c8813207f66",
+      "unknown_notice_dates": 960,
+      "latest_notice_date": null,
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "NH",
+      "status": "not_published",
+      "rows": 0
+    },
+    {
+      "state": "NJ",
+      "status": "loaded",
+      "rows": 2368,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/nj.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 1,
+      "missing_fields": [
+        "address",
+        "county",
+        "notice_date",
+        "reason",
+        "url",
+        "dba"
+      ],
+      "sha256": "1cc12269c1687b2353e410e4d3e4cbd1eae2aa4909104ab3635e5c9853c37b48",
+      "unknown_notice_dates": 2368,
+      "latest_notice_date": null,
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "NM",
+      "status": "not_published",
+      "rows": 0
+    },
+    {
+      "state": "NV",
+      "status": "not_published",
+      "rows": 0
+    },
+    {
+      "state": "NY",
+      "status": "loaded",
+      "rows": 194,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/ny.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "city",
+        "url",
+        "dba"
+      ],
+      "sha256": "3c265e3a715f45252ce6d09384f3c3f4123327b7f2437176a04b92deb96daccc",
+      "unknown_notice_dates": 0,
+      "latest_notice_date": "2026-08-04",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "OH",
+      "status": "not_published",
+      "rows": 0
+    },
+    {
+      "state": "OK",
+      "status": "loaded",
+      "rows": 219,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/ok.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "address",
+        "county",
+        "effective_date",
+        "url",
+        "dba"
+      ],
+      "sha256": "8d5182452840d030f50126b0519e65c361929b6c001581ea024208fe0421d019",
+      "unknown_notice_dates": 0,
+      "latest_notice_date": "2026-08-17",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "OR",
+      "status": "loaded",
+      "rows": 1369,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/or.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 24,
+      "missing_fields": [
+        "city",
+        "county",
+        "url",
+        "dba"
+      ],
+      "sha256": "49a5424b2b527f0374a2e90ee358cc570bbaaf45c039bdb69639249b9b8d37c2",
+      "unknown_notice_dates": 0,
+      "latest_notice_date": "2026-09-01",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "PA",
+      "status": "loaded",
+      "rows": 309,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/pa.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "city",
+        "notice_date",
+        "reason",
+        "url",
+        "dba"
+      ],
+      "sha256": "f6f04fed5e6c162ae35562d60c9697ac376d54b59a173427bade9c22ac434869",
+      "unknown_notice_dates": 309,
+      "latest_notice_date": null,
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "RI",
+      "status": "loaded",
+      "rows": 126,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/ri.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 2,
+      "missing_fields": [
+        "city",
+        "county",
+        "reason",
+        "url",
+        "dba"
+      ],
+      "sha256": "247e4cedf09fd975a6ed4855260e00d59b5734f1f87fe37606c5f4cc21aa4325",
+      "unknown_notice_dates": 3,
+      "latest_notice_date": "2026-06-26",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "SC",
+      "status": "loaded",
+      "rows": 609,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/sc.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "city",
+        "county",
+        "notice_date",
+        "effective_date",
+        "reason",
+        "url",
+        "dba"
+      ],
+      "sha256": "cda043cc45e6c74ee863fe3c19e8b42a2fd8241e7261d7dc92978fe48d713a42",
+      "unknown_notice_dates": 609,
+      "latest_notice_date": null,
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "SD",
+      "status": "loaded",
+      "rows": 80,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/sd.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "city",
+        "county",
+        "effective_date",
+        "reason",
+        "url",
+        "dba"
+      ],
+      "sha256": "4f2c5ebd61e07a912f10540b6d80a1deda1615c0883bf91f37e374bfffec75dd",
+      "unknown_notice_dates": 0,
+      "latest_notice_date": "2026-08-10",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "TN",
+      "status": "loaded",
+      "rows": 1063,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/tn.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "address",
+        "url",
+        "dba"
+      ],
+      "sha256": "4061f5b72a201160ee134afbfb9ce441f5286e485f03faef6e0239400a65a55c",
+      "unknown_notice_dates": 1,
+      "latest_notice_date": "2026-09-02",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "TX",
+      "status": "loaded",
+      "rows": 2367,
+      "source_url": "https://data.texas.gov/dataset/Worker-Adjustment-and-Retraining-Notification-WARN/8w53-c4f6",
+      "published_at": "2026-07-07T18:15:59.000Z",
+      "publication_stale": true,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "address",
+        "reason",
+        "url",
+        "dba"
+      ],
+      "sha256": "16f3ba39b568537f187463802c9242fa0507a8366f4411f50feaccbefa57b584",
+      "unknown_notice_dates": 0,
+      "latest_notice_date": "2026-06-23",
+      "publication_basis": "official_dataset"
+    },
+    {
+      "state": "UT",
+      "status": "loaded",
+      "rows": 282,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/ut.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "city",
+        "county",
+        "effective_date",
+        "reason",
+        "url",
+        "dba"
+      ],
+      "sha256": "7d89c52a9ff3c30fa1bbf2fdd2071a99fc76150f6313ec3c172b4f6d3f458e92",
+      "unknown_notice_dates": 206,
+      "latest_notice_date": "2023-09-05",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "VA",
+      "status": "loaded",
+      "rows": 1123,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/va.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "city",
+        "county",
+        "url",
+        "dba"
+      ],
+      "sha256": "a60371054b3d400523d37fcaa1e8cef3008cf6d924a431be52450f893a02fda1",
+      "unknown_notice_dates": 0,
+      "latest_notice_date": "2026-08-28",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "VT",
+      "status": "loaded",
+      "rows": 62,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/vt.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "county",
+        "effective_date",
+        "dba"
+      ],
+      "sha256": "cba47859b6b88281e3f343b81ea0af8aaf7fb651ebdc644c342dfb3cd2601e73",
+      "unknown_notice_dates": 0,
+      "latest_notice_date": "2026-06-17",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "WA",
+      "status": "loaded",
+      "rows": 1506,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/wa.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "city",
+        "county",
+        "reason",
+        "url",
+        "dba"
+      ],
+      "sha256": "000cae93a40c88878f424b7261facf0aa19270ec9afd8650d93507499095b1a7",
+      "unknown_notice_dates": 0,
+      "latest_notice_date": "2026-09-03",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "WI",
+      "status": "loaded",
+      "rows": 635,
+      "source_url": "https://raw.githubusercontent.com/dst-boop/lead-qualifier/warn-data/wi.csv",
+      "published_at": "2026-09-08T11:26:12Z",
+      "publication_stale": false,
+      "excluded_non_warn": 0,
+      "malformed_rows": 0,
+      "schema_notes": [
+        "Split the published merged County/Workforce Development Area header."
+      ],
+      "date_anomalies": 0,
+      "missing_fields": [
+        "address",
+        "reason",
+        "url",
+        "dba"
+      ],
+      "sha256": "9d30c1f9f482a769623ac52e6a4caebc8aed09f7630160b5f757464683e76164",
+      "unknown_notice_dates": 0,
+      "latest_notice_date": "2026-08-24",
+      "publication_basis": "mirror"
+    },
+    {
+      "state": "WV",
+      "status": "not_published",
+      "rows": 0
+    },
+    {
+      "state": "WY",
+      "status": "not_published",
+      "rows": 0
+    }
+  ]
+}

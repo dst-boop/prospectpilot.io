@@ -3,6 +3,7 @@ node_modules/
 .env*
 
 .rebuild-check/
+.tmp/
 *.zip
 update-*.sh
 fix-auto-repair.sh
