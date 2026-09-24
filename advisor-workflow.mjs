@@ -1,6 +1,14 @@
 import {randomUUID} from 'node:crypto';
 import {assessLead, leadIdentity, hash, csvCell} from './lead-quality.mjs';
 import {cadenceState, admitTouch, restPeriod, nextFollowUp, composeTouch, firstTouchSLA} from './outreach-cadence.mjs';
+import {phoneReadiness} from './prospect-data-quality.mjs';
+
+export function withDirectoryRestrictions(lead,contacts=[]) {
+ const imported_dnc=new Set(lead.imported_dnc||[]);
+ let suppressed=lead.suppressed===true;
+ for(const contact of contacts||[]){const routes=phoneReadiness(contact);suppressed ||= contact.suppressed===true;if(routes.primary_blocked&&contact.phone)imported_dnc.add(contact.phone);if(routes.mobile_blocked&&contact.mobile_phone)imported_dnc.add(contact.mobile_phone);}
+ return {...lead,suppressed,imported_dnc:[...imported_dnc]};
+}
 
 const parse=v=>typeof v==='string'?JSON.parse(v):v;
 const fail=(status,message)=>Object.assign(Error(message),{status});
@@ -70,7 +78,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     offset=Number(offset);limit=Number(limit);
     if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(limit)||limit<1||limit>100)throw fail(422,'Invalid worklist page.');
     const term=String(search).trim().slice(0,100).replace(/[%_\\]/g,'');
-    const rows=(await pool.query(`SELECT d.id,d.payload,EXISTS(SELECT 1 FROM advisor_contact_links acl JOIN prospect_contacts pc ON pc.id=acl.contact_id AND pc.user_id=acl.user_id WHERE acl.lead_id=d.id AND pc.payload->>'suppressed'='true') AS linked_suppressed,count(*) OVER()::int AS scope_total FROM discovery_leads d
+    const rows=(await pool.query(`SELECT d.id,d.payload,(SELECT jsonb_agg(pc.payload) FROM advisor_contact_links acl JOIN prospect_contacts pc ON pc.id=acl.contact_id AND pc.user_id=acl.user_id WHERE acl.lead_id=d.id) AS linked_contacts,count(*) OVER()::int AS scope_total FROM discovery_leads d
       LEFT JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2
       WHERE ${visibleSQL} AND ($4='' OR concat_ws(' ',d.payload::jsonb->>'first_name',d.payload::jsonb->>'last_name',d.payload::jsonb->>'company') ILIKE $4)
       ORDER BY d.payload::jsonb->>'follow_up_date' ASC NULLS LAST,q.score DESC NULLS LAST,d.id LIMIT 2000`,['wealth-management',user.uid,user.email,term?`%${term}%`:''])).rows;
@@ -82,7 +90,9 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const history=new Map();for(const a of touched){if(!history.has(a.lead_id))history.set(a.lead_id,[]);history.get(a.lead_id).push(a);}
     const rests=rows.length?(await pool.query('SELECT lead_id,reason,resume_at FROM advisor_rest_periods WHERE user_id=$1 AND lead_id=ANY($2::text[])',[user.uid,ids])).rows:[];
     const resting=new Map(rests.map(r=>[r.lead_id,r]));
-    const all=rows.map(r=>{const lead={...parse(r.payload),id:r.id,...(r.linked_suppressed?{suppressed:true}:{})},quality=assessLead(lead,observations.get(r.id)||[],{now:now()});
+    // Directory restrictions are applied before anything is assessed or paced,
+    // so a phone that became do-not-call in the directory is refused here too.
+    const all=rows.map(r=>{const lead=withDirectoryRestrictions({...parse(r.payload),id:r.id},r.linked_contacts),quality=assessLead(lead,observations.get(r.id)||[],{now:now()});
       const cadence=cadenceState({activities:history.get(r.id)||[],lead,quality,rest:resting.get(r.id)||null,now:now()});
       return {lead:{id:lead.id,first_name:lead.first_name,last_name:lead.last_name,company:lead.company,current_title:lead.current_title,location:lead.location||[lead.city,lead.state].filter(Boolean).join(', '),notes:lead.notes||''},quality,action:nextAction(lead,quality,now(),cadence)};});
     all.sort((a,b)=>a.action.rank-b.action.rank||(a.action.due_at||'').localeCompare(b.action.due_at||'')||b.quality.score-a.quality.score||a.lead.id.localeCompare(b.lead.id));

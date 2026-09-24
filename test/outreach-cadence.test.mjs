@@ -435,3 +435,31 @@ test('the workflow hands the draft only the steps the log shows happened', async
     assert.match(detail.draft.body, /I sent you a note earlier this week/);
   } finally { await db.close(); }
 });
+
+test('a directory do-not-call blocks pacing, and pacing cannot override it', async () => {
+  // The seam between the directory restrictions merged from main and this
+  // module. Neither side alone proves a phone that became do-not-call in the
+  // directory stops the sequence that was already running against it.
+  const {db, lab, user, id} = await fixture();
+  try {
+    await db.query('INSERT INTO prospect_contacts(id,user_id,payload) VALUES($1,$2,$3::jsonb)',
+      ['contact', user.uid, JSON.stringify({first_name: 'Jamie', last_name: 'Rivera', company: 'Northline Manufacturing',
+        email: 'jamie@example.com', phone: '+15165550142', title: 'Director', source: 'Synthetic professional export'})]);
+    await lab.importContacts(user, {ids: ['contact']});
+    const linked = (await db.query('SELECT lead_id FROM advisor_contact_links WHERE contact_id=$1', ['contact'])).rows[0].lead_id;
+    await reviewBasics(lab, user, linked);
+    let d = await lab.advisor.detail(user, linked);
+    assert.equal(d.cadence.status, 'ready');
+    assert.ok(d.draft, 'a draft exists while contact is permitted');
+
+    // The directory marks the number do-not-call after the sequence started.
+    await db.query(`UPDATE prospect_contacts SET payload=jsonb_set(payload,'{suppressed}','true') WHERE id='contact'`);
+    d = await lab.advisor.detail(user, linked);
+    assert.equal(d.cadence.status, 'blocked', 'pacing defers to the restriction rather than scheduling around it');
+    assert.equal(d.cadence.allowed, false);
+    assert.equal(d.draft, null, 'nothing is drafted for someone who may not be contacted');
+    assert.equal(d.action.bucket, 'closed');
+    await assert.rejects(lab.advisor.save(user, linked, {outcome: 'no_answer', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'after-dnc'}), {status: 422});
+  } finally { await db.close(); }
+});
