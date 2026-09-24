@@ -147,6 +147,9 @@ export function sequenceProgress(activities = [], plan = SEQUENCES.priority, {no
   const due = step ? new Date((started ? started.getTime() : now.getTime()) + (step.day - 1) * DAY) : null;
   return {
     sequence: plan.id, label: plan.label, total: plan.steps.length, completed: plan.steps.length - remaining.length,
+    // Which steps the log shows were carried out. A draft may refer to an
+    // earlier touch only if it is in here.
+    done: [...done],
     unattributed, started_at: started ? started.toISOString() : null,
     engaged_at: engaged ? time(engaged.created_at).toISOString() : null,
     finished: !step, step: step ? {...step, due_at: due.toISOString(), due: due <= now} : null,
@@ -299,37 +302,51 @@ export function offerDays(now = new Date(), count = 2) {
     label: new Intl.DateTimeFormat('en-US', {weekday: 'long', timeZone: 'UTC'}).format(x)}));
 }
 
+// Keeps the blank line between paragraphs while dropping a signature line the
+// profile has not filled in. filter(Boolean) would collapse the paragraphs too.
+const para = lines => lines.filter((l, i, a) => l !== '' || (i > 0 && i < a.length - 1 && a[i - 1] !== ''))
+  .join('\n').replace(/\n{3,}/g, '\n\n').trim();
+
 const DRAFTS = {
-  opener: ({first, prior, company, advisor, days}) => ({
-    subject: prior ? `Your ${prior} retirement plan` : 'Your former employer retirement plan',
-    body: [`Hi ${first},`, '',
-      company ? `Congratulations on the move to ${company}.` : 'Congratulations on your recent move.',
+  // Every sentence here has to survive the question "how does this application
+  // know that?". It knows the professional record: a name, an employer, a
+  // previously reported employer. It does not know that anyone changed jobs
+  // recently, that they hold anything anywhere, or what a review would find.
+  // So the plan is named conditionally and nothing is congratulated.
+  opener: ({first, prior, advisor, days}) => ({
+    subject: prior ? `Your time at ${prior}` : 'A retirement plan from a previous employer',
+    body: para([`Hi ${first},`, '',
+      `I work with people on retirement and transition planning${advisor.metro ? ` in ${advisor.metro}` : ''}.`,
       '',
-      `One thing that often gets left behind in a transition is the plan with a former employer${prior ? ` — in your case ${prior}` : ''}. Accounts left with a previous employer tend to drift: allocations go unreviewed, beneficiary designations go out of date, and nobody is watching the fees.`,
+      `If you still have a retirement plan with a former employer${prior ? `, such as from your time at ${prior}` : ''}, it can be worth a look. Plans left behind are easy to lose track of: allocations go unreviewed, beneficiary designations go out of date, and the fees are nobody's job to watch.`,
       '',
       `I would be glad to walk through what you have and what your options are — about twenty minutes, no obligation either way.`,
       '',
       `Would ${days[0].label} or ${days[1].label} work for a brief call?`,
-      '', advisor.name || '', advisor.firm || ''].filter((l, i, a) => !(l === '' && a[i - 1] === '')).join('\n'),
+      '', advisor.name || '', advisor.firm || '']),
   }),
   connect: ({first, prior, company, advisor}) => ({
     subject: null,
     body: `Hi ${first} — I work with people on retirement and transition planning${advisor.metro ? ` in ${advisor.metro}` : ''}, and your background${prior ? ` at ${prior}` : ''}${company ? ` and ${company}` : ''} caught my eye. Would be glad to connect.`,
   }),
-  'call-1': ({first, prior, advisor}) => ({
+  // Refers to the opening email only when the log shows it was sent. Claiming a
+  // note that was never sent is the fastest way to sound automated.
+  'call-1': ({first, prior, advisor, sent}) => ({
     subject: 'Voicemail script — under thirty seconds',
     body: [`Hi ${first}, this is ${advisor.name || '[your name]'} with ${advisor.firm || '[your firm]'}.`,
-      `I sent you a note earlier this week about the retirement plan you may still have${prior ? ` at ${prior}` : ' with a former employer'}.`,
-      `Most people in your position have three or four options for that account.`,
+      sent.includes('opener')
+        ? `I sent you a note earlier this week about retirement plans left with a former employer${prior ? `, including your time at ${prior}` : ''}.`
+        : `I'm calling about retirement plans left with a former employer${prior ? `, including your time at ${prior}` : ''}.`,
+      `If you have one, there are generally three or four options for it.`,
       `You can reach me at ${advisor.phone || '[your number]'}. Again, ${advisor.name || '[your name]'}, ${advisor.phone || '[your number]'}.`].join(' '),
   }),
   detail: ({first, advisor}) => ({
     subject: 'The sixty-day rule, briefly',
-    body: [`Hi ${first},`, '',
-      `One thing worth knowing before you move a former employer plan: if the cheque is made out to you rather than sent directly between custodians, the money has to land in the new account within sixty days, and the plan generally withholds twenty percent for taxes in the meantime. A direct transfer between custodians avoids both.`,
+    body: para([`Hi ${first},`, '',
+      `One thing worth knowing before moving a former employer plan: if the cheque is made out to you rather than sent directly between custodians, the money has to land in the new account within sixty days, and the plan generally withholds twenty percent for taxes in the meantime. A direct transfer between custodians avoids both.`,
       '',
-      `Happy to walk through which applies to your accounts.`,
-      '', advisor.name || ''].filter(Boolean).join('\n'),
+      `Happy to walk through whether any of it applies to you.`,
+      '', advisor.name || '']),
   }),
   'call-2': ({first}) => ({
     subject: 'Second call — no voicemail',
@@ -337,37 +354,37 @@ const DRAFTS = {
   }),
   closing: ({first, prior, advisor}) => ({
     subject: 'Closing the loop',
-    body: [`Hi ${first},`, '',
-      `I'll stop reaching out — the timing may simply not be right.${prior ? ` If the ${prior} account ever moves up the priority list, the review offer stands.` : ' If a review of your former employer plan ever moves up the priority list, the offer stands.'}`,
+    body: para([`Hi ${first},`, '',
+      `I'll stop reaching out — the timing may simply not be right. If a review of a former employer plan${prior ? ` from your time at ${prior}` : ''} ever becomes useful, the offer stands.`,
       '',
-      `One parting thought: beneficiary designations on old plans are the single most common thing we find out of date. Worth a five-minute check even if we never speak.`,
-      '', `All the best,`, advisor.name || ''].filter(Boolean).join('\n'),
+      `One parting thought: beneficiary designations on old plans are easy to overlook, and worth a five-minute check even if we never speak.`,
+      '', `All the best,`, advisor.name || '']),
   }),
   options: ({first, advisor}) => ({
     subject: 'Four options for a former employer plan',
-    body: [`Hi ${first},`, '',
-      `When you leave an employer, the plan you leave behind generally has four paths: leave it where it is, move it into your new employer's plan, transfer it to an IRA, or cash it out. Each has different costs, investment choices and tax consequences, and the right answer genuinely differs by person.`,
+    body: para([`Hi ${first},`, '',
+      `When you leave an employer, a plan left behind generally has four paths: leave it where it is, move it into a new employer's plan, transfer it to an IRA, or cash it out. Each has different costs, investment choices and tax consequences, and the right answer genuinely differs by person.`,
       '', `No action needed — just useful to know it is a decision rather than a default.`,
-      '', advisor.name || ''].filter(Boolean).join('\n'),
+      '', advisor.name || '']),
   }),
   timing: ({first, advisor}) => ({
-    subject: 'The rollover mistake that costs the most',
-    body: [`Hi ${first},`, '',
-      `If a former employer plan is paid to you rather than transferred directly between custodians, you have sixty days to redeposit it and the plan generally withholds twenty percent up front. People discover this at tax time. A direct custodian-to-custodian transfer avoids it entirely.`,
-      '', advisor.name || ''].filter(Boolean).join('\n'),
+    subject: 'The sixty-day rollover rule',
+    body: para([`Hi ${first},`, '',
+      `If a former employer plan is paid to you rather than transferred directly between custodians, you have sixty days to redeposit it and the plan generally withholds twenty percent up front. It is easy to miss until tax time. A direct custodian-to-custodian transfer avoids it entirely.`,
+      '', advisor.name || '']),
   }),
   checklist: ({first, advisor}) => ({
     subject: 'A short pre-retirement checklist',
-    body: [`Hi ${first},`, '',
+    body: para([`Hi ${first},`, '',
       `A few things worth confirming in the ten to fifteen years before retirement: where every account actually sits, whether the beneficiary designations still reflect your intentions, what each plan costs you annually, and how the whole picture is allocated when you look at it together rather than account by account.`,
-      '', advisor.name || ''].filter(Boolean).join('\n'),
+      '', advisor.name || '']),
   }),
   ask: ({first, advisor, days}) => ({
     subject: 'Twenty minutes on your accounts?',
-    body: [`Hi ${first},`, '',
-      `I have been sending these along because the questions come up constantly. If it would help to go through your own accounts — what you have, what they cost and what your options are — I am glad to do that.`,
+    body: para([`Hi ${first},`, '',
+      `I have been sending these along because the questions come up constantly. If it would help to go through your own situation — what you have, what it costs and what your options are — I am glad to do that.`,
       '', `Would ${days[0].label} or ${days[1].label} work?`,
-      '', advisor.name || ''].filter(Boolean).join('\n'),
+      '', advisor.name || '']),
   }),
 };
 
@@ -379,22 +396,23 @@ const DRAFTS = {
  * more useful than no message, and the caller can see exactly what is thin
  * before deciding to send it.
  */
-export function composeTouch(step, {lead = {}, advisor = {}, now = new Date()} = {}) {
+export function composeTouch(step, {lead = {}, advisor = {}, now = new Date(), sent = []} = {}) {
   if (!step || !DRAFTS[step.id]) return null;
   const first = named(lead.first_name), prior = priorEmployer(lead), company = named(lead.company);
   const needs = [];
   if (!first) needs.push('a first name');
-  if (!prior) needs.push('the previous employer');
+  if (!prior) needs.push('a previous employer to name');
   if (!named(advisor.name)) needs.push('your name in the advisor profile');
   if (step.channel === 'phone' && !named(advisor.phone)) needs.push('your callback number in the advisor profile');
-  const draft = DRAFTS[step.id]({first: first || 'there', prior, company,
+  const draft = DRAFTS[step.id]({first: first || 'there', prior, company, sent: [...sent],
     advisor: {name: named(advisor.name), firm: named(advisor.firm), phone: named(advisor.phone), metro: named(advisor.metro)},
     days: offerDays(now)});
   return {step: step.id, channel: step.channel, subject: draft.subject, body: draft.body,
     needs, complete: needs.length === 0,
-    // Composed from the saved record only. It carries no claim about what the
-    // person holds, because this application has no basis for one.
-    disclosure: 'Drafted from saved professional details. Confirm the facts named here before sending.'};
+    // Composed from the saved professional record only. It asserts no holdings,
+    // no job change and no finding, because this application establishes none
+    // of those. Anything about a plan is written as a condition, not a fact.
+    disclosure: 'Drafted from saved professional details. It assumes nothing about what this person holds or when they changed roles. Confirm anything you add.'};
 }
 
 /** When the following step falls due, so the schedule is kept by the app. */

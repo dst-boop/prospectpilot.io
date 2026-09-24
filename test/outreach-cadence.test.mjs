@@ -161,7 +161,8 @@ test('the draft is a message, not an instruction, and names what it could not pe
   assert.equal(draft.channel, 'email');
   assert.match(draft.subject, /Harbor Steel/);
   assert.match(draft.body, /Hi Jamie,/);
-  assert.match(draft.body, /Northline Manufacturing/);
+  assert.doesNotMatch(draft.body, /Northline Manufacturing/,
+    'the current employer only appeared as part of congratulating a move nothing establishes');
   assert.equal(draft.complete, true);
   assert.deepEqual(draft.needs, []);
   assert.doesNotMatch(draft.body, /\[/, 'no unfilled brackets reach a drafted message');
@@ -171,7 +172,7 @@ test('the draft is a message, not an instruction, and names what it could not pe
   assert.match(draft.body, /Would Friday or Monday work/);
   // Missing facts are reported, and the draft still arrives usable.
   const thin = composeTouch(state.step, {lead: {first_name: 'Jamie'}, advisor: {}, now});
-  assert.deepEqual(thin.needs, ['the previous employer', 'your name in the advisor profile']);
+  assert.deepEqual(thin.needs, ['a previous employer to name', 'your name in the advisor profile']);
   assert.match(thin.body, /plan with a former employer/);
   assert.doesNotMatch(thin.body, /\[/);
   const voicemail = composeTouch({id: 'call-1', channel: 'phone'}, {lead, advisor: {}, now});
@@ -354,5 +355,83 @@ test('the service level counts prospects nobody reached, once their deadline has
     assert.ok(board.untouched >= 1);
     assert.equal(sla.value, 50, 'one met and one overdue untouched is half, not a perfect score');
     assert.match(sla.basis, /deadline has passed/);
+  } finally { await db.close(); }
+});
+
+// --- what a draft may not assert -----------------------------------------------
+// Raised in review: the drafts assumed a recent job change, an account that
+// exists, and an email that may never have been sent. These hold for every
+// draft rather than the three that were named, because the next template
+// somebody adds will be written from the same habit.
+
+const EVERY_STEP = [...SEQUENCES.priority.steps, ...SEQUENCES.nurture.steps];
+const FORBIDDEN = [
+  [/congratulat/i, 'congratulates something the record does not establish'],
+  [/the move to|your (recent|new) (move|role)|recently (joined|moved|started)/i, 'asserts a job change'],
+  [/\byour (401|account|plan)\b|the Harbor Steel account/i, 'asserts an account this person holds'],
+  [/single most common|most people in your position|we (always|usually) find/i, 'makes an unsupported claim'],
+  [/\$|meaningful account|significant (balance|account|sum)/i, 'implies a balance'],
+];
+
+test('no draft asserts a job change, an account, a balance or a finding', () => {
+  const advisor = {name: 'Dana Whitfield', firm: 'Example Advisors', phone: '516-555-0142', metro: 'Long Island'};
+  for (const step of EVERY_STEP) {
+    for (const record of [lead, {first_name: 'Jamie'}]) {
+      const draft = composeTouch(step, {lead: record, advisor, now, sent: EVERY_STEP.map(s => s.id)});
+      const text = [draft.subject || '', draft.body].join('\n');
+      for (const [pattern, why] of FORBIDDEN)
+        assert.doesNotMatch(text, pattern, `${step.id} ${why}`);
+      assert.doesNotMatch(draft.body, /\[/, `${step.id} left an unfilled bracket`);
+    }
+  }
+});
+
+test('a plan is named as a condition, never as a fact this person has one', () => {
+  const advisor = {name: 'Dana Whitfield', firm: 'Example Advisors', phone: '516-555-0142'};
+  const opener = composeTouch(SEQUENCES.priority.steps[0], {lead, advisor, now});
+  assert.match(opener.body, /If you still have a retirement plan with a former employer/);
+  // The reported employer may be named — the record says they worked there —
+  // but only as where they worked, never as where an account sits.
+  assert.match(opener.body, /from your time at Harbor Steel/);
+  assert.doesNotMatch(opener.body, /at Harbor Steel is|your Harbor Steel/);
+  const closing = composeTouch({id: 'closing', channel: 'email'}, {lead, advisor, now});
+  assert.match(closing.body, /If a review of a former employer plan .* ever becomes useful/);
+  // With no employer on file the sentence still reads, without a dangling clause.
+  const bare = composeTouch(SEQUENCES.priority.steps[0], {lead: {first_name: 'Sam'}, advisor, now});
+  assert.match(bare.body, /If you still have a retirement plan with a former employer, it can be worth a look/);
+});
+
+test('the voicemail claims an earlier email only when one was logged', () => {
+  const advisor = {name: 'Dana Whitfield', firm: 'Example Advisors', phone: '516-555-0142'};
+  const step = {id: 'call-1', channel: 'phone'};
+  const unsent = composeTouch(step, {lead, advisor, now, sent: []});
+  assert.doesNotMatch(unsent.body, /I sent you a note/);
+  assert.match(unsent.body, /I'm calling about retirement plans/);
+  const sent = composeTouch(step, {lead, advisor, now, sent: ['opener']});
+  assert.match(sent.body, /I sent you a note earlier this week/);
+  // And the sequence supplies that list from the log, not from the plan.
+  const progress = sequenceProgress([touch(3, {step: 'opener'})], SEQUENCES.priority, {now});
+  assert.deepEqual(progress.done, ['opener']);
+  assert.deepEqual(sequenceProgress([touch(3)], SEQUENCES.priority, {now}).done, [],
+    'a touch logged without a step cannot claim the email was sent');
+});
+
+test('the workflow hands the draft only the steps the log shows happened', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    await lab.advisor.saveProfile(user, {display_name: 'Dana Whitfield', firm: 'Example Advisors', phone: '516-555-0142'});
+    let detail = await lab.advisor.detail(user, id);
+    assert.deepEqual(detail.cadence.progress.done, []);
+    await lab.advisor.save(user, id, {outcome: 'no_answer', channel: 'email',
+      signature: detail.action.signature, idempotency_key: 'opener-sent'});
+    detail = await lab.advisor.detail(user, id);
+    assert.deepEqual(detail.cadence.progress.done, ['opener']);
+    // Step two is the connection note; drive to the call and check its script.
+    await lab.advisor.save(user, id, {outcome: 'no_answer', channel: 'linkedin',
+      signature: detail.action.signature, idempotency_key: 'connect-sent'});
+    detail = await lab.advisor.detail(user, id);
+    assert.equal(detail.cadence.step.id, 'call-1');
+    assert.match(detail.draft.body, /I sent you a note earlier this week/);
   } finally { await db.close(); }
 });
