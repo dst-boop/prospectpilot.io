@@ -64,7 +64,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const action=nextAction(lead,quality,now(),cadence);
     return {action,cadence,
       // The words for the next touch, not a description of them.
-      draft:action.bucket==='closed'||!cadence.step?null:composeTouch(cadence.step,{lead,advisor:await profile(user),now:now()}),
+      draft:action.bucket==='closed'||!cadence.step?null:composeTouch(cadence.step,{lead,advisor:await profile(user),now:now(),sent:cadence.progress.done}),
       schedules:nextFollowUp(cadence,{now:now()}),
       activities:(await pool.query('SELECT outcome,channel,step,note,next_at,created_at FROM advisor_activities WHERE lead_id=$1 ORDER BY created_at DESC,id DESC LIMIT 30',[id])).rows};
   }

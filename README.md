@@ -39,10 +39,17 @@ already finished.
 actual message for the step that is due — subject and body for an email, the
 script for a voicemail, the note for a connection request — composed from the
 saved record and signed from **Your details**. A fact that is not on file is
-named (*"Add the previous employer to personalize this further"*) rather than
-left as a bracket in a sent message. Nothing is sent from the application, and
-the draft makes no claim about what the person holds, because nothing here
-establishes that.
+named rather than left as a bracket in a sent message. Nothing is sent from the
+application.
+
+**A draft asserts only what the record establishes.** It knows a name, an
+employer, and a previously reported employer. It does not know that anyone
+changed jobs recently, that they hold anything anywhere, or what a review would
+find — so it congratulates nothing, and a plan is always named as a condition
+(*"if you still have a retirement plan with a former employer, such as from your
+time at X"*), never as an account that exists. The voicemail script refers to
+the opening email only when the log shows it was sent. A test asserts this
+across every template, not only the ones written so far.
 
 **The schedule is kept for you.** Logging an unanswered touch sets the next
 step's date from the sequence and pre-selects its channel; you are not asked for
