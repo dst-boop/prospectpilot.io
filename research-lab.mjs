@@ -366,6 +366,9 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     if(path==='/api/lab/contact-import'&&request.method==='POST')return importContacts(user,await body());
     if(path==='/api/lab/worklist'&&request.method==='GET')return advisor.worklist(user,Object.fromEntries(url.searchParams));
     if(path==='/api/lab/enrichment-export'&&request.method==='POST')return advisor.exportEnrichment(user,await body());
+    if(path==='/api/lab/scoreboard'&&request.method==='GET')return advisor.scoreboard(user,Object.fromEntries(url.searchParams));
+    if(path==='/api/lab/advisor-profile'&&request.method==='GET')return advisor.profile(user);
+    if(path==='/api/lab/advisor-profile'&&request.method==='POST')return advisor.saveProfile(user,await body());
     const activityMatch=path.match(/^\/api\/lab\/leads\/([^/]+)\/activity$/);
     if(activityMatch&&request.method==='GET')return advisor.detail(user,decodeURIComponent(activityMatch[1]));
     if(activityMatch&&request.method==='POST')return advisor.save(user,decodeURIComponent(activityMatch[1]),await body());

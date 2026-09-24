@@ -16,6 +16,52 @@ Conversation and meeting counters reflect manually logged outcomes over seven ro
 
 See [the advisor workflow release](ADVISOR-WORKFLOW-RELEASE.md) for the short usage flow and deployment status.
 
+## Outreach pacing and the next touch
+
+The qualification gates decide whether someone may be approached. This decides
+how often, and writes the next message.
+
+**Six touches in any rolling 45 days, counting email, phone and LinkedIn
+together.** Reaching the limit opens a mandatory 90-day rest, recorded against
+the prospect with the reason, and the worklist shows them under **Resting**
+until it ends. A rest survives its touches ageing out of the 45-day window, so
+waiting does not quietly restore contact. A prospect who responds leaves the
+sequence immediately.
+
+**The next touch arrives written.** Open a prospect and the brief carries the
+actual message for the step that is due — subject and body for an email, the
+script for a voicemail, the note for a connection request — composed from the
+saved record and signed from **Your details**. A fact that is not on file is
+named (*"Add the previous employer to personalize this further"*) rather than
+left as a bracket in a sent message. Nothing is sent from the application, and
+the draft makes no claim about what the person holds, because nothing here
+establishes that.
+
+**The schedule is kept for you.** Logging an unanswered touch sets the next
+step's date from the sequence and pre-selects its channel; you are not asked for
+a date the plan already knows. A follow-up or meeting still takes an explicit
+time, because a person agreed to that one.
+
+Two sequences ship, as data in `outreach-cadence.mjs`: a six-touch priority plan
+over fourteen days across three channels, and a four-email nurture plan over six
+weeks. Editing the plan is an edit to that table.
+
+Calling hours are 8am-9pm local to the prospect's state, and a state spanning
+two zones is judged in both - if it is 7am anywhere in the state it is too early
+for the state. A prospect with no recorded state is not shown as ready to dial.
+The window is reported, not enforced against the log: this application does not
+place calls, so refusing to record one that happened would lose the touch from
+the budget that governs the next six.
+
+**Pacing is only as good as the logging.** A touch nobody recorded is invisible
+to the limit and to the scoreboard. `GET /api/lab/scoreboard` reports first-touch
+service level, response rate and meetings booked per 100 prospects worked, and
+names the two metrics it cannot report - whether a booked meeting was held, and
+whether a first conversation led to a second - rather than estimating them.
+
+Requires migration **014**, which adds the channel and sequence step to logged
+activity, the rest-period table, and the advisor profile used to sign drafts.
+
 **A verified quality lead must meet all five reviewed criteria:** age 45–73 inclusive, US residence, retained retirement assets with an eligible distribution or IRA transfer, an identified phone/email/LinkedIn contact route, and a disclosed net-worth lower bound of at least $250,000 excluding the home and net of liabilities.
 
 Financial criteria require participant disclosure or an authorized financial document, with research consent recorded. Employer plan assets, job titles, graduation years, property values and WARN notices do not establish an individual's wealth or retirement holdings. The 0–100 score measures evidence completeness, not a probability of wealth, transfer eligibility, or investment suitability.
@@ -53,7 +99,7 @@ REFRESH_PLAN_CATALOG=1 bash release.sh
 
 Read [the release handoff](RELEASE-2026-09-07.md) for prerequisites, validation, costs, source coverage and rollback. The release verifies the new version through the custom domain. Production deployment is not implied by a successful local build or GitHub push.
 
-The advisor workflow adds migration **013** for activity history and contact links. The contact workspace requires migrations **008** and **009** before starting the service and worker; these add contacts, lists, imports, saved searches, durable tasks and cost reservations. The migration runner applies all outstanding migrations in order.
+The advisor workflow adds migration **013** for activity history and contact links, and **014** for outreach pacing, drafted touches and the advisor profile. The contact workspace requires migrations **008** and **009** before starting the service and worker; these add contacts, lists, imports, saved searches, durable tasks and cost reservations. The migration runner applies all outstanding migrations in order.
 
 The separate Research Lab uses migration **007**. It preserves observations, adds the net-worth criterion, and invalidates old qualification totals so four-gate results cannot count under the new definition. Requalification records a new first-verification timestamp under rule `retirement-evidence-2`. The normal migration runner applies it once.
 

@@ -12,6 +12,7 @@ async function fixture(options={}) {
   await db.exec(readFileSync(new URL('../migrations/007-quality-v2.sql',import.meta.url),'utf8'));
   await db.exec(readFileSync(new URL('../migrations/008-prospect-workspace.sql',import.meta.url),'utf8'));
   await db.exec(readFileSync(new URL('../migrations/013-advisor-workflow.sql',import.meta.url),'utf8'));
+  await db.exec(readFileSync(new URL('../migrations/014-outreach-cadence.sql',import.meta.url),'utf8'));
   const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>pool.query(...a),release(){}})};
   const sources=options.sources||{readiness:{},quote:()=>0,run:async()=>({status:'completed',candidates:[{name:'Jamie Rivera',company:'Example Manufacturing',current_title:'Director',email:'jamie@example.com',estimated_age_range:'62',country:'US'}]})};
   return {db,pool,lab:createResearchLab({pool,sources,...options}),user:{uid:'owner',email:'owner@example.com'}};

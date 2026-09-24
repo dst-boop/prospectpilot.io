@@ -95,14 +95,14 @@ async function loadActivity(id,version,reset=true){try{const data=await request(
 let workOffset=0,workTotal=0,workRequest=0,currentWorkflow=null,activityKey='',activitySaving=false;
 const workSelected=new Set();
 const when=value=>value?new Date(value).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'';
-const emptyMessages={today:['Your next actions will appear here.','Import an existing provider CSV or discover people at named employers. Each prospect will have a specific evidence task.'],due:['You’re caught up on due follow-ups.','Scheduled follow-ups return here when their saved time arrives.'],ready:['No prospects are ready for an initial conversation yet.','Review age, US residence, and contact ownership first. Missing retirement and financial evidence remains a conversation topic, not a verified claim.'],review:['No evidence reviews in this view.','Try another worklist or import research candidates.'],enrich:['No missing-contact records in this view.','Contact details that are present but unverified appear under Evidence to review.'],scheduled:['No follow-ups scheduled.','Open a prospect, record the outcome, and choose a next follow-up time.'],meetings:['No meetings saved yet.','Choose Meeting booked on a prospect and record the agreed time.'],closed:['No closed or excluded records.','Contact restrictions and reviewed disqualifications remove records from active work.'],all:['No prospects found.','Import a CSV or change your search.']};
+const emptyMessages={resting:['Nobody is resting right now.','A prospect rests after six touches in 45 days, or after a sequence ends without a reply. They return automatically when the rest period is over.'],today:['Your next actions will appear here.','Import an existing provider CSV or discover people at named employers. Each prospect will have a specific evidence task.'],due:['You’re caught up on due follow-ups.','Scheduled follow-ups return here when their saved time arrives.'],ready:['No prospects are ready for an initial conversation yet.','Review age, US residence, and contact ownership first. Missing retirement and financial evidence remains a conversation topic, not a verified claim.'],review:['No evidence reviews in this view.','Try another worklist or import research candidates.'],enrich:['No missing-contact records in this view.','Contact details that are present but unverified appear under Evidence to review.'],scheduled:['No follow-ups scheduled.','Open a prospect, record the outcome, and choose a next follow-up time.'],meetings:['No meetings saved yet.','Choose Meeting booked on a prospect and record the agreed time.'],closed:['No closed or excluded records.','Contact restrictions and reviewed disqualifications remove records from active work.'],all:['No prospects found.','Import a CSV or change your search.']};
 function selectionLabel(){$('workSelection').textContent=`${workSelected.size} selected`;$('enrichExport').disabled=!workSelected.size;}
 async function loadWorklist(){
   const serial=++workRequest;const data=await request('/api/lab/worklist?'+new URLSearchParams({view:$('workView').value,search:$('workSearch').value,offset:workOffset,limit:24}));if(serial!==workRequest)return;
   if(workOffset>0&&workOffset>=data.total){workOffset=0;return loadWorklist();}
   workTotal=data.total;$('workDue').textContent=num(data.counts.due);$('workReady').textContent=num(data.counts.ready);$('workConversations').textContent=num(data.activity.conversations);$('workMeetings').textContent=num(data.activity.meetings);
   const [emptyTitle,emptyBody]=emptyMessages[$('workView').value];
-  $('workList').innerHTML=data.items.length?data.items.map(({lead:l,quality:q,action:a})=>`<article class="work-card"><label class="select-lead"><input type="checkbox" data-work-select="${esc(l.id)}" aria-label="Select ${esc(l.first_name)} ${esc(l.last_name)} for enrichment" ${workSelected.has(l.id)?'checked':''} ${a.bucket==='closed'?'disabled':''}></label><div><button class="person-button" data-work-open="${esc(l.id)}">${esc(l.first_name)} ${esc(l.last_name)}</button><p class="muted">${esc(l.current_title||'Title unknown')} · ${esc(l.company||'Employer unknown')}</p>${l.location?`<p class="muted">${esc(l.location)}</p>`:''}${badge(q.status)} <span class="muted">${Object.values(q.gates).filter(g=>g.state==='confirmed').length}/5 criteria reviewed</span></div><div class="work-reason"><p class="next-step">${esc(a.label)}</p><p class="muted">${esc(a.reason)}</p>${a.due_at?`<p class="due-label">${esc(when(a.due_at))}</p>`:''}${l.notes?`<p class="muted">Last note: ${esc(l.notes.split('\n').filter(Boolean).at(-1)?.slice(0,240))}</p>`:''}</div><button class="secondary work-open" data-work-open="${esc(l.id)}">Open brief</button></article>`).join(''):`<div class="work-empty"><h3>${esc($('workSearch').value?'No matching prospects.':emptyTitle)}</h3><p class="muted">${esc($('workSearch').value?'Try a different full name or employer.':emptyBody)}</p></div>`;
+  $('workList').innerHTML=data.items.length?data.items.map(({lead:l,quality:q,action:a})=>`<article class="work-card"><label class="select-lead"><input type="checkbox" data-work-select="${esc(l.id)}" aria-label="Select ${esc(l.first_name)} ${esc(l.last_name)} for enrichment" ${workSelected.has(l.id)?'checked':''} ${a.bucket==='closed'?'disabled':''}></label><div><button class="person-button" data-work-open="${esc(l.id)}">${esc(l.first_name)} ${esc(l.last_name)}</button><p class="muted">${esc(l.current_title||'Title unknown')} · ${esc(l.company||'Employer unknown')}</p>${l.location?`<p class="muted">${esc(l.location)}</p>`:''}${badge(q.status)} <span class="muted">${Object.values(q.gates).filter(g=>g.state==='confirmed').length}/5 criteria reviewed</span></div><div class="work-reason"><p class="next-step">${esc(a.label)}</p><p class="muted">${esc(a.reason)}</p>${a.due_at?`<p class="due-label">${esc(when(a.due_at))}</p>`:''}${a.cadence?`<p class="muted">${esc(a.cadence.touches.count)}/${esc(a.cadence.touches.cap)} touches · ${esc(a.cadence.step?a.cadence.step.label:a.cadence.status)}</p>`:''}${l.notes?`<p class="muted">Last note: ${esc(l.notes.split('\n').filter(Boolean).at(-1)?.slice(0,240))}</p>`:''}</div><button class="secondary work-open" data-work-open="${esc(l.id)}">Open brief</button></article>`).join(''):`<div class="work-empty"><h3>${esc($('workSearch').value?'No matching prospects.':emptyTitle)}</h3><p class="muted">${esc($('workSearch').value?'Try a different full name or employer.':emptyBody)}</p></div>`;
   document.querySelectorAll('[data-work-open]').forEach(e=>e.onclick=()=>openLead(e.dataset.workOpen));
   document.querySelectorAll('[data-work-select]').forEach(e=>e.onchange=()=>{e.checked?workSelected.add(e.dataset.workSelect):workSelected.delete(e.dataset.workSelect);selectionLabel();});
   $('workPageInfo').textContent=(data.total?`${num(workOffset+1)}–${num(Math.min(workOffset+24,data.total))} of ${num(data.total)}`:'0 prospects')+(data.truncated?` · Showing a working set of ${num(data.scanned)} / ${num(data.scope_total)}; search to narrow.`:'');
@@ -111,16 +111,53 @@ async function loadWorklist(){
 function renderConversation(){
   const a=currentWorkflow.action,q=current.quality;
   const questions={age:'What is your current age?',residence:'Which state do you currently live in?',retirement:'Do you still have a retirement account from a previous employer, or another retirement account you would like reviewed?',contact:'What is the best way to contact you for an agreed follow-up?',net_worth:'If you want a planning review, would you be comfortable sharing an authorized financial summary?'};
-  $('conversationBrief').innerHTML=`<p><strong>${esc(a.label)}</strong></p><p>${esc(a.reason)}</p>${a.due_at?`<p>Saved time: <strong>${esc(when(a.due_at))}</strong></p>`:''}<p>${q.status==='verified'?'All five criteria have reviewed evidence. Ask about goals and whether the person wants help; qualification is not a recommendation to transfer assets.':'Still to establish: '+esc(q.gaps.map(k=>labels[k]).join(' · '))+'.'}</p>`+(a.bucket==='closed'?'':`<details><summary>Questions for an appropriate conversation</summary><ul>${(q.gaps.length?q.gaps.map(g=>questions[g]):['What would you like to improve about your current retirement plan?','Would a 15-minute introduction be useful?']).map(v=>`<li>${esc(v)}</li>`).join('')}</ul><p>Answers do not verify a criterion until its evidence review is saved below.</p></details>`);
+  $('conversationBrief').innerHTML=`<p><strong>${esc(a.label)}</strong></p><p>${esc(a.reason)}</p>${a.due_at?`<p>Saved time: <strong>${esc(when(a.due_at))}</strong></p>`:''}${cadenceLine(currentWorkflow.cadence)}<p>${q.status==='verified'?'All five criteria have reviewed evidence. Ask about goals and whether the person wants help; qualification is not a recommendation to transfer assets.':'Still to establish: '+esc(q.gaps.map(k=>labels[k]).join(' · '))+'.'}</p>`+(a.bucket==='closed'?'':`<details><summary>Questions for an appropriate conversation</summary><ul>${(q.gaps.length?q.gaps.map(g=>questions[g]):['What would you like to improve about your current retirement plan?','Would a 15-minute introduction be useful?']).map(v=>`<li>${esc(v)}</li>`).join('')}</ul><p>Answers do not verify a criterion until its evidence review is saved below.</p></details>`);
+  renderDraft();
   $('contactActions').replaceChildren();const c=a.contact;
   if(c){const anchor=document.createElement('a');anchor.className='contact-link';anchor.textContent=c.channel==='phone'?`Call ${c.address}`:c.channel==='email'?`Email ${c.address}`:'Open reviewed LinkedIn profile';anchor.href=c.channel==='phone'?'tel:'+c.address:c.channel==='email'?'mailto:'+encodeURIComponent(c.address):safeURL(c.address);if(c.channel==='linkedin'){anchor.target='_blank';anchor.rel='noopener noreferrer';}$('contactActions').append(anchor);}else $('contactActions').textContent='No reviewed contact shortcut available. Review the contact evidence below.';
   $('activityHistory').innerHTML=(current.lead.notes?`<p class="existing-notes">${esc(current.lead.notes)}</p>`:'')+(currentWorkflow.activities.length?currentWorkflow.activities.map(a=>`<div class="activity-entry"><strong>${esc(title(a.outcome))}</strong> · ${esc(when(a.created_at))}<p>${esc(a.note)}</p>${a.next_at?`<small>Next: ${esc(when(a.next_at))}</small>`:''}</div>`).join(''):'<p>No outcomes recorded yet.</p>');
 }
-function activityFields(){const outcome=$('activityOutcome').value,closed=['not_interested','do_not_contact','reopen'].includes(outcome);$('nextAtLabel').hidden=closed;$('activityNext').required=['follow_up','meeting_booked'].includes(outcome);$('activityNext').disabled=closed;}
-function prepareActivity(){renderConversation();$('activityForm').reset();$('activityError').textContent='';activityKey=crypto.randomUUID();const next=new Date();next.setDate(next.getDate()+1);next.setHours(9,0,0,0);const local=new Date(next.getTime()-next.getTimezoneOffset()*60000).toISOString().slice(0,16);$('activityNext').value=local;activityFields();}
+function cadenceLine(c){
+  if(!c)return '';
+  const t=c.touches,used=`${num(t.count)} of ${num(t.cap)} touches used in the last ${num(t.window_days)} days`;
+  const hold=c.status==='resting'||c.status==='capped'?`<p class="cadence-hold">${esc(c.reason)}</p>`
+    :c.step&&!c.step.ready?`<p class="cadence-hold">${esc(c.step.hold||c.reason)}</p>`:'';
+  return `<p class="muted">${esc(used)}.</p>${hold}`;
+}
+function renderDraft(){
+  const d=currentWorkflow.draft,panel=$('draftPanel');
+  panel.hidden=!d;
+  if(!d)return;
+  const step=currentWorkflow.cadence?.step;
+  $('draftHeading').textContent=step?`Your next touch — ${step.label.toLowerCase()}`:'Your next touch';
+  $('draftMeta').textContent=[d.channel==='phone'?'Voicemail script':d.channel==='linkedin'?'Connection note':'Email',
+    step?.due_at?'due '+when(step.due_at):''].filter(Boolean).join(' · ');
+  $('draftSubjectLabel').hidden=!d.subject;
+  $('draftSubject').value=d.subject||'';
+  $('draftBody').value=d.body;
+  $('draftNeeds').textContent=d.needs.length?`Add ${d.needs.join(', ')} to personalize this further.`:'';
+  $('draftCopied').textContent='';
+}
+$('draftCopy').onclick=async()=>{
+  const d=currentWorkflow?.draft;if(!d)return;
+  const text=[d.subject?'Subject: '+d.subject:'',d.body].filter(Boolean).join('\n\n');
+  try{await navigator.clipboard.writeText(text);$('draftCopied').textContent='Copied.';}
+  catch{$('draftBody').select();$('draftCopied').textContent='Select the message and copy it.';}
+};
+function activityFields(){const outcome=$('activityOutcome').value,closed=['not_interested','do_not_contact','reopen'].includes(outcome);$('nextAtLabel').hidden=closed;$('activityNext').required=['follow_up','meeting_booked'].includes(outcome);$('activityNext').disabled=closed;
+  // A channel is only meaningful for a touch that actually reached out.
+  $('channelLabel').hidden=closed;$('activityChannel').disabled=closed;}
+function prepareActivity(){renderConversation();$('activityForm').reset();$('activityError').textContent='';activityKey=crypto.randomUUID();
+  // The sequence already knows which channel this touch uses and when the next
+  // one falls due, so neither is the advisor's to work out.
+  const step=currentWorkflow.cadence?.step,planned=currentWorkflow.schedules?.at;
+  if(step?.channel)$('activityChannel').value=step.channel;
+  const next=planned?new Date(planned):(()=>{const d=new Date();d.setDate(d.getDate()+1);d.setHours(9,0,0,0);return d;})();
+  $('activityNext').value=new Date(next.getTime()-next.getTimezoneOffset()*60000).toISOString().slice(0,16);
+  activityFields();}
 $('activityOutcome').onchange=activityFields;
 $('activityForm').onsubmit=async e=>{e.preventDefault();if(!current||!currentWorkflow||activitySaving)return;const version=leadDetailVersion;activitySaving=true;$('saveActivity').disabled=true;$('activityError').textContent='';try{
-  const result=await request('/api/lab/leads/'+encodeURIComponent(current.lead.id)+'/activity',{method:'POST',body:JSON.stringify({outcome:$('activityOutcome').value,note:$('activityNote').value,next_at:$('activityNext').disabled||!$('activityNext').value?null:new Date($('activityNext').value).toISOString(),signature:currentWorkflow.action.signature,idempotency_key:activityKey})});
+  const result=await request('/api/lab/leads/'+encodeURIComponent(current.lead.id)+'/activity',{method:'POST',body:JSON.stringify({outcome:$('activityOutcome').value,channel:$('activityChannel').disabled?null:$('activityChannel').value,note:$('activityNote').value,next_at:$('activityNext').disabled||!$('activityNext').value?null:new Date($('activityNext').value).toISOString(),signature:currentWorkflow.action.signature,idempotency_key:activityKey})});
   if(result.saved){if(version===leadDetailVersion)$('detail').close();notice('Outcome saved. Your follow-up and worklist are updated.');await refresh(false);}
 }catch(err){if(version===leadDetailVersion)$('activityError').textContent=err.message;else notice(err.message,true);}finally{activitySaving=false;$('saveActivity').disabled=false;}};
 $('quickImport').onclick=()=>$('importOpen').click();
@@ -129,4 +166,17 @@ $('workView').onchange=()=>{workOffset=0;loadWorklist().catch(e=>notice(e.messag
 $('workSearch').oninput=()=>{workRequest++;clearTimeout(workSearchTimer);workSearchTimer=setTimeout(()=>{workOffset=0;loadWorklist().catch(e=>notice(e.message,true));},250);};
 $('workPrevious').onclick=()=>{workOffset=Math.max(0,workOffset-24);loadWorklist().catch(e=>notice(e.message,true));};$('workNext').onclick=()=>{workOffset+=24;loadWorklist().catch(e=>notice(e.message,true));};
 $('enrichExport').onclick=async()=>{if(!workSelected.size)return;try{const blob=await request('/api/lab/enrichment-export',{method:'POST',body:JSON.stringify({ids:[...workSelected]})});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='prospectpilot-enrichment.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notice('Provider matching CSV prepared. Import the enriched results to merge them into your existing prospects.');}catch(e){notice(e.message,true);}};
+$('profileOpen').onclick=async()=>{
+  $('profileError').textContent='';
+  try{const p=await request('/api/lab/advisor-profile');
+    $('profileName').value=p.name||'';$('profileFirm').value=p.firm||'';$('profilePhone').value=p.phone||'';$('profileMetro').value=p.metro||'';
+  }catch(e){$('profileError').textContent=e.message;}
+  $('profileDialog').showModal();
+};
+$('profileForm').onsubmit=async e=>{
+  e.preventDefault();const button=e.submitter;button.disabled=true;$('profileError').textContent='';
+  try{await request('/api/lab/advisor-profile',{method:'POST',body:JSON.stringify({display_name:$('profileName').value,firm:$('profileFirm').value,phone:$('profilePhone').value,metro:$('profileMetro').value})});
+    $('profileDialog').close();notice('Saved. Drafted messages will sign themselves with these details.');
+  }catch(err){$('profileError').textContent=err.message;}finally{button.disabled=false;}
+};
 init();
