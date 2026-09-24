@@ -11,12 +11,39 @@ export const CONTACT_ALIASES = {
   mobile_phone: ['mobile phone', 'mobile phone number', 'contact mobile phone'],
   linkedin_url: ['linkedin url', 'linkedin profile url', 'linkedin contact profile url'],
   country: ['country', 'contact country'], state: ['state', 'region', 'contact state', 'person state'],
-  city: ['city', 'contact city', 'person city'], company_domain: ['company domain', 'domain', 'company website'],
+  city: ['city', 'contact city', 'person city'], company_domain: ['company domain', 'domain', 'company website', 'website'],
   industry: ['industry', 'primary industry'], seniority: ['seniority', 'seniority level', 'management level'],
   suppressed: ['suppressed', 'do not contact'],
 };
 export const columnKey = value => nameKey(value).replaceAll(' ', '');
 export const CONTACT_COLUMNS = new Map(Object.entries(CONTACT_ALIASES).flatMap(([key, aliases]) => [key, ...aliases].map(alias => [columnKey(alias), key])));
+export const ZOOMINFO_ALIASES = {
+ contact_id:['ZoomInfo Contact ID'], company_id:['ZoomInfo Company ID'], accuracy_score:['Contact Accuracy Score'], accuracy_grade:['Contact Accuracy Grade'],
+ validated_at:['Valid Date','Contact Validated Date'], updated_at:['Last Updated Date','Contact Updated Date'],
+ job_start_date:['Job Start Date'], last_job_change_date:['Last Job Change Date'], previous_company:['Previous Company Name'], department:['Department'],
+ direct_do_not_call:['Direct Phone Do Not Call','Direct Phone DoNotCall','Direct Do Not Call'], mobile_do_not_call:['Mobile Phone Do Not Call','Mobile Phone DoNotCall','Mobile Do Not Call'],
+};
+for(const [key,aliases] of Object.entries(ZOOMINFO_ALIASES))for(const alias of [...aliases,'zoominfo_'+key])CONTACT_COLUMNS.set(columnKey(alias),'zoominfo_'+key);
+function providerMetadata(mapped){
+ const data={},warnings=[];
+ for(const key of Object.keys(ZOOMINFO_ALIASES)){
+  const raw=String(mapped['zoominfo_'+key]??'').trim();if(!raw)continue;
+  let value=raw;
+  if(key.endsWith('do_not_call'))value=/^(true|yes|1)$/i.test(raw)?true:/^(false|no|0)$/i.test(raw)?false:null;
+  else if(key.endsWith('_id'))value=/^-?\d{1,20}$/.test(raw)?raw:null;
+  else if(key==='accuracy_score')value=/^\d+(\.\d+)?$/.test(raw)&&Number(raw)<=100?Number(raw):null;
+  else if(key.endsWith('_date')||key.endsWith('_at'))value=providerDate(raw);
+  else value=raw.length<=200&&!/[\u0000-\u001f]/.test(raw)?raw:null;
+  if(value===null){warnings.push('Review ZoomInfo '+key.replaceAll('_',' ')+': '+raw.slice(0,200));if(key.endsWith('do_not_call'))data[key]=null;}else data[key]=value;
+ }
+ return {data,warnings};
+}
+function providerDate(raw){
+ let date='';
+ if(/^\d{4}-\d{2}-\d{2}(?:T.*)?$/.test(raw)&&Number.isFinite(Date.parse(raw)))date=raw.slice(0,10);
+ else {const match=raw.match(/^(January|February|March|April|May|June|July|August|September|October|November|December) (\d{1,2}), (\d{4})$/i);if(match){const month=['january','february','march','april','may','june','july','august','september','october','november','december'].indexOf(match[1].toLowerCase())+1;date=`${match[3]}-${String(month).padStart(2,'0')}-${match[2].padStart(2,'0')}`;}}
+ return date&&Number.isFinite(Date.parse(date))&&new Date(date).toISOString().slice(0,10)===date&&date<=new Date().toISOString().slice(0,10)?date:null;
+}
 const states = 'Alabama:AL|Alaska:AK|Arizona:AZ|Arkansas:AR|California:CA|Colorado:CO|Connecticut:CT|Delaware:DE|District of Columbia:DC|Florida:FL|Georgia:GA|Hawaii:HI|Idaho:ID|Illinois:IL|Indiana:IN|Iowa:IA|Kansas:KS|Kentucky:KY|Louisiana:LA|Maine:ME|Maryland:MD|Massachusetts:MA|Michigan:MI|Minnesota:MN|Mississippi:MS|Missouri:MO|Montana:MT|Nebraska:NE|Nevada:NV|New Hampshire:NH|New Jersey:NJ|New Mexico:NM|New York:NY|North Carolina:NC|North Dakota:ND|Ohio:OH|Oklahoma:OK|Oregon:OR|Pennsylvania:PA|Rhode Island:RI|South Carolina:SC|South Dakota:SD|Tennessee:TN|Texas:TX|Utah:UT|Vermont:VT|Virginia:VA|Washington:WA|West Virginia:WV|Wisconsin:WI|Wyoming:WY|Puerto Rico:PR|Guam:GU|US Virgin Islands:VI|American Samoa:AS|Northern Mariana Islands:MP'.split('|').map(pair => pair.split(':'));
 const stateCodes = new Map(states.flatMap(([name, code]) => [[name.toLowerCase(), code], [code.toLowerCase(), code]]));
 export const stateName = value => states.find(([,code])=>code===String(value).toUpperCase())?.[0] || value;
@@ -51,24 +78,30 @@ export function contactPhone(value,country){
  if(/[^0-9()+.\s-]/.test(raw)||location&&location!=='US'&&!raw.startsWith('+1'))return '';
  return phoneNumber(raw);
 }
-export function normalizeContact(raw, source) {
+export function normalizeContact(raw, source, {importing=false}={}) {
   const mapped = {};
   for (const [key, value] of Object.entries(raw)) {
     const target = CONTACT_COLUMNS.get(columnKey(key));
     if (target) mapped[target] = value;
   }
-  const contact = Object.fromEntries(Object.keys(CONTACT_ALIASES).map(key => [key, cleanField(mapped[key], key)]));
+  const contact = Object.fromEntries(Object.keys(CONTACT_ALIASES).map(key => [key, importing&&['phone','mobile_phone'].includes(key)?String(mapped[key]??'').normalize('NFKC').trim():cleanField(mapped[key], key)]));
   if (![contact.first_name, contact.last_name].every(value => /\p{L}/u.test(value))) throw fail('First and last name must each contain a letter.');
   contact.email = contactEmail(contact.email);
   const rawEmail = cleanField(mapped.email, 'email');
   if (rawEmail && !contact.email) throw fail('Invalid email address.');
   const rawMobile = contact.mobile_phone;
   contact.mobile_phone = contactPhone(rawMobile,contact.country);
-  if(rawMobile&&!contact.mobile_phone)throw fail('Use a supported +1 mobile phone number without an extension.');
+  if(rawMobile&&!contact.mobile_phone&&!importing)throw fail('Use a supported +1 mobile phone number without an extension.');
   const rawPhone = contact.phone;
   contact.phone = contactPhone(rawPhone,contact.country);
-  if (rawPhone && !contact.phone) throw fail('Use a supported +1 phone number without an extension. For contacts outside the US, include +1 explicitly.');
+  if (rawPhone && !contact.phone&&!importing) throw fail('Use a supported +1 phone number without an extension. For contacts outside the US, include +1 explicitly.');
+  contact.phone_origin=contact.phone?'direct':contact.mobile_phone?'mobile':'';
   if(!contact.phone)contact.phone=contact.mobile_phone;
+  if(importing){
+   const {data,warnings}=providerMetadata(mapped);contact.zoominfo=data;contact.import_warnings=warnings;
+   contact.phone_import={};for(const [key,value,normalized] of [['direct',rawPhone,contactPhone(rawPhone,contact.country)],['mobile',rawMobile,contact.mobile_phone]])if(value&&!optionalBlank(value))contact.phone_import[key]={raw:value,status:normalized?'normalized':'needs_review'};
+   contact.phone_restrictions={direct:data.direct_do_not_call??null,mobile:data.mobile_do_not_call??null};
+  }
   const rawLinkedIn = contact.linkedin_url;
   contact.linkedin_url = linkedinURL(rawLinkedIn && !/^https?:/i.test(rawLinkedIn) ? 'https://' + rawLinkedIn : rawLinkedIn);
   if (rawLinkedIn && !contact.linkedin_url) throw fail('Use a LinkedIn person profile URL.');
@@ -135,8 +168,28 @@ export function parseContactCSV(input) {
 // detail flags, directory filters and aggregate coverage.
 export const sourceFreshnessCutoff = (now = new Date()) => new Date(Number(now) - 180 * 86400000).toISOString().slice(0, 10);
 
+export function phoneReadiness(c){
+ const direct=c.phone_restrictions?.direct??null,mobile=c.phone_restrictions?.mobile??null;
+ // Old records may have a mobile copied into the primary phone field.
+ const fallback=c.phone_origin==='mobile',sameDirectMobile=!fallback&&!!c.mobile_phone&&c.phone===c.mobile_phone;
+ return {primary_blocked:c.suppressed===true||(fallback?mobile===true:direct===true||sameDirectMobile&&mobile===true),mobile_blocked:c.suppressed===true||mobile===true||sameDirectMobile&&direct===true,direct_do_not_call:direct,mobile_do_not_call:mobile};
+}
+
+export function preparationStep(c){
+ if(c.suppressed)return {code:'suppressed',label:'No outreach: contact suppressed'};
+ if(c.phone_restrictions?.direct===true||c.phone_restrictions?.mobile===true)return {code:'calling_restrictions',label:'Review calling restrictions before choosing a channel'};
+ if(Object.values(c.phone_import||{}).some(p=>p.status==='needs_review'))return {code:'phone_review',label:'Review the imported phone format'};
+ if(c.source_history?.some(e=>e.proposed_values&&!e.resolution))return {code:'source_conflict',label:'Resolve conflicting source values'};
+ if(c.zoominfo?.last_job_change_date||c.zoominfo?.previous_company)return {code:'job_change',label:'Confirm the job change before personalizing'};
+ if(!c.email&&!c.phone&&!c.mobile_phone&&!c.linkedin_url)return {code:'missing_route',label:'Find a supported professional contact route'};
+ return {code:'prepare',label:'Review current role and contact evidence'};
+}
+
 export function contactQuality(contact, now = new Date()) {
   const issues = [];
+  for(const [route,phone] of Object.entries(contact.phone_import||{}))if(phone.status==='needs_review')issues.push({code:'phone_review',message:`Imported ${route} phone needs review; original value retained and excluded from active phone fields.`});
+  for(const message of contact.import_warnings||[])issues.push({code:'provider_metadata_review',message});
+  for(const route of ['direct','mobile'])if(contact.phone_restrictions?.[route]===true)issues.push({code:'do_not_call',message:`${route==='direct'?'Direct':'Mobile'} phone has a do-not-call flag. It is omitted from contact exports.`});
   if (!contact.email && !contact.phone && !contact.linkedin_url) issues.push({code: 'no_contact_route', message: 'No email, phone or LinkedIn profile.'});
   if (sharedMailbox(contact.email)) issues.push({code: 'shared_mailbox', message: 'Shared mailbox; individual ownership is not established.'});
   if (contact.email && /@(?:[^@]+\.)?(?:example\.(?:com|net|org)|invalid|test)$/i.test(contact.email)) issues.push({code: 'test_address', message: 'Reserved example or test email domain.'});
@@ -147,5 +200,5 @@ export function contactQuality(contact, now = new Date()) {
   const seen = contact.source_observed_at;
   if (!seen) issues.push({code: 'source_date_unknown', message: 'Source observation date is unknown; importing today does not establish freshness.'});
   if (seen && Number.isFinite(Date.parse(seen)) && seen < sourceFreshnessCutoff(now)) issues.push({code: 'stale_source', message: 'Source observation is over 180 days old.'});
-  return {issues, suppressed: contact.suppressed === true, contact_routes: ['email', 'phone', 'linkedin_url'].filter(key => !!contact[key]).length};
+  return {issues, suppressed: contact.suppressed === true, contact_routes: ['email', 'phone', 'linkedin_url'].filter(key => !!contact[key]).length,phones:phoneReadiness(contact),next_review:preparationStep(contact)};
 }

@@ -1,4 +1,4 @@
-import {createAdvisorWorkflow} from './advisor-workflow.mjs';
+import {createAdvisorWorkflow,withDirectoryRestrictions} from './advisor-workflow.mjs';
 import {randomUUID} from 'node:crypto';
 import {normalizeLead, mergeLead, isUsableStoredLead} from './generated/worker.mjs';
 import {assessLead, candidateKeys, leadIdentity, validateObservation, nameKey, US_STATES, researchCSV, hash, QUALITY_VERSION} from './lead-quality.mjs';
@@ -50,9 +50,9 @@ export async function assessInventory(ids,assess,{clock=()=>performance.now(),bu
 
 export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>new Date()}={}) {
   async function accessible(user,id,client=pool,lock=false) {
-    const row=(await client.query(`SELECT discovery_leads.*,EXISTS(SELECT 1 FROM advisor_contact_links acl JOIN prospect_contacts pc ON pc.id=acl.contact_id AND pc.user_id=acl.user_id WHERE acl.lead_id=discovery_leads.id AND pc.payload->>'suppressed'='true') AS linked_suppressed FROM discovery_leads WHERE ${visibleSQL} AND id=$4${lock?' FOR UPDATE':''}`,[TEAM,user.uid,user.email,id])).rows[0];
+    const row=(await client.query(`SELECT discovery_leads.*,(SELECT jsonb_agg(pc.payload) FROM advisor_contact_links acl JOIN prospect_contacts pc ON pc.id=acl.contact_id AND pc.user_id=acl.user_id WHERE acl.lead_id=discovery_leads.id) AS linked_contacts FROM discovery_leads WHERE ${visibleSQL} AND id=$4${lock?' FOR UPDATE':''}`,[TEAM,user.uid,user.email,id])).rows[0];
     if(!row)throw fail(404,'Lead not found or unavailable to this account.');
-    return {...row,lead:{...parse(row.payload),id:row.id,...(row.linked_suppressed?{suppressed:true}:{})}};
+    return {...row,lead:withDirectoryRestrictions({...parse(row.payload),id:row.id},row.linked_contacts)};
   }
   async function observations(user,id,client=pool) {return (await client.query('SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows.map(r=>parse(r.payload));}
   async function evaluate(user,lead,client=pool) {
@@ -348,7 +348,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       const prior=(await client.query('SELECT id FROM lab_runs WHERE user_id=$1 AND idempotency_key=$2',[user.uid,key])).rows[0];if(prior)return {replayed:true,run:prior};
       const permitted=contacts.filter(c=>!c.payload.suppressed),run={id:randomUUID()};
       await client.query("INSERT INTO lab_runs(id,user_id,user_email,kind,idempotency_key,status) VALUES($1,$2,$3,'import',$4,'running')",[run.id,user.uid,user.email,key]);
-      const candidates=permitted.map(c=>({...c.payload,current_title:c.payload.title,source_names:['Contact directory: '+(c.payload.source||'reported identifiers')]}));
+      const candidates=permitted.map(c=>({...withDirectoryRestrictions(c.payload,[c.payload]),current_title:c.payload.title,source_names:['Contact directory: '+(c.payload.source||'reported identifiers')]}));
       const result=await saveCandidates(client,user,candidates,run,'Contact directory');
       const saved=(await client.query('SELECT d.id,d.payload FROM discovery_leads d JOIN lab_run_leads l ON l.lead_id=d.id WHERE l.run_id=$1',[run.id])).rows;
       let linked=0;
