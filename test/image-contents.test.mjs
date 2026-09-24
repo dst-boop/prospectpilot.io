@@ -12,6 +12,11 @@ import {readFileSync} from 'node:fs';
 
 const root = new URL('../', import.meta.url);
 const read = name => readFileSync(new URL(name, root), 'utf8');
+// This suite also runs inside the image build, where the context may not carry
+// .dockerignore — it is the build client's file, not part of what is sent. The
+// Dockerfile half still runs there; the allowlist half is checked on the runner,
+// which is where a contributor's mistake is caught either way.
+const readOptional = name => { try { return read(name); } catch { return null; } };
 const IMPORT = /(?:^|\n)\s*(?:import|export)[^'"\n]*from\s*['"](\.\/[^'"]+)['"]|(?:^|[^\w.])import\(\s*['"](\.\/[^'"]+)['"]/g;
 
 /** Local modules reachable from the entry point, by relative path. */
@@ -48,8 +53,9 @@ function dockerignored(path, text) {
   return excluded;
 }
 
-test('every module the server imports is copied into the image and not ignored', () => {
-  const dockerfile = read('Dockerfile'), ignore = read('.dockerignore');
+test('every module the server imports is copied into the image and not ignored', t => {
+  const dockerfile = read('Dockerfile'), ignore = readOptional('.dockerignore');
+  if (!ignore) t.diagnostic('.dockerignore is not in this build context; checking the Dockerfile only.');
   // Directories the Dockerfile copies wholesale.
   const bulk = [...dockerfile.matchAll(/^COPY (?:--from=build \/app\/)?([\w-]+) \.\/\1$/gm)].map(m => m[1] + '/')
     .concat([...dockerfile.matchAll(/^COPY ([\w-]+) \.\/\1$/gm)].map(m => m[1] + '/'));
@@ -60,7 +66,7 @@ test('every module the server imports is copied into the image and not ignored',
   for (const file of graph('server.mjs')) {
     if (bulk.some(dir => file.startsWith(dir))) continue;
     if (!copied.has(file)) missing.fromDockerfile.push(file);
-    if (dockerignored(file, ignore)) missing.fromContext.push(file);
+    if (ignore && dockerignored(file, ignore)) missing.fromContext.push(file);
   }
   assert.deepEqual(missing.fromDockerfile, [],
     'these are imported at runtime but never COPYed into the runtime stage');

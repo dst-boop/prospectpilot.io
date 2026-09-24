@@ -1,5 +1,7 @@
 *
 !Dockerfile
+# Read by test/image-contents.test.mjs, which also runs inside the image build.
+!.dockerignore
 !package.json
 !pnpm-lock.yaml
 !cloudbuild.yaml
