@@ -131,7 +131,8 @@ async function loadScoreboard(){
     const unmet=m.value!==null&&m.value<m.target;
     return `<article${unmet?'':' class="highlight"'}><span>${esc(m.label)}</span>`+
       `<strong>${m.value===null?'—':esc(m.value)+(m.unit==='%'?'%':'')}</strong>`+
-      `<small>${m.value===null?'Nothing recorded yet':esc(m.basis)} · target ${esc(m.target)}${m.unit==='%'?'%':''}</small></article>`;
+      `<small>${m.value===null?'Nothing recorded yet':esc(m.basis)} · target ${esc(m.target)}${m.unit==='%'?'%':''}`+
+      `${b.scopes&&m.scope?' · '+esc(b.scopes[m.scope]):''}</small></article>`;
   }).join('');
   const gaps=[b.untouched?`${num(b.untouched)} prospect${b.untouched===1?'':'s'} added and never touched`:'',b.meetings.note].filter(Boolean);
   $('scoreboardBasis').textContent=[b.basis,...gaps].join(' ');

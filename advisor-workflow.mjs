@@ -125,6 +125,18 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       // written, so a refusal reaches the advisor while it can still matter.
       const quality=assessLead(lead,(await client.query('SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows.map(r=>parse(r.payload)),{now:now()});
       const before=await cadenceFor(user,id,lead,quality,client);
+      // Attendance is an outcome of something. Without this, Meeting held on an
+      // untouched prospect would mark them Met, restart their touch budget and
+      // add a held meeting to the show rate, all without a meeting.
+      if(['meeting_held','no_show'].includes(input.outcome)) {
+        // A no-show both settles the meeting that was missed and arranges its
+        // replacement -- it carries a required new time -- so it nets out, and
+        // a meeting is outstanding while more have been booked than held.
+        const m=(await client.query(`SELECT count(*) FILTER(WHERE outcome='meeting_booked')::int AS booked,
+          count(*) FILTER(WHERE outcome='meeting_held')::int AS held
+          FROM advisor_activities WHERE lead_id=$1 AND user_id=$2`,[id,user.uid])).rows[0];
+        if(m.booked<=m.held)throw fail(422,'Record the booked meeting first. Met and No-show describe a meeting that was arranged.');
+      }
       const channel=input.channel??null;
       let step=null;
       if(TOUCH_OUTCOMES.has(input.outcome)) {
@@ -183,20 +195,29 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
         count(a.id) FILTER(WHERE a.outcome=ANY($5::text[]))::int AS touches,
         bool_or(a.outcome IN ('connected','follow_up','meeting_booked','meeting_held')) AS engaged,
         bool_or(a.outcome='meeting_booked') AS booked,
-        count(*) FILTER(WHERE a.outcome='meeting_held')::int AS held,
-        count(*) FILTER(WHERE a.outcome='no_show')::int AS no_shows,
+        -- Dated by the meeting, not by when the prospect was added: a meeting
+        -- held yesterday belongs in this window even if the person arrived a
+        -- year ago. The three above are cohort measures and stay that way.
+        count(*) FILTER(WHERE a.outcome='meeting_held' AND a.created_at >= $4::timestamptz)::int AS held,
+        count(*) FILTER(WHERE a.outcome='no_show' AND a.created_at >= $4::timestamptz)::int AS no_shows,
         -- A meeting whose time has not arrived is not yet a missed one.
-        count(*) FILTER(WHERE a.outcome='meeting_booked' AND a.next_at IS NOT NULL AND a.next_at < $6::timestamptz)::int AS due_meetings,
-        min(a.created_at) FILTER(WHERE a.outcome='meeting_held') AS first_held_at,
-        max(a.created_at) FILTER(WHERE a.outcome='meeting_booked') AS last_booked_at
+        count(*) FILTER(WHERE a.outcome IN ('meeting_booked','no_show') AND a.next_at IS NOT NULL
+          AND a.next_at < $6::timestamptz AND a.next_at >= $4::timestamptz)::int AS due_meetings,
+        min(a.created_at) FILTER(WHERE a.outcome='meeting_held' AND a.created_at >= $4::timestamptz) AS first_held_at,
+        max(a.created_at) FILTER(WHERE a.outcome='meeting_booked' AND a.created_at >= $4::timestamptz) AS last_booked_at
       FROM discovery_leads d LEFT JOIN advisor_activities a ON a.lead_id=d.id AND a.user_id=$2
-      WHERE ${visibleSQL} AND d.created_at::timestamptz >= $4::timestamptz GROUP BY d.id,d.created_at`,
+      WHERE ${visibleSQL} GROUP BY d.id,d.created_at`,
       ['wealth-management',user.uid,user.email,since,[...TOUCH_OUTCOMES],now().toISOString()])).rows;
-    const worked=rows.filter(r=>r.touches>0);
+    // Two populations, deliberately. The service level, the response rate and
+    // meetings per 100 ask what became of the prospects added in this window,
+    // so they are a cohort. The meeting rates ask what happened in this window,
+    // whoever it happened to.
+    const cohort=rows.filter(r=>new Date(r.added_at)>=new Date(since));
+    const worked=cohort.filter(r=>r.touches>0);
     // Measured across every prospect whose deadline has passed, not only the
     // ones someone got to. Counting only those would report a perfect service
     // level while any number of prospects sat untouched past their deadline.
-    const sla=rows.map(r=>firstTouchSLA(r.added_at,r.first_touch_at,{now:now()})).filter(r=>r.measurable&&!r.pending);
+    const sla=cohort.map(r=>firstTouchSLA(r.added_at,r.first_touch_at,{now:now()})).filter(r=>r.measurable&&!r.pending);
     const met=sla.filter(r=>r.met).length;
     const rate=(n,d)=>d?Math.round(n/d*1000)/10:null;
     const sum=key=>rows.reduce((t,r)=>t+(r[key]||0),0);
@@ -204,29 +225,36 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     // A meeting whose time has passed with neither outcome logged is not a
     // missed meeting and not a held one. It is an unfinished record, so it sits
     // beside the rate instead of quietly improving it.
-    const unresolved=Math.max(0,sum('due_meetings')-held-noShows);
+    //
+    // Clamped per prospect before summing. A rescheduled no-show gives one
+    // person two outcomes against one booking, and a global subtraction would
+    // let that surplus cancel somebody else's unresolved meeting.
+    const unresolved=rows.reduce((t,r)=>t+Math.max(0,(r.due_meetings||0)-(r.held||0)-(r.no_shows||0)),0);
     // A second conversation is a meeting booked strictly after one was held.
     // Two rows sharing an instant are not counted, which under-reports rather
     // than inventing a second conversation out of the first booking.
     const discovered=rows.filter(r=>r.first_held_at);
     const second=discovered.filter(r=>r.last_booked_at&&new Date(r.last_booked_at)>new Date(r.first_held_at));
     return {window_days:days,since,
-      added:rows.length,worked:worked.length,
+      added:cohort.length,worked:worked.length,
       // A prospect added but never touched is the gap the SLA exists to close,
       // so it is reported next to the hit rate rather than filtered out of it.
-      untouched:rows.length-worked.length,
+      untouched:cohort.length-worked.length,
       measured:[
-        {id:'first_touch_sla',label:'First touch within one business day',value:rate(met,sla.length),unit:'%',
+        {id:'first_touch_sla',scope:'cohort',label:'First touch within one business day',value:rate(met,sla.length),unit:'%',
          basis:`${met} of ${sla.length} prospects whose first-touch deadline has passed`,target:95},
-        {id:'reply_rate',label:'Prospects who responded',value:rate(worked.filter(r=>r.engaged).length,worked.length),unit:'%',
+        {id:'reply_rate',scope:'cohort',label:'Prospects who responded',value:rate(worked.filter(r=>r.engaged).length,worked.length),unit:'%',
          basis:`${worked.filter(r=>r.engaged).length} of ${worked.length} prospects touched`,target:12},
-        {id:'meetings_per_100',label:'Meetings booked per 100 prospects worked',value:rate(worked.filter(r=>r.booked).length,worked.length)===null?null:Math.round(worked.filter(r=>r.booked).length/(worked.length||1)*1000)/10,unit:'per 100',
+        {id:'meetings_per_100',scope:'cohort',label:'Meetings booked per 100 prospects worked',value:rate(worked.filter(r=>r.booked).length,worked.length)===null?null:Math.round(worked.filter(r=>r.booked).length/(worked.length||1)*1000)/10,unit:'per 100',
          basis:`${worked.filter(r=>r.booked).length} of ${worked.length} prospects touched`,target:8},
-        {id:'show_rate',label:'Booked meetings that were held',value:rate(held,held+noShows),unit:'%',
+        {id:'show_rate',scope:'activity',label:'Booked meetings that were held',value:rate(held,held+noShows),unit:'%',
          basis:`${held} held and ${noShows} not, of ${held+noShows} meetings with an outcome recorded`,target:80},
-        {id:'second_meeting',label:'First conversations that led to a second',value:rate(second.length,discovered.length),unit:'%',
+        {id:'second_meeting',scope:'activity',label:'First conversations that led to a second',value:rate(second.length,discovered.length),unit:'%',
          basis:`${second.length} of ${discovered.length} prospects you have met`,target:50},
       ],
+      // Says which window each rate is drawn from, so "last 30 days" on the page
+      // is not doing the work of two different meanings at once.
+      scopes:{cohort:'Prospects added in this window',activity:'Meetings that happened in this window'},
       meetings:{held,no_shows:noShows,
         // Named rather than counted, for the same reason as untouched prospects.
         awaiting_outcome:unresolved,

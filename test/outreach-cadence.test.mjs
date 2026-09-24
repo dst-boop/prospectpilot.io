@@ -571,3 +571,97 @@ test('a directory do-not-call blocks pacing, and pacing cannot override it', asy
       signature: d.action.signature, idempotency_key: 'after-dnc'}), {status: 422});
   } finally { await db.close(); }
 });
+
+// --- raised in review on the meeting outcomes ---------------------------------
+
+test('attendance cannot be recorded for a meeting that was never booked', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    let d = await lab.advisor.detail(user, id);
+    // Without this, Meeting held on an untouched prospect marks them Met,
+    // restarts the touch budget and adds a held meeting to the show rate.
+    await assert.rejects(lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'phantom'}), {status: 422});
+    await assert.rejects(lab.advisor.save(user, id, {outcome: 'no_show', channel: 'phone',
+      next_at: '2026-09-30T14:00:00Z', signature: d.action.signature, idempotency_key: 'phantom-ns'}), {status: 422});
+    assert.notEqual((await lab.detail(user, id)).lead.follow_up_status, 'Met', 'the refusal left the record alone');
+    assert.equal((await lab.advisor.scoreboard(user, {})).meetings.held, 0);
+
+    // With a booking outstanding it is accepted, and only once.
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'real'});
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'attended'});
+    d = await lab.advisor.detail(user, id);
+    await assert.rejects(lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'attended-twice'}), {status: 422},
+      'the booking is spent; a second attendance needs a second booking');
+  } finally { await db.close(); }
+});
+
+test('one prospect’s extra outcome cannot hide another’s unresolved meeting', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    // A: books, does not appear, is rebooked, then attends — two outcomes
+    // against two bookings, and a global subtraction would leave a surplus.
+    let d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'a1'});
+    await db.query(`UPDATE advisor_activities SET next_at='2026-09-20T14:00:00Z' WHERE idempotency_key='a1'`);
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'no_show', channel: 'phone', next_at: '2026-09-26T14:00:00Z',
+      signature: d.action.signature, idempotency_key: 'a2'});
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-27T14:00:00Z', signature: d.action.signature, idempotency_key: 'a3'});
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'a4'});
+
+    // B: a booking whose time has passed with nothing recorded against it.
+    await db.query(`INSERT INTO discovery_leads(id,team,owner_user_id,owner_email,payload,created_at)
+      VALUES('b','wealth-management',$1,$2,$3,'2026-09-22T09:00:00Z')`,
+      [user.uid, user.email, JSON.stringify({first_name: 'Sam', last_name: 'Ortiz', company: 'Example Co'})]);
+    await db.query(`INSERT INTO advisor_activities(id,lead_id,user_id,idempotency_key,outcome,next_at,created_at)
+      VALUES('b1','b',$1,'b1','meeting_booked','2026-09-22T14:00:00Z','2026-09-22T10:00:00Z')`, [user.uid]);
+
+    const board = await lab.advisor.scoreboard(user, {days: 30});
+    assert.equal(board.meetings.awaiting_outcome, 1,
+      'B’s unresolved meeting survives A’s surplus of outcomes over due bookings');
+    assert.match(board.meetings.note, /1 meeting passed without/);
+  } finally { await db.close(); }
+});
+
+test('meeting rates are dated by the meeting, not by when the prospect arrived', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    // Added long before the window; the meeting happens inside it.
+    await db.query(`UPDATE discovery_leads SET created_at='2026-06-01T09:00:00Z' WHERE id=$1`, [id]);
+    let d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'old-lead'});
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'held-now'});
+
+    const board = await lab.advisor.scoreboard(user, {days: 30});
+    assert.equal(board.measured.find(m => m.id === 'show_rate').value, 100,
+      'a meeting held yesterday belongs in this window whenever the person arrived');
+    assert.equal(board.meetings.held, 1);
+    // The cohort measures still describe only the prospects added in the window.
+    assert.equal(board.added, 0, 'nobody was added inside the window');
+    assert.equal(board.measured.find(m => m.id === 'reply_rate').value, null);
+    // And each rate says which population it came from.
+    assert.equal(board.measured.find(m => m.id === 'show_rate').scope, 'activity');
+    assert.equal(board.measured.find(m => m.id === 'first_touch_sla').scope, 'cohort');
+    assert.ok(board.scopes.cohort && board.scopes.activity);
+    // A meeting outside the window is not counted in it.
+    assert.equal((await lab.advisor.scoreboard(user, {days: 1})).meetings.held, 1);
+    await db.query(`UPDATE advisor_activities SET created_at='2026-06-02T10:00:00Z' WHERE idempotency_key='held-now'`);
+    assert.equal((await lab.advisor.scoreboard(user, {days: 30})).meetings.held, 0);
+  } finally { await db.close(); }
+});

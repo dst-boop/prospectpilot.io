@@ -68,7 +68,10 @@ place calls, so refusing to record one that happened would lose the touch from
 the budget that governs the next six.
 
 **A booked meeting is an intention; whether it happened is a separate fact.**
-Record **Met** or **No-show** against it. A no-show needs a new time, because
+Record **Met** or **No-show** against it — and only against a meeting that was
+actually booked, since attendance is an outcome of something. A no-show settles
+the meeting that was missed and arranges its replacement, so it carries a
+required new time and leaves one meeting outstanding. A no-show needs a new time, because
 otherwise the prospect quietly falls out of the worklist. A held meeting counts
 as engagement and restarts the touch budget; a no-show does not, since they
 agreed and did not appear, so what follows is outreach again and is paced like
@@ -81,6 +84,11 @@ workspace under **Your funnel**, reports all five measurements: first-touch
 service level, response rate, meetings booked per 100 prospects worked, the
 share of booked meetings that were held, and first conversations that led to a
 second.
+
+The first three measure the prospects **added** in the window; the meeting rates
+measure the meetings that **happened** in it, whoever they were with. The page
+says which under each figure, because one label reading "last 30 days" over both
+would mean two different things at once.
 
 Each rate names what it could not count instead of letting it improve the
 number. A prospect added and never touched past its deadline counts against the
