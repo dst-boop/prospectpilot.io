@@ -161,7 +161,7 @@ test('a single record failure persists batch counts while other inventory record
   await lab.importCSV(user,{csv:csv+'\nMorgan,Chen,Other,Manager,morgan@example.com,60,US\nTaylor,Brooks,Other,Director,taylor@example.com,61,US'});
   const bad=(await lab.list(user)).leads[0].lead.id;
   await db.query('DELETE FROM lab_qualification');
-  const query=pool.query;pool.query=(sql,args)=>sql.startsWith('SELECT discovery_leads.*,EXISTS(')&&args?.[3]===bad?Promise.reject(Error('Internal details')):query(sql,args);
+  const query=pool.query;pool.query=(sql,args)=>sql.startsWith('SELECT discovery_leads.*,')&&args?.[3]===bad?Promise.reject(Error('Internal details')):query(sql,args);
   const run=await lab.enqueue(user,{kind:'inventory'});await lab.tick();
   const detail=await lab.runDetail(user,run.id),result=detail.tasks[0].result;
   assert.equal(detail.run.status,'completed_with_gaps');assert.equal(result.assessed,2);assert.equal(result.failed,1);assert.equal(result.remaining,0);

@@ -19,7 +19,7 @@ test('PostgreSQL serializes a new review behind an in-flight assessment',{
  const wrapper={query:(...args)=>pool.query(...args),connect:async()=>{
   const client=await pool.connect();
   return {release:error=>client.release(error),query:async(sql,args)=>{
-   if(paused&&sql.startsWith('SELECT discovery_leads.*,EXISTS(')&&sql.endsWith('FOR UPDATE'))reviewPid=(await client.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+   if(paused&&sql.startsWith('SELECT discovery_leads.*,')&&sql.endsWith('FOR UPDATE'))reviewPid=(await client.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
    const result=await client.query(sql,args);
    if(!paused&&assessment&&sql==='SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2'){
     paused=true;releaseAssessment.started();await gate;

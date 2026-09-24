@@ -5,6 +5,22 @@ import {readFileSync} from 'node:fs';
 import {createResearchLab} from '../research-lab.mjs';
 import {assessLead} from '../lead-quality.mjs';
 import {nextAction,workflowSignature} from '../advisor-workflow.mjs';
+test('directory DNC restrictions remain effective after handoff and after a later import',async()=>{
+ const {db,lab,user}=await fixture();try{
+  const contact={...lead,phone:'+12125550199',mobile_phone:'+12125550199',phone_origin:'mobile',phone_restrictions:{direct:null,mobile:false}};
+  await db.query('INSERT INTO prospect_contacts(id,user_id,payload) VALUES($1,$2,$3::jsonb)',['dnc-contact',user.uid,JSON.stringify(contact)]);
+  await lab.importContacts(user,{ids:['dnc-contact']});
+  const id=(await db.query("SELECT lead_id FROM advisor_contact_links WHERE contact_id='dnc-contact'")).rows[0].lead_id;
+  let detail=await lab.detail(user,id);
+  await lab.review(user,id,{field:'contact',value:{channel:'phone',address:contact.phone,identity_confirmed:true},verdict:'confirmed',source:'Synthetic fixture',note:'Synthetic reviewed phone.',observed_at:now.toISOString(),identity_signature:detail.quality.identity_signature});
+  assert.equal((await lab.advisor.detail(user,id)).action.contact.address,contact.phone);
+  await db.query("UPDATE prospect_contacts SET payload=jsonb_set(payload,'{phone_restrictions,mobile}','true') WHERE id='dnc-contact'");
+  assert.equal((await lab.advisor.detail(user,id)).action.contact,null);
+  const work=await lab.advisor.worklist(user,{view:'all'});assert.equal(work.items.find(r=>r.lead.id===id).action.contact,null);
+  await lab.importContacts(user,{ids:['dnc-contact']});
+  detail=await lab.detail(user,id);assert.ok(detail.lead.imported_dnc.length);assert.equal(detail.quality.gates.contact.state,'failed');
+ }finally{await db.close();}
+});
 const now=new Date('2026-09-12T15:00:00Z');
 const lead={id:'fixture',first_name:'Jamie',last_name:'Rivera',company:'Example Manufacturing',email:'jamie@example.com',estimated_age_range:'62',country:'US'};
 const csv='First Name,Last Name,Company,Title,Email,Estimated Age Range,Country\nJamie,Rivera,Example Manufacturing,Director,jamie@example.com,62,US';

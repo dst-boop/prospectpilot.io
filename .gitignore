@@ -10,6 +10,7 @@ fix-auto-repair.sh
 AUDIT-BROWSER-RESULTS.json
 
 analysis/
+outputs/
 data/
 *.jsonl
 *.csv
