@@ -195,7 +195,9 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     // missed meeting and not a held one. It is an unfinished record, so it sits
     // beside the rate instead of quietly improving it.
     const unresolved=Math.max(0,sum('due_meetings')-held-noShows);
-    // A second conversation is a meeting booked after one was held.
+    // A second conversation is a meeting booked strictly after one was held.
+    // Two rows sharing an instant are not counted, which under-reports rather
+    // than inventing a second conversation out of the first booking.
     const discovered=rows.filter(r=>r.first_held_at);
     const second=discovered.filter(r=>r.last_booked_at&&new Date(r.last_booked_at)>new Date(r.first_held_at));
     return {window_days:days,since,

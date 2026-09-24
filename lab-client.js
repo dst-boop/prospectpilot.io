@@ -100,6 +100,7 @@ function selectionLabel(){$('workSelection').textContent=`${workSelected.size} s
 async function loadWorklist(){
   const serial=++workRequest;const data=await request('/api/lab/worklist?'+new URLSearchParams({view:$('workView').value,search:$('workSearch').value,offset:workOffset,limit:24}));if(serial!==workRequest)return;
   if(workOffset>0&&workOffset>=data.total){workOffset=0;return loadWorklist();}
+  loadScoreboard().catch(()=>{});
   workTotal=data.total;$('workDue').textContent=num(data.counts.due);$('workReady').textContent=num(data.counts.ready);$('workConversations').textContent=num(data.activity.conversations);$('workMeetings').textContent=num(data.activity.meetings);
   const [emptyTitle,emptyBody]=emptyMessages[$('workView').value];
   $('workList').innerHTML=data.items.length?data.items.map(({lead:l,quality:q,action:a})=>`<article class="work-card"><label class="select-lead"><input type="checkbox" data-work-select="${esc(l.id)}" aria-label="Select ${esc(l.first_name)} ${esc(l.last_name)} for enrichment" ${workSelected.has(l.id)?'checked':''} ${a.bucket==='closed'?'disabled':''}></label><div><button class="person-button" data-work-open="${esc(l.id)}">${esc(l.first_name)} ${esc(l.last_name)}</button><p class="muted">${esc(l.current_title||'Title unknown')} · ${esc(l.company||'Employer unknown')}</p>${l.location?`<p class="muted">${esc(l.location)}</p>`:''}${badge(q.status)} <span class="muted">${Object.values(q.gates).filter(g=>g.state==='confirmed').length}/5 criteria reviewed</span></div><div class="work-reason"><p class="next-step">${esc(a.label)}</p><p class="muted">${esc(a.reason)}</p>${a.due_at?`<p class="due-label">${esc(when(a.due_at))}</p>`:''}${a.cadence?`<p class="muted">${esc(a.cadence.touches.count)}/${esc(a.cadence.touches.cap)} touches · ${esc(a.cadence.step?a.cadence.step.label:a.cadence.status)}</p>`:''}${l.notes?`<p class="muted">Last note: ${esc(l.notes.split('\n').filter(Boolean).at(-1)?.slice(0,240))}</p>`:''}</div><button class="secondary work-open" data-work-open="${esc(l.id)}">Open brief</button></article>`).join(''):`<div class="work-empty"><h3>${esc($('workSearch').value?'No matching prospects.':emptyTitle)}</h3><p class="muted">${esc($('workSearch').value?'Try a different full name or employer.':emptyBody)}</p></div>`;
@@ -110,12 +111,30 @@ async function loadWorklist(){
 }
 function renderConversation(){
   const a=currentWorkflow.action,q=current.quality;
+  const discovery=['Walk me through where your retirement savings live today — current plan, any former employer plans, IRAs, anything else.',
+    'When you left a previous employer, what did you decide to do with that plan — or is it still sitting there?',
+    'What does retirement look like for you — age, lifestyle, anything you are already planning around?',
+    'Have you worked with an advisor before? What worked, and what did not?',
+    'If we found something worth fixing, what would you want to happen next?'];
   const questions={age:'What is your current age?',residence:'Which state do you currently live in?',retirement:'Do you still have a retirement account from a previous employer, or another retirement account you would like reviewed?',contact:'What is the best way to contact you for an agreed follow-up?',net_worth:'If you want a planning review, would you be comfortable sharing an authorized financial summary?'};
-  $('conversationBrief').innerHTML=`<p><strong>${esc(a.label)}</strong></p><p>${esc(a.reason)}</p>${a.due_at?`<p>Saved time: <strong>${esc(when(a.due_at))}</strong></p>`:''}${cadenceLine(currentWorkflow.cadence)}<p>${q.status==='verified'?'All five criteria have reviewed evidence. Ask about goals and whether the person wants help; qualification is not a recommendation to transfer assets.':'Still to establish: '+esc(q.gaps.map(k=>labels[k]).join(' · '))+'.'}</p>`+(a.bucket==='closed'?'':`<details><summary>Questions for an appropriate conversation</summary><ul>${(q.gaps.length?q.gaps.map(g=>questions[g]):['What would you like to improve about your current retirement plan?','Would a 15-minute introduction be useful?']).map(v=>`<li>${esc(v)}</li>`).join('')}</ul><p>Answers do not verify a criterion until its evidence review is saved below.</p></details>`);
+  $('conversationBrief').innerHTML=`<p><strong>${esc(a.label)}</strong></p><p>${esc(a.reason)}</p>${a.due_at?`<p>Saved time: <strong>${esc(when(a.due_at))}</strong></p>`:''}${cadenceLine(currentWorkflow.cadence)}<p>${q.status==='verified'?'All five criteria have reviewed evidence. Ask about goals and whether the person wants help; qualification is not a recommendation to transfer assets.':'Still to establish: '+esc(q.gaps.map(k=>labels[k]).join(' · '))+'.'}</p>`+(a.bucket==='closed'?'':`<details${a.bucket==='meetings'?' open':''}><summary>${a.bucket==='meetings'?'Questions for the review':'Questions for an appropriate conversation'}</summary><ul>${(a.bucket==='meetings'?discovery:q.gaps.length?q.gaps.map(g=>questions[g]):['What would you like to improve about your current retirement plan?','Would a 15-minute introduction be useful?']).map(v=>`<li>${esc(v)}</li>`).join('')}</ul><p>${a.bucket==='meetings'?'All open-ended. Ask, then write down what you hear — answers do not verify a criterion until its evidence review is saved below.':'Answers do not verify a criterion until its evidence review is saved below.'}</p></details>`);
   renderDraft();
   $('contactActions').replaceChildren();const c=a.contact;
   if(c){const anchor=document.createElement('a');anchor.className='contact-link';anchor.textContent=c.channel==='phone'?`Call ${c.address}`:c.channel==='email'?`Email ${c.address}`:'Open reviewed LinkedIn profile';anchor.href=c.channel==='phone'?'tel:'+c.address:c.channel==='email'?'mailto:'+encodeURIComponent(c.address):safeURL(c.address);if(c.channel==='linkedin'){anchor.target='_blank';anchor.rel='noopener noreferrer';}$('contactActions').append(anchor);}else $('contactActions').textContent='No reviewed contact shortcut available. Review the contact evidence below.';
   $('activityHistory').innerHTML=(current.lead.notes?`<p class="existing-notes">${esc(current.lead.notes)}</p>`:'')+(currentWorkflow.activities.length?currentWorkflow.activities.map(a=>`<div class="activity-entry"><strong>${esc(title(a.outcome))}</strong> · ${esc(when(a.created_at))}<p>${esc(a.note)}</p>${a.next_at?`<small>Next: ${esc(when(a.next_at))}</small>`:''}</div>`).join(''):'<p>No outcomes recorded yet.</p>');
+}
+async function loadScoreboard(){
+  const b=await request('/api/lab/scoreboard?days=30');
+  // A rate with nothing in its denominator is not zero, it is unmeasured. Say
+  // so rather than printing a 0% nobody earned.
+  $('scoreboard').innerHTML=b.measured.map(m=>{
+    const unmet=m.value!==null&&m.value<m.target;
+    return `<article${unmet?'':' class="highlight"'}><span>${esc(m.label)}</span>`+
+      `<strong>${m.value===null?'—':esc(m.value)+(m.unit==='%'?'%':'')}</strong>`+
+      `<small>${m.value===null?'Nothing recorded yet':esc(m.basis)} · target ${esc(m.target)}${m.unit==='%'?'%':''}</small></article>`;
+  }).join('');
+  const gaps=[b.untouched?`${num(b.untouched)} prospect${b.untouched===1?'':'s'} added and never touched`:'',b.meetings.note].filter(Boolean);
+  $('scoreboardBasis').textContent=[b.basis,...gaps].join(' ');
 }
 function cadenceLine(c){
   if(!c)return '';
@@ -144,7 +163,9 @@ $('draftCopy').onclick=async()=>{
   try{await navigator.clipboard.writeText(text);$('draftCopied').textContent='Copied.';}
   catch{$('draftBody').select();$('draftCopied').textContent='Select the message and copy it.';}
 };
-function activityFields(){const outcome=$('activityOutcome').value,closed=['not_interested','do_not_contact','reopen'].includes(outcome);$('nextAtLabel').hidden=closed;$('activityNext').required=['follow_up','meeting_booked'].includes(outcome);$('activityNext').disabled=closed;
+function activityFields(){const outcome=$('activityOutcome').value,closed=['not_interested','do_not_contact','reopen'].includes(outcome);$('nextAtLabel').hidden=closed;
+  // A no-show needs a new time; a meeting that happened may or may not produce one.
+  $('activityNext').required=['follow_up','meeting_booked','no_show'].includes(outcome);$('activityNext').disabled=closed;
   // A channel is only meaningful for a touch that actually reached out.
   $('channelLabel').hidden=closed;$('activityChannel').disabled=closed;}
 function prepareActivity(){renderConversation();$('activityForm').reset();$('activityError').textContent='';activityKey=crypto.randomUUID();
