@@ -9,3 +9,10 @@ node_modules/**
 *.zip
 *.tar.gz
 *.md
+.tmp/
+.tmp/**
+outputs/
+outputs/**
+*.csv
+*.xlsx
+*.pptx
