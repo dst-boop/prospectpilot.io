@@ -152,8 +152,11 @@ function prepareActivity(){renderConversation();$('activityForm').reset();$('act
   // one falls due, so neither is the advisor's to work out.
   const step=currentWorkflow.cadence?.step,planned=currentWorkflow.schedules?.at;
   if(step?.channel)$('activityChannel').value=step.channel;
-  const next=planned?new Date(planned):(()=>{const d=new Date();d.setDate(d.getDate()+1);d.setHours(9,0,0,0);return d;})();
-  $('activityNext').value=new Date(next.getTime()-next.getTimezoneOffset()*60000).toISOString().slice(0,16);
+  // Left blank when the plan has no next step. Inventing tomorrow would save a
+  // follow-up date on someone who has just been capped, and a saved date makes
+  // them look due rather than resting.
+  if(planned){const next=new Date(planned);$('activityNext').value=new Date(next.getTime()-next.getTimezoneOffset()*60000).toISOString().slice(0,16);}
+  else $('activityNext').value='';
   activityFields();}
 $('activityOutcome').onchange=activityFields;
 $('activityForm').onsubmit=async e=>{e.preventDefault();if(!current||!currentWorkflow||activitySaving)return;const version=leadDetailVersion;activitySaving=true;$('saveActivity').disabled=true;$('activityError').textContent='';try{

@@ -24,9 +24,16 @@ how often, and writes the next message.
 **Six touches in any rolling 45 days, counting email, phone and LinkedIn
 together.** Reaching the limit opens a mandatory 90-day rest, recorded against
 the prospect with the reason, and the worklist shows them under **Resting**
-until it ends. A rest survives its touches ageing out of the 45-day window, so
-waiting does not quietly restore contact. A prospect who responds leaves the
-sequence immediately.
+until it ends — a saved follow-up date does not make a resting prospect look
+due. A rest survives its touches ageing out of the 45-day window, so waiting
+does not quietly restore contact.
+
+A prospect who responds leaves the sequence immediately, and the budget
+restarts from their reply: a reply ends the script, it does not buy an
+unlimited number of further approaches. Six unanswered touches after a reply
+reach the limit like any other six. When a rest period ends, the previous cycle
+ends with it and the prospect returns at the first step rather than arriving
+already finished.
 
 **The next touch arrives written.** Open a prospect and the brief carries the
 actual message for the step that is due — subject and body for an email, the

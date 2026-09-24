@@ -155,6 +155,23 @@ export function sequenceProgress(activities = [], plan = SEQUENCES.priority, {no
 }
 
 /**
+ * Where the current cycle began: the end of a completed rest, or the last time
+ * this person responded, whichever is later.
+ *
+ * Without this the history never resets. A finished sequence stays finished
+ * after its rest expires, so the prospect is capped again the moment they
+ * return, and no route back to the first step exists.
+ */
+export function cycleStart(activities = [], rest = null, now = new Date()) {
+  const restEnd = rest ? time(rest.resume_at) : null;
+  const ended = restEnd && restEnd <= now ? restEnd : null;
+  const responded = attempts(activities).filter(a => ENGAGED_OUTCOMES.has(a.outcome)).at(-1);
+  const answered = responded ? time(responded.created_at) : null;
+  const marks = [ended, answered].filter(Boolean);
+  return marks.length ? new Date(Math.max(...marks.map(d => d.getTime()))) : null;
+}
+
+/**
  * The whole pacing decision for one person.
  *
  * `status` is what the worklist shows and why:
@@ -167,8 +184,13 @@ export function sequenceProgress(activities = [], plan = SEQUENCES.priority, {no
  */
 export function cadenceState({activities = [], lead = {}, quality = null, rest = null, sequence = 'priority', now = new Date()} = {}) {
   const plan = sequencePlan(sequence);
-  const window = touchWindow(activities, {now});
-  const progress = sequenceProgress(activities, plan, {now});
+  // Only this cycle counts. A response or a completed rest closes the previous
+  // one, so neither an old sequence nor a spent budget follows someone forever.
+  const since = cycleStart(activities, rest, now);
+  const answered = !!since && attempts(activities).some(a => ENGAGED_OUTCOMES.has(a.outcome) && time(a.created_at)?.getTime() === since.getTime());
+  const current = since ? activities.filter(a => { const t = time(a.created_at); return t && t > since; }) : activities;
+  const window = touchWindow(current, {now});
+  const progress = sequenceProgress(current, plan, {now});
   const state = String(lead.state ?? '').trim().toUpperCase();
   const base = {version: CADENCE_VERSION, sequence: plan.id, label: plan.label, touches: window, progress,
     resume_at: null, call_window: null, step: null};
@@ -180,15 +202,18 @@ export function cadenceState({activities = [], lead = {}, quality = null, rest =
   if (restricted) return {...base, status: 'blocked', allowed: false,
     reason: quality?.gates?.contact?.reason || 'This record carries a contact restriction.'};
 
-  if (progress.engaged_at) return {...base, status: 'engaged', allowed: true,
-    reason: 'This person responded. Stop the sequence and book the conversation.'};
-
   const resume = rest ? time(rest.resume_at) : null;
   if (resume && resume > now) return {...base, status: 'resting', allowed: false, resume_at: resume.toISOString(),
     reason: `${String(rest.reason || 'A rest period is running').replace(/\.*$/, '')}. This person returns to the worklist on ${resume.toISOString().slice(0, 10)}.`};
 
+  // Checked before the response below, because a reply ends the scripted
+  // sequence and does not buy an unlimited number of further approaches. What a
+  // reply does buy is a fresh budget, counted from the reply itself.
   if (window.count >= MAX_TOUCHES) return {...base, status: 'capped', allowed: false, resume_at: window.frees_at,
     reason: `${window.count} touches in ${WINDOW_DAYS} days reaches the limit of ${MAX_TOUCHES}. Rest this person for ${REST_DAYS} days, then re-qualify.`};
+
+  if (answered) return {...base, status: 'engaged', allowed: true,
+    reason: `This person responded. Stop the sequence and book the conversation. ${window.remaining} of ${MAX_TOUCHES} touches remain in this window.`};
 
   if (progress.finished) return {...base, status: 'capped', allowed: false,
     reason: `The ${plan.label.toLowerCase()} is complete with no response. Rest this person for ${plan.rest_days} days, then re-qualify.`};

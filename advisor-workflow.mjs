@@ -19,12 +19,12 @@ export function nextAction(lead,quality,now=new Date(),cadence=null) {
   if(quality.status==='identity_review')return {...base,bucket:'review',rank:55,label:'Resolve identity',reason:'Conflicting identifiers must be resolved before contact.',contact:null};
   if(lead.follow_up_status==='Not a Fit')return {...base,bucket:'closed',rank:90,label:'No further follow-up',reason:'Marked not interested or not a fit.',contact:null};
   if(lead.follow_up_status==='Meeting Set')return {...base,bucket:'meetings',rank:0,label:'Prepare for the meeting',reason:validDue&&due<now?'Meeting time has passed. Record the outcome or next follow-up.':'Review the evidence gaps before your conversation.'};
-  if(validDue&&due<=now)return {...base,bucket:'due',rank:0,label:'Follow-up due',reason:contact?'Review the last conversation and use the agreed contact route.':'A follow-up is due; verify a contact route before using it.'};
-  if(validDue)return {...base,bucket:'scheduled',rank:70,label:'Follow-up scheduled',reason:'This person returns to your due list at the saved time.'};
-  // Pacing outranks readiness: a person who has had six touches in the window
-  // is not "ready for an initial conversation", whatever the evidence says.
+  // Pacing outranks both readiness and any saved follow-up date: a person who
+  // may not be contacted is not "due", whatever time is stored against them.
   if(cadence&&['resting','capped'].includes(cadence.status)&&!['Meeting Set','Not a Fit'].includes(lead.follow_up_status))
     return {...base,bucket:'resting',rank:80,label:cadence.status==='resting'?'Resting':'Rest period owed',reason:cadence.reason,cadence,due_at:cadence.resume_at||validDue};
+  if(validDue&&due<=now)return {...base,bucket:'due',rank:0,label:'Follow-up due',reason:contact?'Review the last conversation and use the agreed contact route.':'A follow-up is due; verify a contact route before using it.'};
+  if(validDue)return {...base,bucket:'scheduled',rank:70,label:'Follow-up scheduled',reason:'This person returns to your due list at the saved time.'};
   if(contact&&quality.gates.age.state==='confirmed'&&quality.gates.residence.state==='confirmed')return {...base,cadence,bucket:'ready',rank:quality.status==='verified'?10:20,label:quality.status==='verified'?'Prepare an introductory conversation':'Confirm the remaining fit criteria',reason:quality.status==='verified'?'All five criteria have current reviewed evidence.':quality.gaps.map(g=>fields[g]).join('; ')+'.'};
   const gap=quality.gaps.includes('contact')?'contact':quality.gaps.find(g=>['age','residence'].includes(g))||quality.gaps[0];
   return {...base,cadence,bucket:gap==='contact'&&quality.gates.contact.state==='unknown'?'enrich':'review',rank:30+(100-quality.score)/10,label:fields[gap]||'Review this prospect',reason:quality.gates[gap]?.reason||'Review the saved evidence.',field:gap};
@@ -173,7 +173,10 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       WHERE ${visibleSQL} AND d.created_at::timestamptz >= $4::timestamptz GROUP BY d.id,d.created_at`,
       ['wealth-management',user.uid,user.email,since,[...TOUCHED]])).rows;
     const worked=rows.filter(r=>r.touches>0);
-    const sla=worked.map(r=>firstTouchSLA(r.added_at,r.first_touch_at,{now:now()})).filter(r=>r.measurable);
+    // Measured across every prospect whose deadline has passed, not only the
+    // ones someone got to. Counting only those would report a perfect service
+    // level while any number of prospects sat untouched past their deadline.
+    const sla=rows.map(r=>firstTouchSLA(r.added_at,r.first_touch_at,{now:now()})).filter(r=>r.measurable&&!r.pending);
     const met=sla.filter(r=>r.met).length;
     const rate=(n,d)=>d?Math.round(n/d*1000)/10:null;
     return {window_days:days,since,
@@ -183,7 +186,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       untouched:rows.length-worked.length,
       measured:[
         {id:'first_touch_sla',label:'First touch within one business day',value:rate(met,sla.length),unit:'%',
-         basis:`${met} of ${sla.length} prospects you have touched`,target:95},
+         basis:`${met} of ${sla.length} prospects whose first-touch deadline has passed`,target:95},
         {id:'reply_rate',label:'Prospects who responded',value:rate(worked.filter(r=>r.engaged).length,worked.length),unit:'%',
          basis:`${worked.filter(r=>r.engaged).length} of ${worked.length} prospects touched`,target:12},
         {id:'meetings_per_100',label:'Meetings booked per 100 prospects worked',value:rate(worked.filter(r=>r.booked).length,worked.length)===null?null:Math.round(worked.filter(r=>r.booked).length/(worked.length||1)*1000)/10,unit:'per 100',

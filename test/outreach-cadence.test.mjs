@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import {PGlite} from '@electric-sql/pglite';
 import {readFileSync} from 'node:fs';
 import {createResearchLab} from '../research-lab.mjs';
-import {cadenceState, touchWindow, sequenceProgress, callWindow, composeTouch, admitTouch,
+import {cadenceState, touchWindow, sequenceProgress, callWindow, composeTouch, admitTouch, cycleStart,
   restPeriod, nextFollowUp, firstTouchSLA, addBusinessDays, offerDays, sequencePlan,
   MAX_TOUCHES, WINDOW_DAYS, SEQUENCES} from '../outreach-cadence.mjs';
 
@@ -279,5 +279,80 @@ test('the advisor profile signs the drafts and is scoped to its owner', async ()
     assert.match(detail.draft.body, /Dana Whitfield/);
     assert.deepEqual(detail.draft.needs, []);
     assert.deepEqual(await lab.advisor.profile({uid: 'other', email: 'other@example.com'}), {name: '', firm: '', phone: '', metro: ''});
+  } finally { await db.close(); }
+});
+
+// --- regressions found in review ---------------------------------------------
+
+test('a response stops the sequence without buying unlimited further touches', () => {
+  // Answering at touch two leaves the budget intact, counted from the answer.
+  const replied = cadenceState({lead, now,
+    activities: [touch(20, {step: 'opener'}), touch(19, {outcome: 'connected', channel: 'phone'})]});
+  assert.equal(replied.status, 'engaged');
+  assert.equal(replied.touches.count, 0, 'the budget restarts at the response');
+  assert.match(replied.reason, /6 of 6 touches remain/);
+  // Six unanswered approaches after that response still reach the limit.
+  const after = cadenceState({lead, now,
+    activities: [touch(20, {step: 'opener'}), touch(19, {outcome: 'connected', channel: 'phone'}),
+      ...Array.from({length: MAX_TOUCHES}, (_, i) => touch(10 - i))]});
+  assert.equal(after.status, 'capped', 'the limit applies after a response as well as before');
+  assert.equal(after.allowed, false);
+  assert.equal(admitTouch(after, {channel: 'email', now}).ok, false);
+  assert.ok(restPeriod(after, {now}), 'and the rest it owes is still created');
+});
+
+test('a completed rest starts the prospect over instead of capping them again', () => {
+  // A nurture plan run to its end, rested, and now past the resume date.
+  const done = SEQUENCES.nurture.steps.map((s, i) => touch(200 - i, {step: s.id}));
+  const expired = {reason: 'The nurture sequence is complete with no response.', resume_at: '2026-09-01T00:00:00Z'};
+  const state = cadenceState({sequence: 'nurture', lead, now, activities: done, rest: expired});
+  assert.equal(state.status, 'ready', 'the rest ended, so the cycle restarts');
+  assert.equal(state.progress.completed, 0, 'the finished sequence belongs to the previous cycle');
+  assert.equal(state.step.id, 'options');
+  assert.equal(state.touches.count, 0);
+  // Still resting while the date is in the future.
+  assert.equal(cadenceState({sequence: 'nurture', lead, activities: done,
+    rest: {...expired, resume_at: '2026-12-01T00:00:00Z'}, now}).status, 'resting');
+  assert.equal(cycleStart(done, expired, now).toISOString(), '2026-09-01T00:00:00.000Z');
+  assert.equal(cycleStart([], null, now), null, 'a prospect never touched has no previous cycle');
+});
+
+test('a resting prospect is never shown as due, whatever date is saved on them', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    for (let n = 1; n <= MAX_TOUCHES; n++) {
+      const d = await lab.advisor.detail(user, id);
+      await lab.advisor.save(user, id, {outcome: 'no_answer', channel: 'email',
+        signature: d.action.signature, idempotency_key: 'r-' + n});
+    }
+    // A follow-up date left over from the sequence must not outrank the rest.
+    await db.query(`UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{follow_up_date}','"2026-09-20T10:00:00Z"')::text WHERE id=$1`, [id]);
+    const d = await lab.advisor.detail(user, id);
+    assert.equal(d.action.bucket, 'resting', 'a past due date does not make a resting prospect due');
+    assert.equal((await lab.advisor.worklist(user, {view: 'due'})).total, 0);
+    assert.equal((await lab.advisor.worklist(user, {view: 'resting'})).total, 1);
+    // The last touch of a sequence leaves no next step, so no date is invented.
+    assert.equal(d.schedules, null);
+  } finally { await db.close(); }
+});
+
+test('the service level counts prospects nobody reached, once their deadline has passed', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    // A second prospect, added well before the window and never touched.
+    await db.query(`INSERT INTO discovery_leads(id,team,owner_user_id,owner_email,payload,created_at)
+      VALUES('stale','wealth-management',$1,$2,$3,'2026-09-01T09:00:00Z')`,
+      [user.uid, user.email, JSON.stringify({first_name: 'Sam', last_name: 'Ortiz', company: 'Example Co'})]);
+    const detail = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'no_answer', channel: 'email',
+      signature: detail.action.signature, idempotency_key: 'touched'});
+
+    const board = await lab.advisor.scoreboard(user, {days: 30});
+    const sla = board.measured.find(m => m.id === 'first_touch_sla');
+    assert.equal(board.worked, 1);
+    assert.ok(board.untouched >= 1);
+    assert.equal(sla.value, 50, 'one met and one overdue untouched is half, not a perfect score');
+    assert.match(sla.basis, /deadline has passed/);
   } finally { await db.close(); }
 });
