@@ -63,8 +63,12 @@ weeks. Editing the plan is an edit to that table.
 **Sixty dials a day from one line.** Carriers judge behaviour, not intent:
 volume from a single number, short calls and repeated redials are what earn a
 "Spam Likely" label, and a labelled number ends the channel for the whole list,
-not just today's calls. When the budget is spent the worklist stops offering
-phone steps and says why; email and connection requests are unaffected. The day
+not just today's calls. Every dial counts, however the call ended — a call that finished in "not
+interested" still put volume on the number, which is what a carrier measures.
+When the budget is spent the worklist stops offering phone steps and says why,
+including a follow-up whose saved time has arrived: it stays due, because the
+prospect is owed the call, but it no longer heads a list of work that can
+actually be done. Email and connection requests are unaffected. The day
 rolls over in **your** timezone, taken from your browser when you save **Your
 details** — at UTC midnight it would reset at 5pm on the west coast and hand one
 working afternoon two allowances.

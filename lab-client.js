@@ -168,8 +168,11 @@ $('draftCopy').onclick=async()=>{
 function activityFields(){const outcome=$('activityOutcome').value,closed=['not_interested','do_not_contact','reopen'].includes(outcome);$('nextAtLabel').hidden=closed;
   // A no-show needs a new time; a meeting that happened may or may not produce one.
   $('activityNext').required=['follow_up','meeting_booked','no_show'].includes(outcome);$('activityNext').disabled=closed;
-  // A channel is only meaningful for a touch that actually reached out.
-  $('channelLabel').hidden=closed;$('activityChannel').disabled=closed;}
+  // The channel stays available for "not interested" and "do not contact": a
+  // call that ended in either still put volume on the number and still spends
+  // the day's dials. Only reopening a record reaches nobody.
+  const reached=outcome!=='reopen';
+  $('channelLabel').hidden=!reached;$('activityChannel').disabled=!reached;}
 function prepareActivity(){renderConversation();$('activityForm').reset();$('activityError').textContent='';activityKey=crypto.randomUUID();
   // The sequence already knows which channel this touch uses and when the next
   // one falls due, so neither is the advisor's to work out.

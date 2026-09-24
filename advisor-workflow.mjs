@@ -34,8 +34,15 @@ export function nextAction(lead,quality,now=new Date(),cadence=null) {
   // may not be contacted is not "due", whatever time is stored against them.
   if(cadence&&['resting','capped'].includes(cadence.status)&&!['Meeting Set','Not a Fit'].includes(lead.follow_up_status))
     return {...base,bucket:'resting',rank:80,label:cadence.status==='resting'?'Resting':'Rest period owed',reason:cadence.reason,cadence,due_at:cadence.resume_at||validDue};
-  if(validDue&&due<=now)return {...base,bucket:'due',rank:0,label:'Follow-up due',reason:contact?'Review the last conversation and use the agreed contact route.':'A follow-up is due; verify a contact route before using it.'};
-  if(validDue)return {...base,bucket:'scheduled',rank:70,label:'Follow-up scheduled',reason:'This person returns to your due list at the saved time.'};
+  // A follow-up whose step cannot be acted on right now -- the calling window is
+  // shut, or the day's dials are spent -- is still due, but it does not head a
+  // list of things that can actually be done. Without this the saved date wins
+  // and the worklist keeps offering the call after the budget is gone.
+  if(validDue&&due<=now&&cadence?.step&&!cadence.step.ready&&cadence.step.due)
+    return {...base,cadence,bucket:'due',rank:45,held:true,label:'Follow-up due, on hold',
+      reason:cadence.step.hold||cadence.reason};
+  if(validDue&&due<=now)return {...base,cadence,bucket:'due',rank:0,label:'Follow-up due',reason:contact?'Review the last conversation and use the agreed contact route.':'A follow-up is due; verify a contact route before using it.'};
+  if(validDue)return {...base,cadence,bucket:'scheduled',rank:70,label:'Follow-up scheduled',reason:'This person returns to your due list at the saved time.'};
   if(contact&&quality.gates.age.state==='confirmed'&&quality.gates.residence.state==='confirmed')return {...base,cadence,bucket:'ready',rank:quality.status==='verified'?10:20,label:quality.status==='verified'?'Prepare an introductory conversation':'Confirm the remaining fit criteria',reason:quality.status==='verified'?'All five criteria have current reviewed evidence.':quality.gaps.map(g=>fields[g]).join('; ')+'.'};
   const gap=quality.gaps.includes('contact')?'contact':quality.gaps.find(g=>['age','residence'].includes(g))||quality.gaps[0];
   return {...base,cadence,bucket:gap==='contact'&&quality.gates.contact.state==='unknown'?'enrich':'review',rank:30+(100-quality.score)/10,label:fields[gap]||'Review this prospect',reason:quality.gates[gap]?.reason||'Review the saved evidence.',field:gap};
@@ -66,9 +73,12 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
   async function dialsToday(user,client=pool) {
     const zone=(await profile(user)).time_zone||'UTC';
     const since=new Date(now().getTime()-2*86400000).toISOString();  // two days covers any zone offset
+    // Every dial, not only the ones that count as a touch. A call that ended in
+    // "not interested" still put volume on the number, which is what a carrier
+    // is measuring; excluding it would undercount the budget it protects.
     const rows=(await client.query(`SELECT created_at FROM advisor_activities
-      WHERE user_id=$1 AND channel='phone' AND outcome=ANY($2::text[]) AND created_at >= $3::timestamptz`,
-      [user.uid,[...TOUCH_OUTCOMES],since])).rows;
+      WHERE user_id=$1 AND channel='phone' AND created_at >= $2::timestamptz`,
+      [user.uid,since])).rows;
     return dialBudget(rows.map(r=>({outcome:'no_answer',channel:'phone',created_at:r.created_at})),{now:now(),zone});
   }
   async function cadenceFor(user,id,lead,quality,client=pool,dials=null) {
