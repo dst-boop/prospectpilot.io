@@ -25,3 +25,8 @@ test('late domain check cannot overwrite a concurrent suppression or correction'
 test('domain failures and conflicts produce honest gaps rather than outreach drafts',()=>{
  const c={first_name:'A',last_name:'Example',email:'a@example.com',source_history:[{proposed_values:{title:'VP'}}]};assert.equal(buildPreparation(c,null).draft,null);assert.equal(buildPreparation({...c,source_history:[]},{status:'null_mx'}).draft,null);assert.ok(buildPreparation(c,null).unresolved.some(x=>x.includes('could not be completed')));
 });
+test('inconclusive or missing DNS cannot produce a draft, while supported mail routes can',()=>{
+ const contact={first_name:'Avery',email:'avery@example.com'};
+ for(const check of [null,{status:'unknown'},{status:'unexpected'}])assert.equal(buildPreparation(contact,check).draft,null);
+ for(const status of ['mx_present','address_fallback'])assert.ok(buildPreparation(contact,{status}).draft);
+});

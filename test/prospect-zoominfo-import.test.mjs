@@ -35,6 +35,15 @@ test('same phone in both channels cannot bypass a direct restriction',()=>{
  const c={phone:'+12125550123',mobile_phone:'+12125550123',phone_restrictions:{direct:true,mobile:false}};assert.equal(phoneReadiness(c).primary_blocked,true);assert.equal(phoneReadiness(c).mobile_blocked,true);
  assert.equal(preparationStep({...c,suppressed:true}).code,'suppressed');assert.equal(preparationStep({zoominfo:{previous_company:'Former'}}).code,'job_change');
 });
+test('an unsupported restricted direct number does not block a distinct unrestricted mobile fallback',()=>{
+ const c=normalizeContact({'First Name':'Avery','Last Name':'Example','Company':'Example Co','Direct Phone Number':'2125550100 ext 3','Mobile Phone':'2125550199','Direct Phone Do Not Call':'true','Mobile Phone Do Not Call':'false'},'fixture',{importing:true});
+ assert.equal(c.phone_origin,'mobile');assert.equal(phoneReadiness(c).primary_blocked,false);assert.equal(phoneReadiness(c).mobile_blocked,false);
+});
+test('first provider ID association cannot silently merge a weak namesake match',()=>fixture(async app=>{
+ const csv='First Name,Last Name,Company\nAvery,Example,Example Co';await app.importCSV(user,{csv});
+ const result=await app.importCSV(user,{csv:'First Name,Last Name,Company,ZoomInfo Contact ID\nAvery,Example,Example Co,12345'});
+ assert.equal(result.conflicts,1);assert.equal((await app.search(user)).contacts[0].zoominfo.contact_id,undefined);
+}));
 test('ZoomInfo identity collisions are preserved for review and compact rows retain next-review conflicts',()=>fixture(async app=>{
  await app.importCSV(user,input);const result=await app.importCSV(user,{...input,csv:input.csv.replace('-12345','-99999')});assert.equal(result.conflicts,1);assert.equal((await app.search(user)).total,1);
  const named='First Name,Last Name,Company,Email,Title\nSam,Sample,Example,sam@example.com,Director';await app.importCSV(user,{csv:named});await app.importCSV(user,{csv:named.replace('Director','VP'),source:'Another source'});

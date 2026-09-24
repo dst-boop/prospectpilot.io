@@ -21,7 +21,7 @@ export function buildPreparation(contact,check,{now=new Date()}={}){
  else if(!blocked)unresolved.push(contact.email?'Email domain lookup could not be completed.':'No email is supplied; no email lookup was attempted.');
  if(contact.email)unresolved.push('Mailbox deliverability, recipient ownership and permission to contact remain unconfirmed.');
  completed.push('Prepared a brief from the available professional source fields.');
- const badDomain=check&&['null_mx','no_domain','no_mail_route','special_use'].includes(check.status);
+ const badDomain=!check||!['mx_present','address_fallback'].includes(check.status);
  const draft=!blocked&&!conflict&&contact.email&&!badDomain?{subject:'An introduction',body:`Hi ${contact.first_name},\n\nI work with professionals on retirement planning. Would a brief introductory conversation be useful to discuss your priorities and whether I could help?\n\nBest,`}:null;
  return {completed_at:now.toISOString(),completed,unresolved,profile:{name:[contact.first_name,contact.last_name].filter(Boolean).join(' '),company:contact.company||null,role:contact.title||null,source:contact.source||null,provider_validated_at:contact.zoominfo?.validated_at||null},domain_check:check||null,draft,questions:['What would make a financial-planning conversation useful to you?','What planning decisions are you considering?','What would you like the next step to be?'],status:blocked?'suppressed':unresolved.length?'prepared_with_gaps':'prepared',sent:false};
 }

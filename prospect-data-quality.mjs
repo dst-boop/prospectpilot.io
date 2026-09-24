@@ -171,8 +171,8 @@ export const sourceFreshnessCutoff = (now = new Date()) => new Date(Number(now) 
 export function phoneReadiness(c){
  const direct=c.phone_restrictions?.direct??null,mobile=c.phone_restrictions?.mobile??null;
  // Old records may have a mobile copied into the primary phone field.
- const primaryIsMobile=c.phone_origin==='mobile'||!!c.mobile_phone&&c.phone===c.mobile_phone;
- return {primary_blocked:c.suppressed===true||(primaryIsMobile?mobile===true||direct===true:direct===true),mobile_blocked:c.suppressed===true||mobile===true||c.phone===c.mobile_phone&&direct===true,direct_do_not_call:direct,mobile_do_not_call:mobile};
+ const fallback=c.phone_origin==='mobile',sameDirectMobile=!fallback&&!!c.mobile_phone&&c.phone===c.mobile_phone;
+ return {primary_blocked:c.suppressed===true||(fallback?mobile===true:direct===true||sameDirectMobile&&mobile===true),mobile_blocked:c.suppressed===true||mobile===true||sameDirectMobile&&direct===true,direct_do_not_call:direct,mobile_do_not_call:mobile};
 }
 
 export function preparationStep(c){

@@ -106,7 +106,7 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
      if(old.zoominfo?.contact_id&&contact.zoominfo?.contact_id&&old.zoominfo.contact_id!==contact.zoominfo.contact_id){result.conflicts++;report(record.row,'conflict','Different ZoomInfo contact IDs matched an existing identifier. Review identity; existing record preserved.',contact);continue;}
      if(['first_name','last_name','linkedin_url','email'].some(k=>old[k]&&contact[k]&&(k==='email'||k==='linkedin_url'?old[k]!==contact[k]:nameKey(old[k])!==nameKey(contact[k])))){result.conflicts++;report(record.row,'conflict','Matched identifier has a different name, email or LinkedIn profile. Existing record preserved.',contact);continue;}
      const strong=keys.some(key=>(key.startsWith('email:')||key.startsWith('linkedin:')||key.startsWith('zoominfo:'))&&identities(old).includes(key));
-     const newIdentity=['email','linkedin_url','phone','mobile_phone'].some(key=>contact[key]&&contact[key]!==old[key]);
+     const newIdentity=['email','linkedin_url','phone','mobile_phone'].some(key=>contact[key]&&contact[key]!==old[key])||!!contact.zoominfo?.contact_id&&contact.zoominfo.contact_id!==old.zoominfo?.contact_id;
      if(!strong&&newIdentity){result.conflicts++;report(record.row,'conflict','Name and company match only; a new contact identifier needs review to avoid merging namesakes.',contact);continue;}
      const merged={...old};for(const [k,v] of Object.entries(contact))if(!merged[k]&&v&&k!=='source_kind')merged[k]=v;
      merged.zoominfo={...contact.zoominfo,...old.zoominfo};
