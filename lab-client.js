@@ -102,6 +102,7 @@ async function loadWorklist(){
   if(workOffset>0&&workOffset>=data.total){workOffset=0;return loadWorklist();}
   loadScoreboard().catch(()=>{});
   workTotal=data.total;$('workDue').textContent=num(data.counts.due);$('workReady').textContent=num(data.counts.ready);$('workConversations').textContent=num(data.activity.conversations);$('workMeetings').textContent=num(data.activity.meetings);
+  if(data.dials){$('workDials').textContent=num(data.dials.remaining);$('workDialsNote').textContent=data.dials.reason;}
   const [emptyTitle,emptyBody]=emptyMessages[$('workView').value];
   $('workList').innerHTML=data.items.length?data.items.map(({lead:l,quality:q,action:a})=>`<article class="work-card"><label class="select-lead"><input type="checkbox" data-work-select="${esc(l.id)}" aria-label="Select ${esc(l.first_name)} ${esc(l.last_name)} for enrichment" ${workSelected.has(l.id)?'checked':''} ${a.bucket==='closed'?'disabled':''}></label><div><button class="person-button" data-work-open="${esc(l.id)}">${esc(l.first_name)} ${esc(l.last_name)}</button><p class="muted">${esc(l.current_title||'Title unknown')} · ${esc(l.company||'Employer unknown')}</p>${l.location?`<p class="muted">${esc(l.location)}</p>`:''}${badge(q.status)} <span class="muted">${Object.values(q.gates).filter(g=>g.state==='confirmed').length}/5 criteria reviewed</span></div><div class="work-reason"><p class="next-step">${esc(a.label)}</p><p class="muted">${esc(a.reason)}</p>${a.due_at?`<p class="due-label">${esc(when(a.due_at))}</p>`:''}${a.cadence?`<p class="muted">${esc(a.cadence.touches.count)}/${esc(a.cadence.touches.cap)} touches · ${esc(a.cadence.step?a.cadence.step.label:a.cadence.status)}</p>`:''}${l.notes?`<p class="muted">Last note: ${esc(l.notes.split('\n').filter(Boolean).at(-1)?.slice(0,240))}</p>`:''}</div><button class="secondary work-open" data-work-open="${esc(l.id)}">Open brief</button></article>`).join(''):`<div class="work-empty"><h3>${esc($('workSearch').value?'No matching prospects.':emptyTitle)}</h3><p class="muted">${esc($('workSearch').value?'Try a different full name or employer.':emptyBody)}</p></div>`;
   document.querySelectorAll('[data-work-open]').forEach(e=>e.onclick=()=>openLead(e.dataset.workOpen));
@@ -195,12 +196,14 @@ $('profileOpen').onclick=async()=>{
   $('profileError').textContent='';
   try{const p=await request('/api/lab/advisor-profile');
     $('profileName').value=p.name||'';$('profileFirm').value=p.firm||'';$('profilePhone').value=p.phone||'';$('profileMetro').value=p.metro||'';
+    // Read from the browser rather than asked for: it is a fact this page knows.
+    $('profileZone').value=p.time_zone&&p.time_zone!=='UTC'?p.time_zone:(Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC');
   }catch(e){$('profileError').textContent=e.message;}
   $('profileDialog').showModal();
 };
 $('profileForm').onsubmit=async e=>{
   e.preventDefault();const button=e.submitter;button.disabled=true;$('profileError').textContent='';
-  try{await request('/api/lab/advisor-profile',{method:'POST',body:JSON.stringify({display_name:$('profileName').value,firm:$('profileFirm').value,phone:$('profilePhone').value,metro:$('profileMetro').value})});
+  try{await request('/api/lab/advisor-profile',{method:'POST',body:JSON.stringify({display_name:$('profileName').value,firm:$('profileFirm').value,phone:$('profilePhone').value,metro:$('profileMetro').value,time_zone:$('profileZone').value})});
     $('profileDialog').close();notice('Saved. Drafted messages will sign themselves with these details.');
   }catch(err){$('profileError').textContent=err.message;}finally{button.disabled=false;}
 };

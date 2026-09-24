@@ -60,6 +60,15 @@ Two sequences ship, as data in `outreach-cadence.mjs`: a six-touch priority plan
 over fourteen days across three channels, and a four-email nurture plan over six
 weeks. Editing the plan is an edit to that table.
 
+**Sixty dials a day from one line.** Carriers judge behaviour, not intent:
+volume from a single number, short calls and repeated redials are what earn a
+"Spam Likely" label, and a labelled number ends the channel for the whole list,
+not just today's calls. When the budget is spent the worklist stops offering
+phone steps and says why; email and connection requests are unaffected. The day
+rolls over in **your** timezone, taken from your browser when you save **Your
+details** — at UTC midnight it would reset at 5pm on the west coast and hand one
+working afternoon two allowances.
+
 Calling hours are 8am-9pm local to the prospect's state, and a state spanning
 two zones is judged in both - if it is 7am anywhere in the state it is too early
 for the state. A prospect with no recorded state is not shown as ready to dial.
@@ -97,7 +106,8 @@ is reported as **awaiting outcome** and counts as neither held nor missed. A
 rate with nothing behind it reads as unmeasured, not as zero.
 
 Requires migration **014**, which adds the channel and sequence step to logged
-activity, the rest-period table, and the advisor profile used to sign drafts.
+activity, the rest-period table, and the advisor profile used to sign drafts, and
+**015**, which adds the timezone that the daily dial limit rolls over in.
 
 **A verified quality lead must meet all five reviewed criteria:** age 45–73 inclusive, US residence, retained retirement assets with an eligible distribution or IRA transfer, an identified phone/email/LinkedIn contact route, and a disclosed net-worth lower bound of at least $250,000 excluding the home and net of liabilities.
 

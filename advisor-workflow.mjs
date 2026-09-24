@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {assessLead, leadIdentity, hash, csvCell} from './lead-quality.mjs';
-import {cadenceState, admitTouch, restPeriod, nextFollowUp, composeTouch, firstTouchSLA, TOUCH_OUTCOMES} from './outreach-cadence.mjs';
+import {cadenceState, admitTouch, restPeriod, nextFollowUp, composeTouch, firstTouchSLA, dialBudget, TOUCH_OUTCOMES} from './outreach-cadence.mjs';
 import {phoneReadiness} from './prospect-data-quality.mjs';
 
 export function withDirectoryRestrictions(lead,contacts=[]) {
@@ -46,29 +46,41 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
   // leaving the advisor to paste their name into every touch.
   async function profile(user) {
     const row=(await pool.query(`SELECT COALESCE(NULLIF(p.display_name,''),u.full_name,'') AS name,
-      COALESCE(p.firm,'') AS firm,COALESCE(p.phone,'') AS phone,COALESCE(p.metro,'') AS metro
+      COALESCE(p.firm,'') AS firm,COALESCE(p.phone,'') AS phone,COALESCE(p.metro,'') AS metro,COALESCE(NULLIF(p.time_zone,''),'UTC') AS time_zone
       FROM (SELECT $1::text AS user_id) k
       LEFT JOIN advisor_profiles p ON p.user_id=k.user_id
       LEFT JOIN discovery_users u ON u.user_id=k.user_id`,[user.uid])).rows[0];
-    return row||{name:'',firm:'',phone:'',metro:''};
+    return row||{name:'',firm:'',phone:'',metro:'',time_zone:'UTC'};
   }
   async function saveProfile(user,input) {
     const text=(v,max)=>String(v??'').trim().slice(0,max);
-    const values=[user.uid,text(input.display_name,120),text(input.firm,120),text(input.phone,40),text(input.metro,80)];
-    await pool.query(`INSERT INTO advisor_profiles(user_id,display_name,firm,phone,metro) VALUES($1,$2,$3,$4,$5)
-      ON CONFLICT(user_id) DO UPDATE SET display_name=EXCLUDED.display_name,firm=EXCLUDED.firm,phone=EXCLUDED.phone,metro=EXCLUDED.metro,updated_at=now()`,values);
+    // A zone the runtime does not recognize would silently move the day
+    // boundary, so an unusable one falls back rather than being stored.
+    const zone=text(input.time_zone,64)||'UTC';
+    let stored='UTC';try{new Intl.DateTimeFormat('en-CA',{timeZone:zone});stored=zone;}catch{}
+    const values=[user.uid,text(input.display_name,120),text(input.firm,120),text(input.phone,40),text(input.metro,80),stored];
+    await pool.query(`INSERT INTO advisor_profiles(user_id,display_name,firm,phone,metro,time_zone) VALUES($1,$2,$3,$4,$5,$6)
+      ON CONFLICT(user_id) DO UPDATE SET display_name=EXCLUDED.display_name,firm=EXCLUDED.firm,phone=EXCLUDED.phone,metro=EXCLUDED.metro,time_zone=EXCLUDED.time_zone,updated_at=now()`,values);
     return profile(user);
   }
-  async function cadenceFor(user,id,lead,quality,client=pool) {
+  async function dialsToday(user,client=pool) {
+    const zone=(await profile(user)).time_zone||'UTC';
+    const since=new Date(now().getTime()-2*86400000).toISOString();  // two days covers any zone offset
+    const rows=(await client.query(`SELECT created_at FROM advisor_activities
+      WHERE user_id=$1 AND channel='phone' AND outcome=ANY($2::text[]) AND created_at >= $3::timestamptz`,
+      [user.uid,[...TOUCH_OUTCOMES],since])).rows;
+    return dialBudget(rows.map(r=>({outcome:'no_answer',channel:'phone',created_at:r.created_at})),{now:now(),zone});
+  }
+  async function cadenceFor(user,id,lead,quality,client=pool,dials=null) {
     const activities=(await client.query('SELECT outcome,channel,step,created_at FROM advisor_activities WHERE lead_id=$1 AND user_id=$2 ORDER BY created_at',[id,user.uid])).rows;
     const rest=(await client.query('SELECT reason,resume_at FROM advisor_rest_periods WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows[0]||null;
-    return cadenceState({activities,lead,quality,rest,now:now()});
+    return cadenceState({activities,lead,quality,rest,now:now(),dials});
   }
   async function detail(user,id) {
     const {lead}=await accessible(user,id);
     const rows=(await pool.query('SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows;
     const quality=assessLead(lead,rows.map(r=>parse(r.payload)),{now:now()});
-    const cadence=await cadenceFor(user,id,lead,quality);
+    const cadence=await cadenceFor(user,id,lead,quality,pool,await dialsToday(user));
     const action=nextAction(lead,quality,now(),cadence);
     return {action,cadence,
       // The words for the next touch, not a description of them.
@@ -93,10 +105,12 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const history=new Map();for(const a of touched){if(!history.has(a.lead_id))history.set(a.lead_id,[]);history.get(a.lead_id).push(a);}
     const rests=rows.length?(await pool.query('SELECT lead_id,reason,resume_at FROM advisor_rest_periods WHERE user_id=$1 AND lead_id=ANY($2::text[])',[user.uid,ids])).rows:[];
     const resting=new Map(rests.map(r=>[r.lead_id,r]));
+    // One budget for the whole page: the limit is per line, not per prospect.
+    const dials=await dialsToday(user);
     // Directory restrictions are applied before anything is assessed or paced,
     // so a phone that became do-not-call in the directory is refused here too.
     const all=rows.map(r=>{const lead=withDirectoryRestrictions({...parse(r.payload),id:r.id},r.linked_contacts),quality=assessLead(lead,observations.get(r.id)||[],{now:now()});
-      const cadence=cadenceState({activities:history.get(r.id)||[],lead,quality,rest:resting.get(r.id)||null,now:now()});
+      const cadence=cadenceState({activities:history.get(r.id)||[],lead,quality,rest:resting.get(r.id)||null,now:now(),dials});
       return {lead:{id:lead.id,first_name:lead.first_name,last_name:lead.last_name,company:lead.company,current_title:lead.current_title,location:lead.location||[lead.city,lead.state].filter(Boolean).join(', '),notes:lead.notes||''},quality,action:nextAction(lead,quality,now(),cadence)};});
     all.sort((a,b)=>a.action.rank-b.action.rank||(a.action.due_at||'').localeCompare(b.action.due_at||'')||b.quality.score-a.quality.score||a.lead.id.localeCompare(b.lead.id));
     const counts={today:0,ready:0,due:0,review:0,enrich:0,scheduled:0,meetings:0,resting:0,closed:0,all:all.length};
@@ -106,7 +120,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       count(DISTINCT a.lead_id) FILTER(WHERE a.outcome='meeting_booked')::int AS meetings FROM advisor_activities a
       JOIN discovery_leads d ON d.id=a.lead_id WHERE a.user_id=$2 AND ${visibleSQL}
       AND a.created_at >= $4::timestamptz AND a.outcome = ANY($5::text[])`,['wealth-management',user.uid,user.email,new Date(now().getTime()-7*86400000).toISOString(),[...TOUCH_OUTCOMES]])).rows[0];
-    return {items:filtered.slice(offset,offset+limit),counts,total:filtered.length,offset,limit,activity,scope_total:rows[0]?.scope_total||0,scanned:rows.length,truncated:(rows[0]?.scope_total||0)>rows.length};
+    return {items:filtered.slice(offset,offset+limit),counts,total:filtered.length,offset,limit,activity,dials,scope_total:rows[0]?.scope_total||0,scanned:rows.length,truncated:(rows[0]?.scope_total||0)>rows.length};
   }
   async function save(user,id,input) {
     if(!Object.hasOwn(outcomes,input.outcome))throw fail(422,'Choose a conversation outcome.');
@@ -262,5 +276,5 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       unmeasured:[],
       basis:'Counted from manually logged outcomes. A touch or a meeting nobody logged is invisible here and to the pacing limits.'};
   }
-  return {worklist,detail,save,exportEnrichment,profile,saveProfile,scoreboard};
+  return {worklist,detail,save,exportEnrichment,profile,saveProfile,scoreboard,dialsToday};
 }

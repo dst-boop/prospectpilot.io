@@ -21,6 +21,7 @@ await db.exec(read('migrations/009-prospect-jobs.sql'));
 await db.exec(read('migrations/011-email-domain-check.sql'));
 await db.exec(read('migrations/013-advisor-workflow.sql'));
 await db.exec(read('migrations/014-outreach-cadence.sql'));
+await db.exec(read('migrations/015-dial-budget.sql'));
 // Serialize requests because this embedded database has a single connection.
 const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
 const user={uid:'synthetic-demo',email:'research@example.com',name:'Synthetic demonstration'};
