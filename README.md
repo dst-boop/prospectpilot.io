@@ -67,11 +67,26 @@ The window is reported, not enforced against the log: this application does not
 place calls, so refusing to record one that happened would lose the touch from
 the budget that governs the next six.
 
+**A booked meeting is an intention; whether it happened is a separate fact.**
+Record **Met** or **No-show** against it. A no-show needs a new time, because
+otherwise the prospect quietly falls out of the worklist. A held meeting counts
+as engagement and restarts the touch budget; a no-show does not, since they
+agreed and did not appear, so what follows is outreach again and is paced like
+it. When a meeting is what is next, the brief opens with the five discovery
+questions rather than the evidence prompts.
+
 **Pacing is only as good as the logging.** A touch nobody recorded is invisible
-to the limit and to the scoreboard. `GET /api/lab/scoreboard` reports first-touch
-service level, response rate and meetings booked per 100 prospects worked, and
-names the two metrics it cannot report - whether a booked meeting was held, and
-whether a first conversation led to a second - rather than estimating them.
+to the limit and to the scoreboard. `GET /api/lab/scoreboard`, shown on the
+workspace under **Your funnel**, reports all five measurements: first-touch
+service level, response rate, meetings booked per 100 prospects worked, the
+share of booked meetings that were held, and first conversations that led to a
+second.
+
+Each rate names what it could not count instead of letting it improve the
+number. A prospect added and never touched past its deadline counts against the
+service level; a meeting whose time passed with neither Met nor No-show recorded
+is reported as **awaiting outcome** and counts as neither held nor missed. A
+rate with nothing behind it reads as unmeasured, not as zero.
 
 Requires migration **014**, which adds the channel and sequence step to logged
 activity, the rest-period table, and the advisor profile used to sign drafts.
