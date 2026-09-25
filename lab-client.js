@@ -121,6 +121,9 @@ async function loadWorklist(){
   $('workPageInfo').textContent=(data.total?`${num(workOffset+1)}–${num(Math.min(workOffset+24,data.total))} of ${num(data.total)}`:'0 prospects')+(data.truncated?` · Showing a working set of ${num(data.scanned)} / ${num(data.scope_total)}; search to narrow.`:'');
   $('workPrevious').disabled=!workOffset;$('workNext').disabled=workOffset+24>=workTotal;selectionLabel();
 }
+// What the prospect actually did. The record stores the channel, so the history
+// should not say they called when they sent an email.
+const inboundLabel=channel=>({phone:'they called',email:'they emailed',linkedin:'they replied on LinkedIn'})[channel]||'they contacted me';
 function renderConversation(){
   const a=currentWorkflow.action,q=current.quality;
   const discovery=['Walk me through where your retirement savings live today — current plan, any former employer plans, IRAs, anything else.',
@@ -133,7 +136,7 @@ function renderConversation(){
   renderDraft();
   $('contactActions').replaceChildren();const c=a.contact;
   if(c){const anchor=document.createElement('a');anchor.className='contact-link';anchor.textContent=c.channel==='phone'?`Call ${c.address}`:c.channel==='email'?`Email ${c.address}`:'Open reviewed LinkedIn profile';anchor.href=c.channel==='phone'?'tel:'+c.address:c.channel==='email'?'mailto:'+encodeURIComponent(c.address):safeURL(c.address);if(c.channel==='linkedin'){anchor.target='_blank';anchor.rel='noopener noreferrer';}$('contactActions').append(anchor);}else $('contactActions').textContent='No reviewed contact shortcut available. Review the contact evidence below.';
-  $('activityHistory').innerHTML=(current.lead.notes?`<p class="existing-notes">${esc(current.lead.notes)}</p>`:'')+(currentWorkflow.activities.length?currentWorkflow.activities.map(a=>`<div class="activity-entry"><strong>${esc(title(a.outcome))}</strong>${a.direction==='inbound'?' <span class="inbound-tag">they called</span>':''} · ${esc(when(a.created_at))}<p>${esc(a.note)}</p>${a.next_at?`<small>Next: ${esc(when(a.next_at))}</small>`:''}</div>`).join(''):'<p>No outcomes recorded yet.</p>');
+  $('activityHistory').innerHTML=(current.lead.notes?`<p class="existing-notes">${esc(current.lead.notes)}</p>`:'')+(currentWorkflow.activities.length?currentWorkflow.activities.map(a=>`<div class="activity-entry"><strong>${esc(title(a.outcome))}</strong>${a.direction==='inbound'?` <span class="inbound-tag">${esc(inboundLabel(a.channel))}</span>`:''} · ${esc(when(a.created_at))}<p>${esc(a.note)}</p>${a.next_at?`<small>Next: ${esc(when(a.next_at))}</small>`:''}</div>`).join(''):'<p>No outcomes recorded yet.</p>');
 }
 async function loadScoreboard(){
   const b=await request('/api/lab/scoreboard?days=30');

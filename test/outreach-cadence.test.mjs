@@ -22,7 +22,9 @@ const csv = 'First Name,Last Name,Company,Title,Email,Estimated Age Range,Countr
 const touch = (days, extra = {}) => ({outcome: 'no_answer', channel: 'email',
   created_at: new Date(now.getTime() - days * 86400000).toISOString(), ...extra});
 
-async function fixture() {
+// `clock` lets a test use a clock that actually moves; the default is frozen,
+// which is what most of these cases want.
+async function fixture(clock = () => now) {
   const db = new PGlite();
   for (const file of ['generated/schema.sql', 'migrations/006-research-lab.sql', 'migrations/007-quality-v2.sql',
     'migrations/008-prospect-workspace.sql', 'migrations/012-plan-catalog-summary.sql',
@@ -30,7 +32,7 @@ async function fixture() {
     await db.exec(readFileSync(new URL('../' + file, import.meta.url), 'utf8'));
   const pool = {query: (...a) => db.query(...a), connect: async () => ({query: (...a) => db.query(...a), release() {}})};
   const user = {uid: 'owner', email: 'owner@example.com'};
-  const lab = createResearchLab({pool, now: () => now, sources: {readiness: {}}});
+  const lab = createResearchLab({pool, now: clock, sources: {readiness: {}}});
   await lab.importCSV(user, {csv});
   const id = (await lab.list(user)).leads[0].lead.id;
   return {db, lab, user, id};
@@ -1100,5 +1102,56 @@ test('a prospect who called in first did not meet the service level', async () =
     assert.equal((await lab.advisor.worklist(user, {})).activity.conversations, 1);
     assert.equal((await lab.advisor.worklist(user, {})).activity.attempts, 0,
       'and it is not an attempt the advisor made');
+  } finally { await db.close(); }
+});
+
+// --- raised in review on the inbound work --------------------------------------
+
+test('the rest and the contact that ended it share one instant, on a clock that moves', async () => {
+  // Every call returns a later time, which is what a real clock does and what the
+  // frozen fixture cannot show. Two calls meant the rest expired a moment after
+  // the contact that ended it, so the rest — not the reply — became the later of
+  // the two marks cycleStart compares. The reply then no longer sat on the cycle
+  // boundary, cadenceState stopped reading it as answered, and a prospect who had
+  // just called in was offered the opening step of a scripted sequence.
+  let tick = 0;
+  const {db, lab, user, id} = await fixture(() => new Date(now.getTime() + tick++));
+  try {
+    await reviewBasics(lab, user, id);
+    await db.query(`INSERT INTO advisor_rest_periods(lead_id,user_id,reason,started_at,resume_at)
+      VALUES($1,$2,'Completed sequence','2026-08-01T00:00:00Z','2026-11-30T00:00:00Z')`, [id, user.uid]);
+    let d = await lab.advisor.detail(user, id);
+    assert.equal(d.action.bucket, 'resting');
+    await lab.advisor.save(user, id, {outcome: 'connected', channel: 'phone', direction: 'inbound',
+      signature: d.action.signature, idempotency_key: 'they-called'});
+
+    const activity = (await db.query(`SELECT created_at FROM advisor_activities WHERE idempotency_key='they-called'`)).rows[0];
+    const rest = (await db.query('SELECT resume_at FROM advisor_rest_periods WHERE lead_id=$1', [id])).rows[0];
+    assert.equal(new Date(rest.resume_at).getTime(), new Date(activity.created_at).getTime(),
+      'the rest ends exactly when they called, not a moment after');
+
+    d = await lab.advisor.detail(user, id);
+    assert.equal(d.cadence.status, 'engaged',
+      'they answered, so a person takes over — the script does not start again');
+    assert.notEqual(d.cadence.status, 'ready', 'and they are not offered an opening email');
+    assert.equal(d.cadence.progress.completed, 0);
+  } finally { await db.close(); }
+});
+
+test('one save is judged and written at a single instant', async () => {
+  // The same root cause, where it is easiest to see: the note stamp, the row and
+  // the pacing decision all come from one reading of the clock.
+  let tick = 0;
+  const {db, lab, user, id} = await fixture(() => new Date(now.getTime() + tick++));
+  try {
+    await reviewBasics(lab, user, id);
+    const d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'no_answer', channel: 'email', note: 'Left it with them.',
+      signature: d.action.signature, idempotency_key: 'one-instant'});
+    const row = (await db.query(`SELECT created_at FROM advisor_activities WHERE idempotency_key='one-instant'`)).rows[0];
+    const notes = (await db.query('SELECT payload FROM discovery_leads WHERE id=$1', [id])).rows[0].payload;
+    const stamped = (typeof notes === 'string' ? JSON.parse(notes) : notes).notes.match(/^(\S+) · /m)[1];
+    assert.equal(stamped, new Date(row.created_at).toISOString(),
+      'the note and the row it describes carry the same time');
   } finally { await db.close(); }
 });

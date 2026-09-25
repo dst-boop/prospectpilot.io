@@ -95,10 +95,12 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       [user.uid,since])).rows;
     return dialBudget(rows.map(r=>({outcome:'no_answer',channel:'phone',created_at:r.created_at})),{now:now(),zone});
   }
-  async function cadenceFor(user,id,lead,quality,client=pool,dials=null) {
+  // `at` lets a caller inside a transaction judge the record against the same
+  // instant it is writing, rather than a clock that has moved on since.
+  async function cadenceFor(user,id,lead,quality,client=pool,dials=null,at=null) {
     const activities=(await client.query('SELECT outcome,channel,step,direction,created_at FROM advisor_activities WHERE lead_id=$1 AND user_id=$2 ORDER BY created_at',[id,user.uid])).rows;
     const rest=(await client.query('SELECT reason,resume_at FROM advisor_rest_periods WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows[0]||null;
-    return cadenceState({activities,lead,quality,rest,now:now(),dials});
+    return cadenceState({activities,lead,quality,rest,now:at||now(),dials});
   }
   async function detail(user,id) {
     const {lead}=await accessible(user,id);
@@ -153,17 +155,24 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const note=String(input.note||'').trim();if(note.length>2000)throw fail(422,'Keep the note under 2,000 characters.');
     return transaction(pool,async client=>{
       await client.query('SELECT pg_advisory_xact_lock(505006)');
+      // One instant for the whole save. Two calls to the clock are two different
+      // times, and the gap has teeth: a rest expired a millisecond after the
+      // inbound contact that ended it becomes the later of the two marks
+      // cycleStart compares, so the reply no longer sits on the cycle boundary,
+      // cadenceState stops reading it as answered, and the prospect who just
+      // called in is offered the opening step of a scripted sequence.
+      const at=now(),stamp=at.toISOString();
       const {lead}=await accessible(user,id,client,true);
       const prior=(await client.query('SELECT id FROM advisor_activities WHERE lead_id=$1 AND user_id=$2 AND idempotency_key=$3',[id,user.uid,key])).rows[0];
       if(prior)return {saved:true,replayed:true};
-    let next=null;if(input.next_at){const d=new Date(input.next_at);if(!Number.isFinite(d.getTime())||d<=now()||d.getUTCFullYear()>now().getUTCFullYear()+5)throw fail(422,'Choose a future follow-up time within five years.');next=d.toISOString();}
+    let next=null;if(input.next_at){const d=new Date(input.next_at);if(!Number.isFinite(d.getTime())||d<=at||d.getUTCFullYear()>at.getUTCFullYear()+5)throw fail(422,'Choose a future follow-up time within five years.');next=d.toISOString();}
     if(['follow_up','meeting_booked','no_show'].includes(input.outcome)&&!next)throw fail(422,'Choose a date and time for the follow-up or meeting.');
     if(['not_interested','do_not_contact','reopen'].includes(input.outcome))next=null;
 
       // Pacing is checked against the record as it stands, before this touch is
       // written, so a refusal reaches the advisor while it can still matter.
-      const quality=assessLead(lead,(await client.query('SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows.map(r=>parse(r.payload)),{now:now()});
-      const before=await cadenceFor(user,id,lead,quality,client);
+      const quality=assessLead(lead,(await client.query('SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows.map(r=>parse(r.payload)),{now:at});
+      const before=await cadenceFor(user,id,lead,quality,client,null,at);
       // Attendance is an outcome of something. Without this, Meeting held on an
       // untouched prospect would mark them Met, restart their touch budget and
       // add a held meeting to the show rate, all without a meeting.
@@ -186,12 +195,12 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       const direction=inbound?'inbound':null;
       let step=null;
       if(TOUCH_OUTCOMES.has(input.outcome)) {
-        const verdict=admitTouch(before,{channel,now:now(),direction:inbound?'inbound':'outbound'});
+        const verdict=admitTouch(before,{channel,now:at,direction:inbound?'inbound':'outbound'});
         if(!verdict.ok)throw fail(verdict.status,verdict.reason);
         step=verdict.step;
         // The schedule is the application's to keep. An unanswered touch does
         // not ask the advisor for a date; the sequence already knows the next one.
-        if(!next&&input.outcome==='no_answer')next=nextFollowUp(before,{now:now()})?.at||null;
+        if(!next&&input.outcome==='no_answer')next=nextFollowUp(before,{now:at})?.at||null;
       }
 
       if(input.signature!==workflowSignature(lead))throw fail(409,'This prospect changed. Close and reopen the record before saving. Your note has not been discarded.');
@@ -199,18 +208,18 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       const activityId=randomUUID();
       lead.follow_up_status=outcomes[input.outcome];lead.follow_up_date=next;lead.advisor_activity_id=activityId;
       if(input.outcome==='do_not_contact'){lead.suppressed=true;await client.query("UPDATE prospect_contacts pc SET payload=jsonb_set(pc.payload,'{suppressed}','true'),updated_at=now() WHERE EXISTS(SELECT 1 FROM advisor_contact_links acl WHERE acl.contact_id=pc.id AND acl.user_id=pc.user_id AND acl.lead_id=$1)",[id]);}
-      if(note)lead.notes=[lead.notes,`${now().toISOString()} · ${input.outcome.replaceAll('_',' ')}: ${note}`].filter(Boolean).join('\n');
+      if(note)lead.notes=[lead.notes,`${stamp} · ${input.outcome.replaceAll('_',' ')}: ${note}`].filter(Boolean).join('\n');
       await client.query('UPDATE discovery_leads SET payload=$1,updated_at=now() WHERE id=$2',[JSON.stringify(lead),id]);
-      await client.query('INSERT INTO advisor_activities(id,lead_id,user_id,idempotency_key,outcome,note,next_at,created_at,channel,step,direction) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',[activityId,id,user.uid,key,input.outcome,note,next,now().toISOString(),channel,step,direction]);
+      await client.query('INSERT INTO advisor_activities(id,lead_id,user_id,idempotency_key,outcome,note,next_at,created_at,channel,step,direction) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',[activityId,id,user.uid,key,input.outcome,note,next,stamp,channel,step,direction]);
       // A rest bounds how often this application approaches someone. They just
       // approached us, so the reason for it is gone. It ends now rather than
       // being deleted: the row is the boundary cycleStart reads to start the
       // next cycle here, and nothing in this workflow removes a rest period.
-      if(inbound)await client.query('UPDATE advisor_rest_periods SET resume_at=$3 WHERE lead_id=$1 AND user_id=$2 AND resume_at > $3',[id,user.uid,now().toISOString()]);
+      if(inbound)await client.query('UPDATE advisor_rest_periods SET resume_at=$3 WHERE lead_id=$1 AND user_id=$2 AND resume_at > $3',[id,user.uid,stamp]);
       // Re-read the pacing with this touch included: reaching the limit opens the
       // rest period here rather than waiting for someone to notice the count.
-      const after=await cadenceFor(user,id,lead,quality,client);
-      const rest=restPeriod(after,{now:now()});
+      const after=await cadenceFor(user,id,lead,quality,client,null,at);
+      const rest=restPeriod(after,{now:at});
       if(rest)await client.query(`INSERT INTO advisor_rest_periods(lead_id,user_id,reason,started_at,resume_at) VALUES($1,$2,$3,$4,$5)
         ON CONFLICT(lead_id,user_id) DO UPDATE SET reason=EXCLUDED.reason,started_at=EXCLUDED.started_at,resume_at=EXCLUDED.resume_at`,[id,user.uid,rest.reason,rest.started_at,rest.resume_at]);
       // Reopening changes workflow status, not pacing. Preserve active rests
