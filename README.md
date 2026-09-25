@@ -35,6 +35,17 @@ reach the limit like any other six. When a rest period ends, the previous cycle
 ends with it and the prospect returns at the first step rather than arriving
 already finished.
 
+**Pacing bounds the approaches you make, not the ones they make.** Tick *They
+contacted me* when recording a call or reply the prospect started. It is not one
+of the six touches, it spends none of the day's dials — it left from their
+number, not yours — and it ends a running rest: they asked to talk, so the reason
+for the rest is gone. The rest period is expired rather than deleted, so the row
+still marks where the next cycle starts. Only *Connected*, *Follow-up agreed* and
+*Meeting booked* can be inbound; a missed call from them is not an event, and a
+meeting is mutual by the time it is held. A contact restriction is not a pacing
+question and still refuses the save whoever placed the call — resolve the
+restriction first, then record what happened.
+
 **The next touch arrives written.** Open a prospect and the brief carries the
 actual message for the step that is due — subject and body for an email, the
 script for a voicemail, the note for a connection request — composed from the
@@ -144,11 +155,12 @@ is reported as **awaiting outcome** and counts as neither held nor missed. A
 rate with nothing behind it reads as unmeasured, not as zero.
 
 Requires migration **014**, which adds the channel and sequence step to logged
-activity, the rest-period table, and the advisor profile used to sign drafts, and
-**015**, which adds the timezone that the daily dial limit rolls over in. The
-client outcome needs **no migration**: the activity log already stores the
-outcome as text, so the conversion is a new value in a column that exists, and
-no released database has to change to deploy it.
+activity, the rest-period table, and the advisor profile used to sign drafts,
+**015**, which adds the timezone that the daily dial limit rolls over in, and
+**016**, which records who started each contact. The client outcome needs **no
+migration**: the activity log already stores the outcome as text, so the
+conversion is a new value in a column that exists, and no released database has
+to change to deploy it.
 
 `GET /version` names the rules the running service is using, not only which
 build it is: `cadence_version` reports the pacing rules alongside

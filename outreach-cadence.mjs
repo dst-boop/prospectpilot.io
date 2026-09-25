@@ -32,7 +32,13 @@ export const TOUCH_OUTCOMES = new Set(['no_answer', 'connected', 'follow_up', 'm
 // person agreed and did not appear, so the approach that follows is outreach
 // again and is paced like it.
 export const ENGAGED_OUTCOMES = new Set(['connected', 'follow_up', 'meeting_booked', 'meeting_held']);
+// Outcomes that can describe a contact the prospect started. A missed call from
+// them is not one -- they would call back -- and a meeting is mutual by the time
+// it happens, so attendance stays outbound and keeps its booking requirement.
+export const INBOUND_OUTCOMES = new Set(['connected', 'follow_up', 'meeting_booked']);
 export const CHANNELS = new Set(['email', 'phone', 'linkedin']);
+/** Whether a logged row describes a contact the advisor made. NULL is outbound. */
+export const isInbound = a => a?.direction === 'inbound';
 
 // A sequence is data, so changing the plan is an edit to this table rather than
 // to the logic that walks it. `day` is days after the first touch, counting the
@@ -124,8 +130,19 @@ const time = value => {
   const d = new Date(value);
   return Number.isFinite(d.getTime()) ? d : null;
 };
+// Approaches the advisor made. This is what every limit in this module counts:
+// the six-touch budget, the sequence, the daily dials. A call the prospect
+// placed is contact, but it is not an approach, so it is not in here -- pacing
+// bounds how often we reach for someone, not how often they reach for us.
 const attempts = activities => activities
-  .filter(a => TOUCH_OUTCOMES.has(a.outcome) && time(a.created_at))
+  .filter(a => TOUCH_OUTCOMES.has(a.outcome) && !isInbound(a) && time(a.created_at))
+  .sort((a, b) => time(a.created_at) - time(b.created_at));
+
+// Contact in which the person engaged, from either side. A reply they initiated
+// is the strongest form of it, so this -- not `attempts` -- is what closes a
+// cycle and what tells the sequence to stop.
+const responses = activities => activities
+  .filter(a => ENGAGED_OUTCOMES.has(a.outcome) && time(a.created_at))
   .sort((a, b) => time(a.created_at) - time(b.created_at));
 
 /**
@@ -165,7 +182,8 @@ export function sequenceProgress(activities = [], plan = SEQUENCES.priority, {no
   // A touch logged without a step still happened. It counts against the cap in
   // touchWindow; here it simply cannot advance a plan it was never part of.
   const unattributed = taken.filter(a => !a.step).length;
-  const engaged = taken.find(a => ENGAGED_OUTCOMES.has(a.outcome));
+  // Whoever placed the contact, a reply ends the script.
+  const engaged = responses(activities)[0] || null;
   const started = taken[0] ? time(taken[0].created_at) : null;
   const remaining = plan.steps.filter(s => !done.has(s.id));
   const step = remaining[0] || null;
@@ -193,7 +211,7 @@ export function sequenceProgress(activities = [], plan = SEQUENCES.priority, {no
 export function cycleStart(activities = [], rest = null, now = new Date()) {
   const restEnd = rest ? time(rest.resume_at) : null;
   const ended = restEnd && restEnd <= now ? restEnd : null;
-  const responded = attempts(activities).filter(a => ENGAGED_OUTCOMES.has(a.outcome)).at(-1);
+  const responded = responses(activities).at(-1);
   const answered = responded ? time(responded.created_at) : null;
   const marks = [ended, answered].filter(Boolean);
   return marks.length ? new Date(Math.max(...marks.map(d => d.getTime()))) : null;
@@ -216,7 +234,7 @@ export function cadenceState({activities = [], lead = {}, quality = null, rest =
   // Only this cycle counts. A response or a completed rest closes the previous
   // one, so neither an old sequence nor a spent budget follows someone forever.
   const since = cycleStart(activities, rest, now);
-  const answered = !!since && attempts(activities).some(a => ENGAGED_OUTCOMES.has(a.outcome) && time(a.created_at)?.getTime() === since.getTime());
+  const answered = !!since && responses(activities).some(a => time(a.created_at)?.getTime() === since.getTime());
   const current = since ? activities.filter(a => { const t = time(a.created_at); return t && t > since; }) : activities;
   const window = touchWindow(current, {now});
   const progress = sequenceProgress(current, plan, {now});
@@ -268,11 +286,23 @@ export function cadenceState({activities = [], lead = {}, quality = null, rest =
  * act on it. It reports a breach of the pacing rules; it does not re-check
  * qualification, which the caller has already established.
  */
-export function admitTouch(state, {channel = null, now = new Date()} = {}) {
+export function admitTouch(state, {channel = null, now = new Date(), direction = 'outbound'} = {}) {
   if (channel !== null && !CHANNELS.has(channel)) return {ok: false, status: 422, reason: 'Record the channel as email, phone or LinkedIn.'};
+  const inbound = direction === 'inbound';
+  // A contact restriction outranks direction. Pacing is about how often this
+  // application reaches for someone and an inbound call is not that, but consent
+  // is not a pacing question: if the record says do not contact, or the evidence
+  // does not establish who this is, that stands whoever placed the call. The
+  // advisor resolves the restriction first and then logs what happened.
   if (state.status === 'blocked') return {ok: false, status: 422, reason: state.reason};
-  if (state.status === 'resting') return {ok: false, status: 422, reason: state.reason};
-  if (state.status === 'capped') return {ok: false, status: 422, reason: state.reason};
+  // Everything below bounds the advisor's own approaches, so none of it applies
+  // to a contact the prospect started. Refusing those did not slow any outreach
+  // down -- it only lost the record of a conversation that had already happened,
+  // and with it the reply that should have ended the rest.
+  if (!inbound && state.status === 'resting') return {ok: false, status: 422, reason: state.reason};
+  if (!inbound && state.status === 'capped') return {ok: false, status: 422, reason: state.reason};
+  // An inbound contact spends no step: the sequence is a plan for approaches.
+  if (inbound) return {ok: true, step: null};
   // Calling hours are deliberately not enforced here. This application does not
   // place the call, so refusing the log would not prevent a badly timed one — it
   // would only lose the record of a touch that happened, and a touch missing

@@ -109,3 +109,15 @@ test('the scoreboard omits a target it does not have rather than inventing one',
   assert.match(tiles[1],/<strong>50%<\/strong>/);
   assert.doesNotMatch(tiles[3],/0%/);
 });
+
+test('an inbound row is labelled by the channel it arrived on',()=>{
+  // The record stores the channel, so the history must not say they called when
+  // they sent an email.
+  const c=client();
+  assert.equal(c.run("inboundLabel('phone')"),'they called');
+  assert.equal(c.run("inboundLabel('email')"),'they emailed');
+  assert.equal(c.run("inboundLabel('linkedin')"),'they replied on LinkedIn');
+  // A row written before the channel was recorded claims nothing about how.
+  assert.equal(c.run("inboundLabel(null)"),'they contacted me');
+  assert.equal(c.run("inboundLabel('carrier pigeon')"),'they contacted me');
+});
