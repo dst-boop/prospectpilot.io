@@ -2,6 +2,10 @@ const $=id=>document.getElementById(id);
 const labels={age:'Age 45–73',residence:'US residence',retirement:'Transfer eligibility',contact:'Contact route',net_worth:'Net worth ≥ $250K, home excluded'};
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const title=value=>String(value||'').replaceAll('_',' ').replace(/^./,c=>c.toUpperCase());
+// Outcomes whose stored name does not read as English once the underscores are
+// gone. The generic form covers the rest, so this stays a list of exceptions.
+const outcomeLabels={became_client:'Became a client',no_show:'No-show',follow_up:'Follow-up agreed',not_interested:'Not interested',do_not_contact:'Do not contact',no_answer:'No answer',meeting_booked:'Meeting booked',meeting_held:'Meeting held'};
+const outcomeLabel=value=>outcomeLabels[value]||title(value);
 const num=value=>Number(value||0).toLocaleString();
 const dollars=value=>value==null?'—':Number(value).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2});
 const safeURL=value=>{try{const u=new URL(value);return ['https:','http:'].includes(u.protocol)&&!u.username&&!u.password?u.href:'';}catch{return '';}};
@@ -106,7 +110,7 @@ async function loadActivity(id,version,reset=true){try{const data=await request(
 let workOffset=0,workTotal=0,workRequest=0,currentWorkflow=null,activityKey='',activitySaving=false;
 const workSelected=new Set();
 const when=value=>value?new Date(value).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'';
-const emptyMessages={resting:['Nobody is resting right now.','A prospect rests after six touches in 45 days, or after a sequence ends without a reply. They return automatically when the rest period is over.'],today:['Your next actions will appear here.','Import an existing provider CSV or discover people at named employers. Each prospect will have a specific evidence task.'],due:['You’re caught up on due follow-ups.','Scheduled follow-ups return here when their saved time arrives.'],ready:['No prospects are ready for an initial conversation yet.','Review age, US residence, and contact ownership first. Missing retirement and financial evidence remains a conversation topic, not a verified claim.'],review:['No evidence reviews in this view.','Try another worklist or import research candidates.'],enrich:['No missing-contact records in this view.','Contact details that are present but unverified appear under Evidence to review.'],scheduled:['No follow-ups scheduled.','Open a prospect, record the outcome, and choose a next follow-up time.'],meetings:['No meetings saved yet.','Choose Meeting booked on a prospect and record the agreed time.'],closed:['No closed or excluded records.','Contact restrictions and reviewed disqualifications remove records from active work.'],all:['No prospects found.','Import a CSV or change your search.']};
+const emptyMessages={resting:['Nobody is resting right now.','A prospect rests after six touches in 45 days, or after a sequence ends without a reply. They return automatically when the rest period is over.'],today:['Your next actions will appear here.','Import an existing provider CSV or discover people at named employers. Each prospect will have a specific evidence task.'],due:['You’re caught up on due follow-ups.','Scheduled follow-ups return here when their saved time arrives.'],ready:['No prospects are ready for an initial conversation yet.','Review age, US residence, and contact ownership first. Missing retirement and financial evidence remains a conversation topic, not a verified claim.'],review:['No evidence reviews in this view.','Try another worklist or import research candidates.'],enrich:['No missing-contact records in this view.','Contact details that are present but unverified appear under Evidence to review.'],scheduled:['No follow-ups scheduled.','Open a prospect, record the outcome, and choose a next follow-up time.'],meetings:['No meetings saved yet.','Choose Meeting booked on a prospect and record the agreed time.'],clients:['No clients recorded yet.','Choose Became a client on a prospect you have spoken with. They leave the worklist and are counted on the scoreboard.'],closed:['No closed or excluded records.','Contact restrictions and reviewed disqualifications remove records from active work. Clients are listed separately.'],all:['No prospects found.','Import a CSV or change your search.']};
 function selectionLabel(){$('workSelection').textContent=`${workSelected.size} selected`;$('enrichExport').disabled=!workSelected.size;}
 async function loadWorklist(){
   const serial=++workRequest;const data=await request('/api/lab/worklist?'+new URLSearchParams({view:$('workView').value,search:$('workSearch').value,offset:workOffset,limit:24}));if(serial!==workRequest)return;
@@ -133,17 +137,21 @@ function renderConversation(){
   renderDraft();
   $('contactActions').replaceChildren();const c=a.contact;
   if(c){const anchor=document.createElement('a');anchor.className='contact-link';anchor.textContent=c.channel==='phone'?`Call ${c.address}`:c.channel==='email'?`Email ${c.address}`:'Open reviewed LinkedIn profile';anchor.href=c.channel==='phone'?'tel:'+c.address:c.channel==='email'?'mailto:'+encodeURIComponent(c.address):safeURL(c.address);if(c.channel==='linkedin'){anchor.target='_blank';anchor.rel='noopener noreferrer';}$('contactActions').append(anchor);}else $('contactActions').textContent='No reviewed contact shortcut available. Review the contact evidence below.';
-  $('activityHistory').innerHTML=(current.lead.notes?`<p class="existing-notes">${esc(current.lead.notes)}</p>`:'')+(currentWorkflow.activities.length?currentWorkflow.activities.map(a=>`<div class="activity-entry"><strong>${esc(title(a.outcome))}</strong> · ${esc(when(a.created_at))}<p>${esc(a.note)}</p>${a.next_at?`<small>Next: ${esc(when(a.next_at))}</small>`:''}</div>`).join(''):'<p>No outcomes recorded yet.</p>');
+  $('activityHistory').innerHTML=(current.lead.notes?`<p class="existing-notes">${esc(current.lead.notes)}</p>`:'')+(currentWorkflow.activities.length?currentWorkflow.activities.map(a=>`<div class="activity-entry"><strong>${esc(outcomeLabel(a.outcome))}</strong> · ${esc(when(a.created_at))}<p>${esc(a.note)}</p>${a.next_at?`<small>Next: ${esc(when(a.next_at))}</small>`:''}</div>`).join(''):'<p>No outcomes recorded yet.</p>');
 }
 async function loadScoreboard(){
   const b=await request('/api/lab/scoreboard?days=30');
   // A rate with nothing in its denominator is not zero, it is unmeasured. Say
   // so rather than printing a 0% nobody earned.
   $('scoreboard').innerHTML=b.measured.map(m=>{
-    const unmet=m.value!==null&&m.value<m.target;
-    return `<article${unmet?'':' class="highlight"'}><span>${esc(m.label)}</span>`+
-      `<strong>${m.value===null?'—':esc(m.value)+(m.unit==='%'?'%':'')}</strong>`+
-      `<small>${m.value===null?'Nothing recorded yet':esc(m.basis)} · target ${esc(m.target)}${m.unit==='%'?'%':''}`+
+    // Some figures have no defensible target, and printing "target null" beside
+    // one -- or marking it met -- would invent the benchmark it is missing.
+    const rated=m.target!==null&&m.target!==undefined;
+    const unmet=rated&&m.value!==null&&m.value<m.target;
+    const suffix=m.unit==='%'?'%':'';
+    return `<article${rated&&!unmet?' class="highlight"':''}><span>${esc(m.label)}</span>`+
+      `<strong>${m.value===null?'—':esc(m.value)+suffix}</strong>`+
+      `<small>${m.value===null?'Nothing recorded yet':esc(m.basis)}${rated?' · target '+esc(m.target)+suffix:''}`+
       `${b.scopes&&m.scope?' · '+esc(b.scopes[m.scope]):''}</small></article>`;
   }).join('');
   const gaps=[b.untouched?`${num(b.untouched)} prospect${b.untouched===1?'':'s'} added and never touched`:'',b.meetings.note].filter(Boolean);
@@ -176,13 +184,16 @@ $('draftCopy').onclick=async()=>{
   try{await navigator.clipboard.writeText(text);$('draftCopied').textContent='Copied.';}
   catch{$('draftBody').select();$('draftCopied').textContent='Select the message and copy it.';}
 };
-function activityFields(){const outcome=$('activityOutcome').value,closed=['not_interested','do_not_contact','reopen'].includes(outcome);$('nextAtLabel').hidden=closed;
+function activityFields(){const outcome=$('activityOutcome').value,closed=['not_interested','do_not_contact','reopen','became_client'].includes(outcome);$('nextAtLabel').hidden=closed;
   // A no-show needs a new time; a meeting that happened may or may not produce one.
   $('activityNext').required=['follow_up','meeting_booked','no_show'].includes(outcome);$('activityNext').disabled=closed;
   // The channel stays available for "not interested" and "do not contact": a
   // call that ended in either still put volume on the number and still spends
-  // the day's dials. Only reopening a record reaches nobody.
-  const reached=outcome!=='reopen';
+  // the day's dials. Reopening a record reaches nobody, and a client is a
+  // status the already-logged conversation produced rather than a contact of
+  // its own -- giving either a channel would describe an approach that is not
+  // in the log.
+  const reached=!['reopen','became_client'].includes(outcome);
   $('channelLabel').hidden=!reached;$('activityChannel').disabled=!reached;}
 function prepareActivity(){renderConversation();$('activityForm').reset();$('activityError').textContent='';activityKey=crypto.randomUUID();
   // The sequence already knows which channel this touch uses and when the next

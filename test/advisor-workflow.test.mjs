@@ -44,3 +44,95 @@ test('directory handoff is owned and replay-safe; suppression stays effective in
  const d=await lab.advisor.detail(user,linked);await lab.advisor.save(user,linked,{outcome:'do_not_contact',signature:d.action.signature,idempotency_key:'linked-dnc'});
  assert.equal((await db.query("SELECT payload->>'suppressed' AS suppressed FROM prospect_contacts WHERE id='contact'")).rows[0].suppressed,'true');
 }finally{await db.close();}});
+
+// Becoming a client.
+//
+// The outcome every touch before it was for, and the one that decides whether a
+// source paid for itself. It is a status change rather than an approach, so the
+// cases worth writing are the refusals: a client nobody spoke to, and a
+// prospecting touch logged against somebody who has already signed.
+test('a client cannot be recorded without a logged conversation, and leaves the worklist without being suppressed',async()=>{
+ const {db,lab,user,id}=await fixture();try{
+  await reviewBasics(lab,user,id);
+  // Nothing has been logged against this record, so there is no conversation
+  // for the strongest outcome in the report to rest on.
+  let d=await lab.advisor.detail(user,id);
+  await assert.rejects(lab.advisor.save(user,id,{outcome:'became_client',signature:d.action.signature,idempotency_key:'too-early'}),{status:422});
+  // A touch that reached nobody is still not a conversation.
+  await lab.advisor.save(user,id,{outcome:'no_answer',channel:'phone',signature:d.action.signature,idempotency_key:'rang-out'});
+  d=await lab.advisor.detail(user,id);
+  await assert.rejects(lab.advisor.save(user,id,{outcome:'became_client',signature:d.action.signature,idempotency_key:'still-too-early'}),{status:422});
+
+  await lab.advisor.save(user,id,{outcome:'connected',channel:'phone',signature:d.action.signature,idempotency_key:'spoke'});
+  d=await lab.advisor.detail(user,id);
+  const result=await lab.advisor.save(user,id,{outcome:'became_client',signature:d.action.signature,idempotency_key:'signed',note:'Opened an account.'});
+  assert.equal(result.scheduled,null,'a client has no next prospecting follow-up');
+
+  const saved=(await lab.detail(user,id)).lead;
+  assert.equal(saved.follow_up_status,'Client');
+  assert.equal(saved.follow_up_date,null);
+  // A client is not a contact restriction. Nothing here may quietly suppress a
+  // record the advisor now has a relationship with.
+  assert.ok(!saved.suppressed);
+  d=await lab.advisor.detail(user,id);
+  assert.equal(d.action.bucket,'clients');
+  assert.match(d.action.reason,/reopen the record/);
+
+  // Its own bucket, and not counted among the records that were disqualified.
+  const work=await lab.advisor.worklist(user,{view:'clients'});
+  assert.equal(work.total,1);
+  assert.equal(work.counts.clients,1);
+  assert.equal(work.counts.closed,0);
+  assert.equal(work.counts.today,0,'a client is not today’s prospecting work');
+  // And nobody pays a provider to enrich them.
+  assert.doesNotMatch(await (await lab.advisor.exportEnrichment(user,{ids:[id]})).text(),/Jamie/);
+ }finally{await db.close();}
+});
+
+test('prospecting stops at the client until the record is explicitly reopened',async()=>{
+ const {db,lab,user,id}=await fixture();try{
+  await reviewBasics(lab,user,id);
+  let d=await lab.advisor.detail(user,id);
+  await lab.advisor.save(user,id,{outcome:'connected',channel:'phone',signature:d.action.signature,idempotency_key:'spoke'});
+  d=await lab.advisor.detail(user,id);
+  await lab.advisor.save(user,id,{outcome:'became_client',signature:d.action.signature,idempotency_key:'signed'});
+
+  // A touch here would spend a dial and one of the six touches on somebody
+  // nobody is prospecting.
+  d=await lab.advisor.detail(user,id);
+  await assert.rejects(lab.advisor.save(user,id,{outcome:'no_answer',channel:'phone',signature:d.action.signature,idempotency_key:'after-signing'}),{status:422});
+  await assert.rejects(lab.advisor.save(user,id,{outcome:'meeting_booked',channel:'phone',next_at:'2026-09-20T14:00:00Z',signature:d.action.signature,idempotency_key:'review-meeting'}),{status:422});
+
+  // The way back is the one the workflow already had.
+  await lab.advisor.save(user,id,{outcome:'reopen',signature:d.action.signature,idempotency_key:'reopened'});
+  d=await lab.advisor.detail(user,id);
+  assert.notEqual(d.action.bucket,'clients');
+  await lab.advisor.save(user,id,{outcome:'no_answer',channel:'phone',signature:d.action.signature,idempotency_key:'working-again'});
+  assert.equal((await lab.advisor.detail(user,id)).activities.filter(a=>a.outcome==='no_answer').length,1);
+ }finally{await db.close();}
+});
+
+test('the scoreboard counts each client once and states why it is not a conversion rate',async()=>{
+ const {db,lab,user,id}=await fixture();try{
+  await reviewBasics(lab,user,id);
+  let d=await lab.advisor.detail(user,id);
+  await lab.advisor.save(user,id,{outcome:'connected',channel:'phone',signature:d.action.signature,idempotency_key:'spoke'});
+  d=await lab.advisor.detail(user,id);
+  await lab.advisor.save(user,id,{outcome:'became_client',signature:d.action.signature,idempotency_key:'signed'});
+  // Logged twice under different keys -- an advisor confirming it, not a second
+  // client -- so the count has to be of people, not of rows.
+  d=await lab.advisor.detail(user,id);
+  await lab.advisor.save(user,id,{outcome:'became_client',signature:d.action.signature,idempotency_key:'signed-again'});
+
+  const board=await lab.advisor.scoreboard(user,{days:30});
+  const won=board.measured.find(m=>m.id==='clients_recorded');
+  assert.equal(won.value,1);
+  assert.equal(won.unit,'count');
+  assert.equal(won.target,null,'no target is claimed for a figure the firm has not measured');
+  assert.match(won.basis,/counted once each/);
+  assert.match(board.scopes[won.scope],/whenever they were first met/);
+  // Another advisor's scoreboard is unaffected.
+  assert.equal((await lab.advisor.scoreboard({uid:'other',email:'other@example.com'},{days:30}))
+    .measured.find(m=>m.id==='clients_recorded').value,0);
+ }finally{await db.close();}
+});

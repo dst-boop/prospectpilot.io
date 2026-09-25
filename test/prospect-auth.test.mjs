@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHandler} from '../handler.mjs';
+import {CADENCE_VERSION} from '../outreach-cadence.mjs';
 
 const origin='https://prospectpilot.io';
 const claims={uid:'owner',email:'owner@example.com',email_verified:true,firebase:{sign_in_provider:'google.com'}};
@@ -50,6 +51,17 @@ test('release identity distinguishes a registered contact workspace from the old
   const response=await fixture({enabled}).handler(request('/version',{cookie:''}));const version=await response.json();
   assert.equal(version.contact_workspace_version,enabled?'professional-contacts-1':null);assert.equal(version.release_id,'release-test');assert.equal(version.quality_version,'retirement-evidence-2');assert.equal(response.headers.get('cache-control'),'no-store');
  }
+});
+
+// A release gate that only compares the release identifier proves the service
+// restarted, not that it restarted onto the pacing rules. Every other feature
+// set on this endpoint was already live before cadence shipped, so without its
+// own version a cadence release verifies identically to the one it replaces.
+test('the release endpoint names the cadence rules the service is running',async()=>{
+ const {handler}=fixture();
+ const version=await (await handler(request('/version',{cookie:''}))).json();
+ assert.equal(version.cadence_version,CADENCE_VERSION);
+ assert.notEqual(version.cadence_version,version.advisor_workspace_version);
 });
 
 test('new public users reach their own workspace and account endpoint',async()=>{

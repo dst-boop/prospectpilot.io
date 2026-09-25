@@ -17,6 +17,11 @@ const outcomes={no_answer:'Contacted',connected:'Contacted',follow_up:'Follow-up
   // A booked meeting is an intention. Whether it happened is a separate fact,
   // and without it a show rate cannot be reported at all.
   meeting_held:'Met',no_show:'Follow-up',
+  // The funnel ended at the second conversation, which measured whether the
+  // work continued rather than whether it arrived anywhere. A prospect who
+  // signs is the outcome every touch before it was for, and until it can be
+  // recorded the cost of a source can only be stated per lead or per meeting.
+  became_client:'Client',
   not_interested:'Not a Fit',do_not_contact:'Not a Fit',reopen:'Researching'};
 export const workflowSignature=lead=>hash(JSON.stringify([leadIdentity(lead),lead.follow_up_status,lead.follow_up_date,lead.notes,lead.suppressed,lead.advisor_activity_id]));
 
@@ -29,6 +34,12 @@ export function nextAction(lead,quality,now=new Date(),cadence=null) {
   if(blocked)return {...base,bucket:'closed',rank:90,label:'Excluded from this campaign',reason:quality.warnings[0]||Object.values(quality.gates).find(g=>g.state==='failed')?.reason||'Identity excluded.',contact:null};
   if(quality.status==='identity_review')return {...base,bucket:'review',rank:55,label:'Resolve identity',reason:'Conflicting identifiers must be resolved before contact.',contact:null};
   if(lead.follow_up_status==='Not a Fit')return {...base,bucket:'closed',rank:90,label:'No further follow-up',reason:'Marked not interested or not a fit.',contact:null};
+  // A client leaves the worklist, but not into the same drawer as the records
+  // that were disqualified or restricted. Kept as its own bucket so filtering
+  // "closed" does not show somebody their new clients beside the people who
+  // told them no, and so the count is readable on its own.
+  if(lead.follow_up_status==='Client')return {...base,bucket:'clients',rank:85,label:'Became a client',
+    reason:'Recorded as a client. Prospecting is finished for this person; reopen the record to work them again.'};
   if(lead.follow_up_status==='Meeting Set')return {...base,bucket:'meetings',rank:0,label:'Prepare for the meeting',reason:validDue&&due<now?'Meeting time has passed. Record the outcome or next follow-up.':'Review the evidence gaps before your conversation.'};
   // Pacing outranks both readiness and any saved follow-up date: a person who
   // may not be contacted is not "due", whatever time is stored against them.
@@ -109,7 +120,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       activities:(await pool.query('SELECT outcome,channel,step,note,next_at,created_at FROM advisor_activities WHERE lead_id=$1 ORDER BY created_at DESC,id DESC LIMIT 30',[id])).rows};
   }
   async function worklist(user,{view='today',search='',offset=0,limit=24}={}) {
-    if(!['today','ready','due','review','enrich','scheduled','meetings','resting','closed','all'].includes(view))throw fail(422,'Choose a worklist view.');
+    if(!['today','ready','due','review','enrich','scheduled','meetings','resting','clients','closed','all'].includes(view))throw fail(422,'Choose a worklist view.');
     offset=Number(offset);limit=Number(limit);
     if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(limit)||limit<1||limit>100)throw fail(422,'Invalid worklist page.');
     const term=String(search).trim().slice(0,100).replace(/[%_\\]/g,'');
@@ -133,7 +144,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       const cadence=cadenceState({activities:history.get(r.id)||[],lead,quality,rest:resting.get(r.id)||null,now:now(),dials});
       return {lead:{id:lead.id,first_name:lead.first_name,last_name:lead.last_name,company:lead.company,current_title:lead.current_title,location:lead.location||[lead.city,lead.state].filter(Boolean).join(', '),notes:lead.notes||''},quality,action:nextAction(lead,quality,now(),cadence)};});
     all.sort((a,b)=>a.action.rank-b.action.rank||(a.action.due_at||'').localeCompare(b.action.due_at||'')||b.quality.score-a.quality.score||a.lead.id.localeCompare(b.lead.id));
-    const counts={today:0,ready:0,due:0,review:0,enrich:0,scheduled:0,meetings:0,resting:0,closed:0,all:all.length};
+    const counts={today:0,ready:0,due:0,review:0,enrich:0,scheduled:0,meetings:0,resting:0,clients:0,closed:0,all:all.length};
     for(const r of all){counts[r.action.bucket]++;if(['due','ready','review','enrich'].includes(r.action.bucket))counts.today++;}
     const filtered=all.filter(r=>view==='all'||(view==='today'?['due','ready','review','enrich'].includes(r.action.bucket):r.action.bucket===view));
     const activity=(await pool.query(`SELECT count(*)::int AS attempts,count(*) FILTER(WHERE a.outcome IN ('connected','follow_up','meeting_booked','meeting_held'))::int AS conversations,
@@ -153,7 +164,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       if(prior)return {saved:true,replayed:true};
     let next=null;if(input.next_at){const d=new Date(input.next_at);if(!Number.isFinite(d.getTime())||d<=now()||d.getUTCFullYear()>now().getUTCFullYear()+5)throw fail(422,'Choose a future follow-up time within five years.');next=d.toISOString();}
     if(['follow_up','meeting_booked','no_show'].includes(input.outcome)&&!next)throw fail(422,'Choose a date and time for the follow-up or meeting.');
-    if(['not_interested','do_not_contact','reopen'].includes(input.outcome))next=null;
+    if(['not_interested','do_not_contact','reopen','became_client'].includes(input.outcome))next=null;
 
       // Pacing is checked against the record as it stands, before this touch is
       // written, so a refusal reaches the advisor while it can still matter.
@@ -171,8 +182,25 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
           FROM advisor_activities WHERE lead_id=$1 AND user_id=$2`,[id,user.uid])).rows[0];
         if(m.booked<=m.held)throw fail(422,'Record the booked meeting first. Met and No-show describe a meeting that was arranged.');
       }
+      // A client is not a prospect the advisor spoke to once. Requiring a
+      // logged conversation keeps the strongest outcome in the report tied to
+      // the work that produced it: without this, an untouched record -- or one
+      // that never answered -- could be marked a client, and the meeting and
+      // response rates would be measured against a funnel that skipped them.
+      if(input.outcome==='became_client') {
+        const spoke=(await client.query(`SELECT count(*)::int AS engaged FROM advisor_activities
+          WHERE lead_id=$1 AND user_id=$2 AND outcome=ANY($3::text[])`,
+          [id,user.uid,['connected','follow_up','meeting_booked','meeting_held']])).rows[0];
+        if(!spoke.engaged)throw fail(422,'Record the conversation first. Client describes someone you have spoken with.');
+      }
       const channel=input.channel??null;
       let step=null;
+      // Prospecting stops at the client. Logging another touch here would spend
+      // a dial and a touch from the 45-day budget on somebody nobody is
+      // prospecting, so the way back is the explicit one the workflow already
+      // has rather than a second meaning for the same buttons.
+      if(lead.follow_up_status==='Client'&&TOUCH_OUTCOMES.has(input.outcome))
+        throw fail(422,'This person is recorded as a client. Choose Reopen for research before logging prospecting activity.');
       if(TOUCH_OUTCOMES.has(input.outcome)) {
         const verdict=admitTouch(before,{channel,now:now()});
         if(!verdict.ok)throw fail(verdict.status,verdict.reason);
@@ -205,7 +233,9 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
   async function exportEnrichment(user,input) {
     if(!Array.isArray(input.ids)||!input.ids.length||input.ids.length>1000)throw fail(422,'Select 1–1,000 prospects.');
     const rows=[];for(const id of [...new Set(input.ids)]){
-      const {lead}=await accessible(user,id),{action}=await detail(user,id);if(action.bucket==='closed')continue;
+      // Nobody pays a provider to enrich a record they have already closed, and
+      // a client's details are the firm's to hold by then, not a research gap.
+      const {lead}=await accessible(user,id),{action}=await detail(user,id);if(['closed','clients'].includes(action.bucket))continue;
       rows.push([lead.first_name,lead.last_name,lead.company,lead.current_title,lead.city,lead.state,lead.linkedin_url,action.label,'Reported identifiers only; verify ownership.']);
     }
     const csv='\uFEFF'+[['First Name','Last Name','Company Name','Job Title','City','State','LinkedIn URL','Research Task','Data Status'],...rows].map(r=>r.map(csvCell).join(',')).join('\r\n');
@@ -258,6 +288,14 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       WHERE ${visibleSQL} AND o.outcome IN ('meeting_held','no_show')
       ORDER BY o.lead_id,o.created_at,o.id`,
       ['wealth-management',user.uid,user.email])).rows;
+    // Every prospect recorded as a client, counted once however many times the
+    // conversion was logged, and dated by the log. There is no separate signing
+    // date to read: the record says when somebody wrote it down, and dating the
+    // count by anything else here would be a guess dressed as a measurement.
+    const clients=(await pool.query(`SELECT count(DISTINCT a.lead_id)::int AS total
+      FROM discovery_leads d JOIN advisor_activities a ON a.lead_id=d.id AND a.user_id=$2
+      WHERE ${visibleSQL} AND a.outcome='became_client' AND a.created_at >= $4::timestamptz`,
+      ['wealth-management',user.uid,user.email,since])).rows[0].total;
     // Two populations, deliberately. The service level, the response rate and
     // meetings per 100 ask what became of the prospects added in this window,
     // so they are a cohort. The meeting rates ask what happened in this window,
@@ -311,10 +349,20 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
          basis:`${held} held and ${noShows} not, of ${held+noShows} meetings with an outcome recorded`,target:80},
         {id:'second_meeting',scope:'activity',label:'First conversations that led to a second',value:rate(second.length,discovered.length),unit:'%',
          basis:`${second.length} of ${discovered.length} prospects you have met`,target:50},
+        // A count, not a rate, and no target. A client signed this month was
+        // very likely met before this window opened, so dividing by the people
+        // added or met inside it would put an arrival over the wrong cohort and
+        // read as a conversion rate this application cannot measure. Zero here
+        // is a true zero -- no conversions were recorded -- rather than the
+        // empty denominator the rates above have to report as unmeasured. No
+        // target: a defensible one would come from the firm's own history.
+        {id:'clients_recorded',scope:'conversions',label:'Clients recorded',value:clients,unit:'count',
+         basis:`${clients} prospect${clients===1?'':'s'} recorded as a client, counted once each`,target:null},
       ],
       // Says which window each rate is drawn from, so "last 30 days" on the page
       // is not doing the work of two different meanings at once.
-      scopes:{cohort:'Prospects added in this window',activity:'Meetings that happened in this window'},
+      scopes:{cohort:'Prospects added in this window',activity:'Meetings that happened in this window',
+        conversions:'Clients recorded in this window, whenever they were first met'},
       meetings:{held,no_shows:noShows,
         // Named rather than counted, for the same reason as untouched prospects.
         awaiting_outcome:unresolved,

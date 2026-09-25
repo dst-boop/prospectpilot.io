@@ -95,15 +95,39 @@ questions rather than the evidence prompts.
 
 **Pacing is only as good as the logging.** A touch nobody recorded is invisible
 to the limit and to the scoreboard. `GET /api/lab/scoreboard`, shown on the
-workspace under **Your funnel**, reports all five measurements: first-touch
+workspace under **Your funnel**, reports six measurements: first-touch
 service level, response rate, meetings booked per 100 prospects worked, the
-share of booked meetings that were held, and first conversations that led to a
-second.
+share of booked meetings that were held, first conversations that led to a
+second, and the number of prospects recorded as clients.
 
 The first three measure the prospects **added** in the window; the meeting rates
-measure the meetings that **happened** in it, whoever they were with. The page
-says which under each figure, because one label reading "last 30 days" over both
-would mean two different things at once.
+measure the meetings that **happened** in it, whoever they were with; the client
+count measures the conversions **recorded** in it, whenever those people were
+first met. The page says which under each figure, because one label reading
+"last 30 days" over all three would mean three different things at once.
+
+**Becoming a client ends the prospecting, and is counted rather than rated.**
+Record **Became a client** on a prospect whose record already holds a
+conversation — connected, follow-up agreed, a meeting booked or held. Without one
+the save is refused: the strongest figure in the report stays tied to the work
+that produced it, and a client marked on an untouched record would be measured
+against a funnel that skipped them. The record leaves the worklist into its own
+**Clients** view, not the closed drawer that holds disqualified and restricted
+people, and it is excluded from provider enrichment exports. It is **not**
+suppressed — a client is a relationship, not a contact restriction. Further
+prospecting touches are refused until the record is explicitly reopened, so a
+client cannot quietly spend dials and touches from a budget meant for prospects.
+
+The client figure is a **count with no target**, and deliberately not a rate. A
+client who signs this month was very likely met before the window opened, so
+dividing by the prospects added or met inside it would place an arrival over the
+wrong cohort and read as a conversion rate this application cannot measure. A
+target would have to come from the firm's own history rather than from here.
+Zero clients is a true zero — none were recorded — unlike the rates above, whose
+empty denominators have to read as unmeasured. Conversions are counted once per
+person however many times the outcome was logged, and dated by the log, because
+the record holds no separate signing date and dating them by anything else would
+be a guess presented as a measurement.
 
 A meeting is dated by the meeting, not by the note. Writing up the week on Friday
 would otherwise pull Tuesday's meetings into Friday's window: a meeting held six
@@ -121,7 +145,18 @@ rate with nothing behind it reads as unmeasured, not as zero.
 
 Requires migration **014**, which adds the channel and sequence step to logged
 activity, the rest-period table, and the advisor profile used to sign drafts, and
-**015**, which adds the timezone that the daily dial limit rolls over in.
+**015**, which adds the timezone that the daily dial limit rolls over in. The
+client outcome needs **no migration**: the activity log already stores the
+outcome as text, so the conversion is a new value in a column that exists, and
+no released database has to change to deploy it.
+
+`GET /version` names the rules the running service is using, not only which
+build it is: `cadence_version` reports the pacing rules alongside
+`quality_version`, `advisor_workspace_version` and `contact_workspace_version`.
+`release.sh` asserts every one of them after updating the service. Without the
+cadence field a release carrying new pacing rules verified identically to the
+one it replaced, because every other version string on the endpoint had been
+live since before pacing shipped and only the opaque release identifier moved.
 
 **A verified quality lead must meet all five reviewed criteria:** age 45–73 inclusive, US residence, retained retirement assets with an eligible distribution or IRA transfer, an identified phone/email/LinkedIn contact route, and a disclosed net-worth lower bound of at least $250,000 excluding the home and net of liabilities.
 

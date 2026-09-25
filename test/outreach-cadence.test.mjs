@@ -262,7 +262,12 @@ test('an unusable channel is refused, and the scoreboard separates what it measu
     assert.equal(board.measured.find(m => m.id === 'meetings_per_100').value, 100);
     assert.deepEqual(board.unmeasured, [], 'every metric on the deck is now recorded');
     assert.deepEqual(board.measured.map(m => m.id),
-      ['first_touch_sla', 'reply_rate', 'meetings_per_100', 'show_rate', 'second_meeting']);
+      ['first_touch_sla', 'reply_rate', 'meetings_per_100', 'show_rate', 'second_meeting', 'clients_recorded']);
+    // Nothing has been recorded as a client, and that is a counted zero rather
+    // than the unmeasured dash a rate with an empty denominator has to show.
+    const won = board.measured.find(m => m.id === 'clients_recorded');
+    assert.equal(won.value, 0);
+    assert.equal(won.target, null);
     assert.match(board.basis, /nobody logged is invisible/);
     await assert.rejects(lab.advisor.scoreboard(user, {days: 0}), {status: 422});
     // Another advisor sees none of this.
