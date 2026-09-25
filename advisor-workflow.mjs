@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {assessLead, leadIdentity, hash, csvCell} from './lead-quality.mjs';
-import {cadenceState, admitTouch, restPeriod, nextFollowUp, composeTouch, firstTouchSLA} from './outreach-cadence.mjs';
+import {cadenceState, admitTouch, restPeriod, nextFollowUp, composeTouch, firstTouchSLA, dialBudget, TOUCH_OUTCOMES} from './outreach-cadence.mjs';
 import {phoneReadiness} from './prospect-data-quality.mjs';
 
 export function withDirectoryRestrictions(lead,contacts=[]) {
@@ -13,8 +13,11 @@ export function withDirectoryRestrictions(lead,contacts=[]) {
 const parse=v=>typeof v==='string'?JSON.parse(v):v;
 const fail=(status,message)=>Object.assign(Error(message),{status});
 const fields={age:'Confirm current age',residence:'Confirm US residence',contact:'Verify contact ownership',retirement:'Ask about retained retirement assets and transfer eligibility',net_worth:'Obtain an authorized financial disclosure'};
-const TOUCHED=new Set(['no_answer','connected','follow_up','meeting_booked']);
-const outcomes={no_answer:'Contacted',connected:'Contacted',follow_up:'Follow-up',meeting_booked:'Meeting Set',not_interested:'Not a Fit',do_not_contact:'Not a Fit',reopen:'Researching'};
+const outcomes={no_answer:'Contacted',connected:'Contacted',follow_up:'Follow-up',meeting_booked:'Meeting Set',
+  // A booked meeting is an intention. Whether it happened is a separate fact,
+  // and without it a show rate cannot be reported at all.
+  meeting_held:'Met',no_show:'Follow-up',
+  not_interested:'Not a Fit',do_not_contact:'Not a Fit',reopen:'Researching'};
 export const workflowSignature=lead=>hash(JSON.stringify([leadIdentity(lead),lead.follow_up_status,lead.follow_up_date,lead.notes,lead.suppressed,lead.advisor_activity_id]));
 
 export function nextAction(lead,quality,now=new Date(),cadence=null) {
@@ -31,8 +34,15 @@ export function nextAction(lead,quality,now=new Date(),cadence=null) {
   // may not be contacted is not "due", whatever time is stored against them.
   if(cadence&&['resting','capped'].includes(cadence.status)&&!['Meeting Set','Not a Fit'].includes(lead.follow_up_status))
     return {...base,bucket:'resting',rank:80,label:cadence.status==='resting'?'Resting':'Rest period owed',reason:cadence.reason,cadence,due_at:cadence.resume_at||validDue};
-  if(validDue&&due<=now)return {...base,bucket:'due',rank:0,label:'Follow-up due',reason:contact?'Review the last conversation and use the agreed contact route.':'A follow-up is due; verify a contact route before using it.'};
-  if(validDue)return {...base,bucket:'scheduled',rank:70,label:'Follow-up scheduled',reason:'This person returns to your due list at the saved time.'};
+  // A follow-up whose step cannot be acted on right now -- the calling window is
+  // shut, or the day's dials are spent -- is still due, but it does not head a
+  // list of things that can actually be done. Without this the saved date wins
+  // and the worklist keeps offering the call after the budget is gone.
+  if(validDue&&due<=now&&cadence?.step&&!cadence.step.ready&&cadence.step.due)
+    return {...base,cadence,bucket:'due',rank:45,held:true,label:'Follow-up due, on hold',
+      reason:cadence.step.hold||cadence.reason};
+  if(validDue&&due<=now)return {...base,cadence,bucket:'due',rank:0,label:'Follow-up due',reason:contact?'Review the last conversation and use the agreed contact route.':'A follow-up is due; verify a contact route before using it.'};
+  if(validDue)return {...base,cadence,bucket:'scheduled',rank:70,label:'Follow-up scheduled',reason:'This person returns to your due list at the saved time.'};
   if(contact&&quality.gates.age.state==='confirmed'&&quality.gates.residence.state==='confirmed')return {...base,cadence,bucket:'ready',rank:quality.status==='verified'?10:20,label:quality.status==='verified'?'Prepare an introductory conversation':'Confirm the remaining fit criteria',reason:quality.status==='verified'?'All five criteria have current reviewed evidence.':quality.gaps.map(g=>fields[g]).join('; ')+'.'};
   const gap=quality.gaps.includes('contact')?'contact':quality.gaps.find(g=>['age','residence'].includes(g))||quality.gaps[0];
   return {...base,cadence,bucket:gap==='contact'&&quality.gates.contact.state==='unknown'?'enrich':'review',rank:30+(100-quality.score)/10,label:fields[gap]||'Review this prospect',reason:quality.gates[gap]?.reason||'Review the saved evidence.',field:gap};
@@ -43,29 +53,54 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
   // leaving the advisor to paste their name into every touch.
   async function profile(user) {
     const row=(await pool.query(`SELECT COALESCE(NULLIF(p.display_name,''),u.full_name,'') AS name,
-      COALESCE(p.firm,'') AS firm,COALESCE(p.phone,'') AS phone,COALESCE(p.metro,'') AS metro
+      COALESCE(p.firm,'') AS firm,COALESCE(p.phone,'') AS phone,COALESCE(p.metro,'') AS metro,COALESCE(NULLIF(p.time_zone,''),'UTC') AS time_zone
       FROM (SELECT $1::text AS user_id) k
       LEFT JOIN advisor_profiles p ON p.user_id=k.user_id
       LEFT JOIN discovery_users u ON u.user_id=k.user_id`,[user.uid])).rows[0];
-    return row||{name:'',firm:'',phone:'',metro:''};
+    return row||{name:'',firm:'',phone:'',metro:'',time_zone:'UTC'};
   }
   async function saveProfile(user,input) {
     const text=(v,max)=>String(v??'').trim().slice(0,max);
-    const values=[user.uid,text(input.display_name,120),text(input.firm,120),text(input.phone,40),text(input.metro,80)];
-    await pool.query(`INSERT INTO advisor_profiles(user_id,display_name,firm,phone,metro) VALUES($1,$2,$3,$4,$5)
-      ON CONFLICT(user_id) DO UPDATE SET display_name=EXCLUDED.display_name,firm=EXCLUDED.firm,phone=EXCLUDED.phone,metro=EXCLUDED.metro,updated_at=now()`,values);
+    // Only the fields the request carries are written; the rest keep what is
+    // stored. The details form always sends all five, so it behaves as before.
+    // What this allows is a one-field correction -- the browser's time zone,
+    // which the page knows and nobody types -- without blanking the other four.
+    const field=(key,max)=>Object.hasOwn(input,key)?text(input[key],max):null;
+    // A zone the runtime does not recognize would silently move the day
+    // boundary, so an unusable one leaves the stored zone alone rather than
+    // replacing a working one with UTC.
+    let zone=null;
+    if(Object.hasOwn(input,'time_zone')){const candidate=text(input.time_zone,64);
+      try{new Intl.DateTimeFormat('en-CA',{timeZone:candidate});zone=candidate;}catch{}}
+    const values=[user.uid,field('display_name',120),field('firm',120),field('phone',40),field('metro',80),zone];
+    await pool.query(`INSERT INTO advisor_profiles(user_id,display_name,firm,phone,metro,time_zone)
+      SELECT $1::text,COALESCE($2::text,p.display_name,''),COALESCE($3::text,p.firm,''),
+        COALESCE($4::text,p.phone,''),COALESCE($5::text,p.metro,''),COALESCE($6::text,p.time_zone,'UTC')
+      FROM (SELECT $1::text AS user_id) k LEFT JOIN advisor_profiles p ON p.user_id=k.user_id
+      ON CONFLICT(user_id) DO UPDATE SET display_name=EXCLUDED.display_name,firm=EXCLUDED.firm,phone=EXCLUDED.phone,metro=EXCLUDED.metro,time_zone=EXCLUDED.time_zone,updated_at=now()`,values);
     return profile(user);
   }
-  async function cadenceFor(user,id,lead,quality,client=pool) {
+  async function dialsToday(user,client=pool) {
+    const zone=(await profile(user)).time_zone||'UTC';
+    const since=new Date(now().getTime()-2*86400000).toISOString();  // two days covers any zone offset
+    // Every dial, not only the ones that count as a touch. A call that ended in
+    // "not interested" still put volume on the number, which is what a carrier
+    // is measuring; excluding it would undercount the budget it protects.
+    const rows=(await client.query(`SELECT created_at FROM advisor_activities
+      WHERE user_id=$1 AND channel='phone' AND created_at >= $2::timestamptz`,
+      [user.uid,since])).rows;
+    return dialBudget(rows.map(r=>({outcome:'no_answer',channel:'phone',created_at:r.created_at})),{now:now(),zone});
+  }
+  async function cadenceFor(user,id,lead,quality,client=pool,dials=null) {
     const activities=(await client.query('SELECT outcome,channel,step,created_at FROM advisor_activities WHERE lead_id=$1 AND user_id=$2 ORDER BY created_at',[id,user.uid])).rows;
     const rest=(await client.query('SELECT reason,resume_at FROM advisor_rest_periods WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows[0]||null;
-    return cadenceState({activities,lead,quality,rest,now:now()});
+    return cadenceState({activities,lead,quality,rest,now:now(),dials});
   }
   async function detail(user,id) {
     const {lead}=await accessible(user,id);
     const rows=(await pool.query('SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows;
     const quality=assessLead(lead,rows.map(r=>parse(r.payload)),{now:now()});
-    const cadence=await cadenceFor(user,id,lead,quality);
+    const cadence=await cadenceFor(user,id,lead,quality,pool,await dialsToday(user));
     const action=nextAction(lead,quality,now(),cadence);
     return {action,cadence,
       // The words for the next touch, not a description of them.
@@ -90,20 +125,22 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const history=new Map();for(const a of touched){if(!history.has(a.lead_id))history.set(a.lead_id,[]);history.get(a.lead_id).push(a);}
     const rests=rows.length?(await pool.query('SELECT lead_id,reason,resume_at FROM advisor_rest_periods WHERE user_id=$1 AND lead_id=ANY($2::text[])',[user.uid,ids])).rows:[];
     const resting=new Map(rests.map(r=>[r.lead_id,r]));
+    // One budget for the whole page: the limit is per line, not per prospect.
+    const dials=await dialsToday(user);
     // Directory restrictions are applied before anything is assessed or paced,
     // so a phone that became do-not-call in the directory is refused here too.
     const all=rows.map(r=>{const lead=withDirectoryRestrictions({...parse(r.payload),id:r.id},r.linked_contacts),quality=assessLead(lead,observations.get(r.id)||[],{now:now()});
-      const cadence=cadenceState({activities:history.get(r.id)||[],lead,quality,rest:resting.get(r.id)||null,now:now()});
+      const cadence=cadenceState({activities:history.get(r.id)||[],lead,quality,rest:resting.get(r.id)||null,now:now(),dials});
       return {lead:{id:lead.id,first_name:lead.first_name,last_name:lead.last_name,company:lead.company,current_title:lead.current_title,location:lead.location||[lead.city,lead.state].filter(Boolean).join(', '),notes:lead.notes||''},quality,action:nextAction(lead,quality,now(),cadence)};});
     all.sort((a,b)=>a.action.rank-b.action.rank||(a.action.due_at||'').localeCompare(b.action.due_at||'')||b.quality.score-a.quality.score||a.lead.id.localeCompare(b.lead.id));
     const counts={today:0,ready:0,due:0,review:0,enrich:0,scheduled:0,meetings:0,resting:0,closed:0,all:all.length};
     for(const r of all){counts[r.action.bucket]++;if(['due','ready','review','enrich'].includes(r.action.bucket))counts.today++;}
     const filtered=all.filter(r=>view==='all'||(view==='today'?['due','ready','review','enrich'].includes(r.action.bucket):r.action.bucket===view));
-    const activity=(await pool.query(`SELECT count(*)::int AS attempts,count(*) FILTER(WHERE a.outcome IN ('connected','follow_up','meeting_booked'))::int AS conversations,
+    const activity=(await pool.query(`SELECT count(*)::int AS attempts,count(*) FILTER(WHERE a.outcome IN ('connected','follow_up','meeting_booked','meeting_held'))::int AS conversations,
       count(DISTINCT a.lead_id) FILTER(WHERE a.outcome='meeting_booked')::int AS meetings FROM advisor_activities a
       JOIN discovery_leads d ON d.id=a.lead_id WHERE a.user_id=$2 AND ${visibleSQL}
-      AND a.created_at >= $4::timestamptz AND a.outcome IN ('no_answer','connected','follow_up','meeting_booked')`,['wealth-management',user.uid,user.email,new Date(now().getTime()-7*86400000).toISOString()])).rows[0];
-    return {items:filtered.slice(offset,offset+limit),counts,total:filtered.length,offset,limit,activity,scope_total:rows[0]?.scope_total||0,scanned:rows.length,truncated:(rows[0]?.scope_total||0)>rows.length};
+      AND a.created_at >= $4::timestamptz AND a.outcome = ANY($5::text[])`,['wealth-management',user.uid,user.email,new Date(now().getTime()-7*86400000).toISOString(),[...TOUCH_OUTCOMES]])).rows[0];
+    return {items:filtered.slice(offset,offset+limit),counts,total:filtered.length,offset,limit,activity,dials,scope_total:rows[0]?.scope_total||0,scanned:rows.length,truncated:(rows[0]?.scope_total||0)>rows.length};
   }
   async function save(user,id,input) {
     if(!Object.hasOwn(outcomes,input.outcome))throw fail(422,'Choose a conversation outcome.');
@@ -115,16 +152,28 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       const prior=(await client.query('SELECT id FROM advisor_activities WHERE lead_id=$1 AND user_id=$2 AND idempotency_key=$3',[id,user.uid,key])).rows[0];
       if(prior)return {saved:true,replayed:true};
     let next=null;if(input.next_at){const d=new Date(input.next_at);if(!Number.isFinite(d.getTime())||d<=now()||d.getUTCFullYear()>now().getUTCFullYear()+5)throw fail(422,'Choose a future follow-up time within five years.');next=d.toISOString();}
-    if(['follow_up','meeting_booked'].includes(input.outcome)&&!next)throw fail(422,'Choose a date and time for the follow-up or meeting.');
+    if(['follow_up','meeting_booked','no_show'].includes(input.outcome)&&!next)throw fail(422,'Choose a date and time for the follow-up or meeting.');
     if(['not_interested','do_not_contact','reopen'].includes(input.outcome))next=null;
 
       // Pacing is checked against the record as it stands, before this touch is
       // written, so a refusal reaches the advisor while it can still matter.
       const quality=assessLead(lead,(await client.query('SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows.map(r=>parse(r.payload)),{now:now()});
       const before=await cadenceFor(user,id,lead,quality,client);
+      // Attendance is an outcome of something. Without this, Meeting held on an
+      // untouched prospect would mark them Met, restart their touch budget and
+      // add a held meeting to the show rate, all without a meeting.
+      if(['meeting_held','no_show'].includes(input.outcome)) {
+        // A no-show both settles the meeting that was missed and arranges its
+        // replacement -- it carries a required new time -- so it nets out, and
+        // a meeting is outstanding while more have been booked than held.
+        const m=(await client.query(`SELECT count(*) FILTER(WHERE outcome='meeting_booked')::int AS booked,
+          count(*) FILTER(WHERE outcome='meeting_held')::int AS held
+          FROM advisor_activities WHERE lead_id=$1 AND user_id=$2`,[id,user.uid])).rows[0];
+        if(m.booked<=m.held)throw fail(422,'Record the booked meeting first. Met and No-show describe a meeting that was arranged.');
+      }
       const channel=input.channel??null;
       let step=null;
-      if(TOUCHED.has(input.outcome)) {
+      if(TOUCH_OUTCOMES.has(input.outcome)) {
         const verdict=admitTouch(before,{channel,now:now()});
         if(!verdict.ok)throw fail(verdict.status,verdict.reason);
         step=verdict.step;
@@ -164,11 +213,12 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
   /**
    * The funnel, measured from what was actually logged.
    *
-   * Three of these come out of the activity log. Two do not, and are reported
-   * as unmeasured rather than estimated: nothing here records whether a booked
-   * meeting was held, or whether a first conversation led to a second. A
-   * scoreboard that guessed at them would be the most confident number on the
-   * page and the only invented one.
+   * Every figure here is a count of recorded outcomes. Nothing is estimated: a
+   * scoreboard that guessed would carry the most confident number on the page
+   * and the only invented one. Where the record is incomplete the gap is
+   * reported beside the rate rather than filtered out of it, because a rate
+   * computed only over the rows somebody finished is the one shape of this
+   * report that can look perfect while the work is not being done.
    */
   async function scoreboard(user,{days=30}={}) {
     days=Number(days);
@@ -177,38 +227,99 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const rows=(await pool.query(`SELECT d.id,d.created_at AS added_at,
         min(a.created_at) FILTER(WHERE a.outcome=ANY($5::text[])) AS first_touch_at,
         count(a.id) FILTER(WHERE a.outcome=ANY($5::text[]))::int AS touches,
-        bool_or(a.outcome IN ('connected','follow_up','meeting_booked')) AS engaged,
-        bool_or(a.outcome='meeting_booked') AS booked
+        bool_or(a.outcome IN ('connected','follow_up','meeting_booked','meeting_held')) AS engaged,
+        bool_or(a.outcome='meeting_booked') AS booked,
+        -- A meeting whose time has not arrived is not yet a missed one.
+        count(*) FILTER(WHERE a.outcome IN ('meeting_booked','no_show') AND a.next_at IS NOT NULL
+          AND a.next_at < $6::timestamptz AND a.next_at >= $4::timestamptz)::int AS due_meetings
       FROM discovery_leads d LEFT JOIN advisor_activities a ON a.lead_id=d.id AND a.user_id=$2
-      WHERE ${visibleSQL} AND d.created_at::timestamptz >= $4::timestamptz GROUP BY d.id,d.created_at`,
-      ['wealth-management',user.uid,user.email,since,[...TOUCHED]])).rows;
-    const worked=rows.filter(r=>r.touches>0);
+      WHERE ${visibleSQL} GROUP BY d.id,d.created_at`,
+      ['wealth-management',user.uid,user.email,since,[...TOUCH_OUTCOMES],now().toISOString()])).rows;
+    // Every recorded attendance, dated by the meeting it settles rather than by
+    // when somebody got round to logging it. An advisor who writes up Tuesday's
+    // meetings on Friday would otherwise move them into Friday's window: a
+    // meeting held 31 days ago and recorded today would land in a 30-day show
+    // rate, and one held inside the window but recorded after it closed would
+    // disappear from the period it belongs to.
+    //
+    // The meeting is the latest booked time that had already passed when the
+    // outcome was logged. A record with no such booking -- attendance entered
+    // ahead of the scheduled time -- is dated by the log, the earliest moment
+    // the meeting is known to have happened.
+    const settled=(await pool.query(`SELECT o.lead_id,o.outcome,
+        COALESCE((SELECT max(b.next_at) FROM advisor_activities b
+            WHERE b.lead_id=o.lead_id AND b.user_id=o.user_id AND b.outcome IN ('meeting_booked','no_show')
+              AND b.next_at IS NOT NULL AND b.next_at <= o.created_at AND b.created_at <= o.created_at),
+          o.created_at) AS met_at,
+        EXISTS(SELECT 1 FROM advisor_activities n WHERE n.lead_id=o.lead_id AND n.user_id=o.user_id
+          AND n.outcome='meeting_booked' AND n.created_at > o.created_at) AS booked_after
+      FROM discovery_leads d JOIN advisor_activities o ON o.lead_id=d.id AND o.user_id=$2
+      WHERE ${visibleSQL} AND o.outcome IN ('meeting_held','no_show')
+      ORDER BY o.lead_id,o.created_at,o.id`,
+      ['wealth-management',user.uid,user.email])).rows;
+    // Two populations, deliberately. The service level, the response rate and
+    // meetings per 100 ask what became of the prospects added in this window,
+    // so they are a cohort. The meeting rates ask what happened in this window,
+    // whoever it happened to.
+    const cohort=rows.filter(r=>new Date(r.added_at)>=new Date(since));
+    const worked=cohort.filter(r=>r.touches>0);
     // Measured across every prospect whose deadline has passed, not only the
     // ones someone got to. Counting only those would report a perfect service
     // level while any number of prospects sat untouched past their deadline.
-    const sla=rows.map(r=>firstTouchSLA(r.added_at,r.first_touch_at,{now:now()})).filter(r=>r.measurable&&!r.pending);
+    const sla=cohort.map(r=>firstTouchSLA(r.added_at,r.first_touch_at,{now:now()})).filter(r=>r.measurable&&!r.pending);
     const met=sla.filter(r=>r.met).length;
     const rate=(n,d)=>d?Math.round(n/d*1000)/10:null;
+    // Counted into this window by the meeting's own date, not the log's.
+    const inWindow=settled.filter(r=>new Date(r.met_at)>=new Date(since));
+    const held=inWindow.filter(r=>r.outcome==='meeting_held').length,noShows=inWindow.filter(r=>r.outcome==='no_show').length;
+    // A meeting whose time has passed with neither outcome logged is not a
+    // missed meeting and not a held one. It is an unfinished record, so it sits
+    // beside the rate instead of quietly improving it.
+    //
+    // Clamped per prospect before summing. A rescheduled no-show gives one
+    // person two outcomes against one booking, and a global subtraction would
+    // let that surplus cancel somebody else's unresolved meeting.
+    const resolved=new Map();for(const r of inWindow)resolved.set(r.lead_id,(resolved.get(r.lead_id)||0)+1);
+    const unresolved=rows.reduce((t,r)=>t+Math.max(0,(r.due_meetings||0)-(resolved.get(r.id)||0)),0);
+    // A second conversation is a meeting booked strictly after the first one was
+    // held. Read from the log order, because that is what it is -- the next
+    // meeting gets arranged during this one -- while the window it counts
+    // towards is the first meeting's own date. Rows sharing an instant are not
+    // counted, which under-reports rather than inventing a second conversation
+    // out of the booking that produced the first.
+    //
+    // Only a prospect's first conversation qualifies. Someone first met months
+    // ago is not a new first conversation because they were met again this
+    // month; counting them would measure second-to-third and label it discovery.
+    const first=new Map();for(const r of settled)if(r.outcome==='meeting_held'&&!first.has(r.lead_id))first.set(r.lead_id,r);
+    const discovered=[...first.values()].filter(r=>new Date(r.met_at)>=new Date(since));
+    const second=discovered.filter(r=>r.booked_after);
     return {window_days:days,since,
-      added:rows.length,worked:worked.length,
+      added:cohort.length,worked:worked.length,
       // A prospect added but never touched is the gap the SLA exists to close,
       // so it is reported next to the hit rate rather than filtered out of it.
-      untouched:rows.length-worked.length,
+      untouched:cohort.length-worked.length,
       measured:[
-        {id:'first_touch_sla',label:'First touch within one business day',value:rate(met,sla.length),unit:'%',
+        {id:'first_touch_sla',scope:'cohort',label:'First touch within one business day',value:rate(met,sla.length),unit:'%',
          basis:`${met} of ${sla.length} prospects whose first-touch deadline has passed`,target:95},
-        {id:'reply_rate',label:'Prospects who responded',value:rate(worked.filter(r=>r.engaged).length,worked.length),unit:'%',
+        {id:'reply_rate',scope:'cohort',label:'Prospects who responded',value:rate(worked.filter(r=>r.engaged).length,worked.length),unit:'%',
          basis:`${worked.filter(r=>r.engaged).length} of ${worked.length} prospects touched`,target:12},
-        {id:'meetings_per_100',label:'Meetings booked per 100 prospects worked',value:rate(worked.filter(r=>r.booked).length,worked.length)===null?null:Math.round(worked.filter(r=>r.booked).length/(worked.length||1)*1000)/10,unit:'per 100',
+        {id:'meetings_per_100',scope:'cohort',label:'Meetings booked per 100 prospects worked',value:rate(worked.filter(r=>r.booked).length,worked.length)===null?null:Math.round(worked.filter(r=>r.booked).length/(worked.length||1)*1000)/10,unit:'per 100',
          basis:`${worked.filter(r=>r.booked).length} of ${worked.length} prospects touched`,target:8},
+        {id:'show_rate',scope:'activity',label:'Booked meetings that were held',value:rate(held,held+noShows),unit:'%',
+         basis:`${held} held and ${noShows} not, of ${held+noShows} meetings with an outcome recorded`,target:80},
+        {id:'second_meeting',scope:'activity',label:'First conversations that led to a second',value:rate(second.length,discovered.length),unit:'%',
+         basis:`${second.length} of ${discovered.length} prospects you have met`,target:50},
       ],
-      unmeasured:[
-        {id:'show_rate',label:'Meetings held as a share of meetings booked',
-         reason:'No outcome records whether a booked meeting was held. Log attendance before this can be reported.'},
-        {id:'second_meeting',label:'First conversations that led to a second',
-         reason:'Meetings are not recorded in sequence, so a second conversation cannot be distinguished from a rescheduled first.'},
-      ],
-      basis:'Counted from manually logged outcomes. A touch nobody logged is invisible here and to the pacing limits.'};
+      // Says which window each rate is drawn from, so "last 30 days" on the page
+      // is not doing the work of two different meanings at once.
+      scopes:{cohort:'Prospects added in this window',activity:'Meetings that happened in this window'},
+      meetings:{held,no_shows:noShows,
+        // Named rather than counted, for the same reason as untouched prospects.
+        awaiting_outcome:unresolved,
+        note:unresolved?`${unresolved} meeting${unresolved===1?'':'s'} passed without Met or No-show recorded. The show rate does not count ${unresolved===1?'it':'them'} either way.`:''},
+      unmeasured:[],
+      basis:'Counted from manually logged outcomes. A touch or a meeting nobody logged is invisible here and to the pacing limits.'};
   }
-  return {worklist,detail,save,exportEnrichment,profile,saveProfile,scoreboard};
+  return {worklist,detail,save,exportEnrichment,profile,saveProfile,scoreboard,dialsToday};
 }

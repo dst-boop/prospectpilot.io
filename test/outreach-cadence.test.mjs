@@ -12,7 +12,7 @@ import {readFileSync} from 'node:fs';
 import {createResearchLab} from '../research-lab.mjs';
 import {cadenceState, touchWindow, sequenceProgress, callWindow, composeTouch, admitTouch, cycleStart,
   restPeriod, nextFollowUp, firstTouchSLA, addBusinessDays, offerDays, sequencePlan,
-  MAX_TOUCHES, WINDOW_DAYS, SEQUENCES} from '../outreach-cadence.mjs';
+  MAX_TOUCHES, WINDOW_DAYS, SEQUENCES, dialBudget, DIAL_CAP} from '../outreach-cadence.mjs';
 
 const now = new Date('2026-09-24T15:00:00Z');           // a Thursday, 11:00 in New York
 const lead = {id: 'fixture', first_name: 'Jamie', last_name: 'Rivera', company: 'Northline Manufacturing',
@@ -25,7 +25,7 @@ async function fixture() {
   const db = new PGlite();
   for (const file of ['generated/schema.sql', 'migrations/006-research-lab.sql', 'migrations/007-quality-v2.sql',
     'migrations/008-prospect-workspace.sql', 'migrations/012-plan-catalog-summary.sql',
-    'migrations/013-advisor-workflow.sql', 'migrations/014-outreach-cadence.sql'])
+    'migrations/013-advisor-workflow.sql', 'migrations/014-outreach-cadence.sql', 'migrations/015-dial-budget.sql'])
     await db.exec(readFileSync(new URL('../' + file, import.meta.url), 'utf8'));
   const pool = {query: (...a) => db.query(...a), connect: async () => ({query: (...a) => db.query(...a), release() {}})};
   const user = {uid: 'owner', email: 'owner@example.com'};
@@ -260,8 +260,9 @@ test('an unusable channel is refused, and the scoreboard separates what it measu
     const reply = board.measured.find(m => m.id === 'reply_rate');
     assert.equal(reply.value, 100);
     assert.equal(board.measured.find(m => m.id === 'meetings_per_100').value, 100);
-    assert.deepEqual(board.unmeasured.map(m => m.id), ['show_rate', 'second_meeting']);
-    for (const m of board.unmeasured) assert.ok(m.reason.length > 20, 'an unmeasured metric says why');
+    assert.deepEqual(board.unmeasured, [], 'every metric on the deck is now recorded');
+    assert.deepEqual(board.measured.map(m => m.id),
+      ['first_touch_sla', 'reply_rate', 'meetings_per_100', 'show_rate', 'second_meeting']);
     assert.match(board.basis, /nobody logged is invisible/);
     await assert.rejects(lab.advisor.scoreboard(user, {days: 0}), {status: 422});
     // Another advisor sees none of this.
@@ -272,14 +273,14 @@ test('an unusable channel is refused, and the scoreboard separates what it measu
 test('the advisor profile signs the drafts and is scoped to its owner', async () => {
   const {db, lab, user, id} = await fixture();
   try {
-    assert.deepEqual(await lab.advisor.profile(user), {name: '', firm: '', phone: '', metro: ''});
+    assert.deepEqual(await lab.advisor.profile(user), {name: '', firm: '', phone: '', metro: '', time_zone: 'UTC'});
     const saved = await lab.advisor.saveProfile(user, {display_name: 'Dana Whitfield', firm: 'Example Advisors',
       phone: '516-555-0142', metro: 'Long Island', ignored: 'x'});
     assert.equal(saved.name, 'Dana Whitfield');
     const detail = await lab.advisor.detail(user, id);
     assert.match(detail.draft.body, /Dana Whitfield/);
     assert.deepEqual(detail.draft.needs, []);
-    assert.deepEqual(await lab.advisor.profile({uid: 'other', email: 'other@example.com'}), {name: '', firm: '', phone: '', metro: ''});
+    assert.deepEqual(await lab.advisor.profile({uid: 'other', email: 'other@example.com'}), {name: '', firm: '', phone: '', metro: '', time_zone: 'UTC'});
   } finally { await db.close(); }
 });
 
@@ -328,7 +329,12 @@ test('a resting prospect is never shown as due, whatever date is saved on them',
         signature: d.action.signature, idempotency_key: 'r-' + n});
     }
     // A follow-up date left over from the sequence must not outrank the rest.
-    await db.query(`UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{follow_up_date}','"2026-09-20T10:00:00Z"')::text WHERE id=$1`, [id]);
+    // Backdate the sequence so day 4 has genuinely arrived. The saved follow-up
+    // date is the step's own due date, so in practice the two agree — the point
+    // of the finding is that the saved date was being read first.
+    await db.query(`UPDATE advisor_activities SET created_at='2026-09-20T10:00:00Z' WHERE idempotency_key='step-1'`);
+    await db.query(`UPDATE advisor_activities SET created_at='2026-09-21T10:00:00Z' WHERE idempotency_key='step-2'`);
+    await db.query(`UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{follow_up_date}','"2026-09-23T10:00:00Z"')::text WHERE id=$1`, [id]);
     const d = await lab.advisor.detail(user, id);
     assert.equal(d.action.bucket, 'resting', 'a past due date does not make a resting prospect due');
     assert.equal((await lab.advisor.worklist(user, {view: 'due'})).total, 0);
@@ -436,6 +442,113 @@ test('the workflow hands the draft only the steps the log shows happened', async
   } finally { await db.close(); }
 });
 
+// --- meeting outcomes ----------------------------------------------------------
+// A booked meeting is an intention. Whether it happened is a separate fact, and
+// without it neither the show rate nor a second conversation can be reported.
+
+test('a held meeting is engagement and a no-show is not', () => {
+  const held = cadenceState({lead, now,
+    activities: [touch(9, {step: 'opener'}), touch(8, {outcome: 'meeting_booked', channel: 'phone'}),
+      touch(2, {outcome: 'meeting_held', channel: 'phone'})]});
+  assert.equal(held.status, 'engaged');
+  assert.equal(held.touches.count, 0, 'the budget restarts at the meeting');
+  // A no-show does not reset anything by itself: they agreed and did not appear,
+  // so what follows is outreach again and is paced like it.
+  const missed = cadenceState({lead, now,
+    activities: [touch(9, {step: 'opener'}), touch(8, {outcome: 'no_show', channel: 'phone'})]});
+  assert.equal(missed.progress.engaged_at, null);
+  assert.equal(missed.touches.count, 2, 'both the approach and the missed meeting spend budget');
+});
+
+test('meeting outcomes are recorded, and a no-show has to be rescheduled', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    let d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'booked'});
+    d = await lab.advisor.detail(user, id);
+    await assert.rejects(lab.advisor.save(user, id, {outcome: 'no_show', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'missed-no-date'}), {status: 422},
+      'a no-show without a new time would lose the prospect');
+    await lab.advisor.save(user, id, {outcome: 'no_show', channel: 'phone', next_at: '2026-09-28T14:00:00Z',
+      signature: d.action.signature, idempotency_key: 'missed'});
+    assert.equal((await lab.detail(user, id)).lead.follow_up_status, 'Follow-up');
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'held'});
+    assert.equal((await lab.detail(user, id)).lead.follow_up_status, 'Met');
+    // Booked and held are conversations. A no-show is not one: nobody spoke.
+    assert.equal((await lab.advisor.worklist(user, {})).activity.conversations, 2);
+  } finally { await db.close(); }
+});
+
+test('the show rate counts only meetings with an outcome, and names the ones without', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    // Two meetings booked in the past; one held, one still unrecorded.
+    let d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'm1'});
+    await db.query(`UPDATE advisor_activities SET next_at='2026-09-20T14:00:00Z' WHERE idempotency_key='m1'`);
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'h1'});
+
+    let board = await lab.advisor.scoreboard(user, {days: 30});
+    assert.equal(board.measured.find(m => m.id === 'show_rate').value, 100);
+    assert.equal(board.meetings.awaiting_outcome, 0);
+
+    // A second past meeting with nothing recorded against it.
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-26T14:00:00Z', signature: d.action.signature, idempotency_key: 'm2'});
+    await db.query(`UPDATE advisor_activities SET next_at='2026-09-21T14:00:00Z' WHERE idempotency_key='m2'`);
+    board = await lab.advisor.scoreboard(user, {days: 30});
+    assert.equal(board.meetings.awaiting_outcome, 1);
+    assert.match(board.meetings.note, /passed without Met or No-show recorded/);
+    assert.equal(board.measured.find(m => m.id === 'show_rate').value, 100,
+      'an unrecorded meeting does not count as held');
+    assert.equal(board.meetings.held, 1);
+
+    // A no-show moves the rate, which is the point of recording it.
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'no_show', channel: 'phone', next_at: '2026-09-30T14:00:00Z',
+      signature: d.action.signature, idempotency_key: 'ns'});
+    board = await lab.advisor.scoreboard(user, {days: 30});
+    assert.equal(board.measured.find(m => m.id === 'show_rate').value, 50);
+    assert.equal(board.meetings.awaiting_outcome, 0);
+  } finally { await db.close(); }
+});
+
+test('a second conversation is a meeting booked after one was held', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    let d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'first'});
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'held'});
+
+    let board = await lab.advisor.scoreboard(user, {days: 30});
+    assert.equal(board.measured.find(m => m.id === 'second_meeting').value, 0,
+      'meeting someone once is not a second conversation');
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-10-05T14:00:00Z', signature: d.action.signature, idempotency_key: 'second'});
+    // The fixture clock is frozen, so every row lands on the same instant. Real
+    // saves are separate requests; the ordering has to be real for the
+    // comparison to mean anything.
+    await db.query(`UPDATE advisor_activities SET created_at='2026-09-24T16:00:00Z' WHERE idempotency_key='second'`);
+    board = await lab.advisor.scoreboard(user, {days: 30});
+    assert.equal(board.measured.find(m => m.id === 'second_meeting').value, 100);
+    assert.match(board.measured.find(m => m.id === 'second_meeting').basis, /1 of 1 prospects you have met/);
+  } finally { await db.close(); }
+});
+
 test('a directory do-not-call blocks pacing, and pacing cannot override it', async () => {
   // The seam between the directory restrictions merged from main and this
   // module. Neither side alone proves a phone that became do-not-call in the
@@ -461,5 +574,368 @@ test('a directory do-not-call blocks pacing, and pacing cannot override it', asy
     assert.equal(d.action.bucket, 'closed');
     await assert.rejects(lab.advisor.save(user, linked, {outcome: 'no_answer', channel: 'phone',
       signature: d.action.signature, idempotency_key: 'after-dnc'}), {status: 422});
+  } finally { await db.close(); }
+});
+
+// --- raised in review on the meeting outcomes ---------------------------------
+
+test('attendance cannot be recorded for a meeting that was never booked', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    let d = await lab.advisor.detail(user, id);
+    // Without this, Meeting held on an untouched prospect marks them Met,
+    // restarts the touch budget and adds a held meeting to the show rate.
+    await assert.rejects(lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'phantom'}), {status: 422});
+    await assert.rejects(lab.advisor.save(user, id, {outcome: 'no_show', channel: 'phone',
+      next_at: '2026-09-30T14:00:00Z', signature: d.action.signature, idempotency_key: 'phantom-ns'}), {status: 422});
+    assert.notEqual((await lab.detail(user, id)).lead.follow_up_status, 'Met', 'the refusal left the record alone');
+    assert.equal((await lab.advisor.scoreboard(user, {})).meetings.held, 0);
+
+    // With a booking outstanding it is accepted, and only once.
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'real'});
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'attended'});
+    d = await lab.advisor.detail(user, id);
+    await assert.rejects(lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'attended-twice'}), {status: 422},
+      'the booking is spent; a second attendance needs a second booking');
+  } finally { await db.close(); }
+});
+
+test('one prospect’s extra outcome cannot hide another’s unresolved meeting', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    // A: books, does not appear, is rebooked, then attends — two outcomes
+    // against two bookings, and a global subtraction would leave a surplus.
+    let d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'a1'});
+    await db.query(`UPDATE advisor_activities SET next_at='2026-09-20T14:00:00Z' WHERE idempotency_key='a1'`);
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'no_show', channel: 'phone', next_at: '2026-09-26T14:00:00Z',
+      signature: d.action.signature, idempotency_key: 'a2'});
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-27T14:00:00Z', signature: d.action.signature, idempotency_key: 'a3'});
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'a4'});
+
+    // B: a booking whose time has passed with nothing recorded against it.
+    await db.query(`INSERT INTO discovery_leads(id,team,owner_user_id,owner_email,payload,created_at)
+      VALUES('b','wealth-management',$1,$2,$3,'2026-09-22T09:00:00Z')`,
+      [user.uid, user.email, JSON.stringify({first_name: 'Sam', last_name: 'Ortiz', company: 'Example Co'})]);
+    await db.query(`INSERT INTO advisor_activities(id,lead_id,user_id,idempotency_key,outcome,next_at,created_at)
+      VALUES('b1','b',$1,'b1','meeting_booked','2026-09-22T14:00:00Z','2026-09-22T10:00:00Z')`, [user.uid]);
+
+    const board = await lab.advisor.scoreboard(user, {days: 30});
+    assert.equal(board.meetings.awaiting_outcome, 1,
+      'B’s unresolved meeting survives A’s surplus of outcomes over due bookings');
+    assert.match(board.meetings.note, /1 meeting passed without/);
+  } finally { await db.close(); }
+});
+
+test('meeting rates are dated by the meeting, not by when the prospect arrived', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    // Added long before the window; the meeting happens inside it.
+    await db.query(`UPDATE discovery_leads SET created_at='2026-06-01T09:00:00Z' WHERE id=$1`, [id]);
+    let d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'old-lead'});
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'held-now'});
+
+    const board = await lab.advisor.scoreboard(user, {days: 30});
+    assert.equal(board.measured.find(m => m.id === 'show_rate').value, 100,
+      'a meeting held yesterday belongs in this window whenever the person arrived');
+    assert.equal(board.meetings.held, 1);
+    // The cohort measures still describe only the prospects added in the window.
+    assert.equal(board.added, 0, 'nobody was added inside the window');
+    assert.equal(board.measured.find(m => m.id === 'reply_rate').value, null);
+    // And each rate says which population it came from.
+    assert.equal(board.measured.find(m => m.id === 'show_rate').scope, 'activity');
+    assert.equal(board.measured.find(m => m.id === 'first_touch_sla').scope, 'cohort');
+    assert.ok(board.scopes.cohort && board.scopes.activity);
+    // A meeting outside the window is not counted in it.
+    assert.equal((await lab.advisor.scoreboard(user, {days: 1})).meetings.held, 1);
+    await db.query(`UPDATE advisor_activities SET created_at='2026-06-02T10:00:00Z' WHERE idempotency_key='held-now'`);
+    assert.equal((await lab.advisor.scoreboard(user, {days: 30})).meetings.held, 0);
+  } finally { await db.close(); }
+});
+
+// --- the daily dial budget -----------------------------------------------------
+// Carriers judge behaviour, not intent. A number labelled "Spam Likely" ends the
+// channel for the whole list, so the cap is the cheapest protection available.
+
+test('dials are counted in the advisor’s own day, not UTC', () => {
+  const dial = (minutesAgo, at = now) => ({outcome: 'no_answer', channel: 'phone',
+    created_at: new Date(at.getTime() - minutesAgo * 60000).toISOString()});
+  const budget = dialBudget([dial(0), dial(30), dial(60)], {now});
+  assert.equal(budget.placed, 3);
+  assert.equal(budget.remaining, DIAL_CAP - 3);
+  assert.equal(budget.spent, false);
+  // Email and LinkedIn are not dials.
+  assert.equal(dialBudget([{outcome: 'no_answer', channel: 'email', created_at: now.toISOString()}], {now}).placed, 0);
+  // Yesterday does not count against today.
+  assert.equal(dialBudget([dial(60 * 30)], {now}).placed, 0);
+
+  const full = dialBudget(Array.from({length: DIAL_CAP}, (_, i) => dial(i)), {now});
+  assert.equal(full.spent, true);
+  assert.equal(full.remaining, 0);
+  assert.match(full.reason, /reaches the daily limit of 60/);
+
+  // 22:00 Thursday in Los Angeles is already Friday in UTC. Rolling the budget
+  // at UTC midnight would hand one working evening a second allowance.
+  const evening = new Date('2026-09-25T05:00:00Z');
+  assert.equal(dialBudget([dial(0, evening)], {now: evening, zone: 'America/Los_Angeles'}).placed, 1);
+  assert.equal(dialBudget([dial(0, evening)], {now: evening, zone: 'UTC'}).placed, 1);
+  // 23:00Z on the 24th: a different UTC day from 05:00Z on the 25th, but the
+  // same working afternoon in Los Angeles.
+  assert.equal(dialBudget([dial(60 * 6, evening)], {now: evening, zone: 'UTC'}).placed, 0,
+    'in UTC that dial was yesterday');
+  assert.equal(dialBudget([dial(60 * 6, evening)], {now: evening, zone: 'America/Los_Angeles'}).placed, 1,
+    'in the advisor’s day it was this afternoon, and spends the same budget');
+  // An unusable zone falls back rather than throwing.
+  assert.equal(dialBudget([dial(0)], {now, zone: 'Not/AZone'}).placed, 1);
+});
+
+test('a spent dial budget holds the call without holding up the email', () => {
+  const spent = {placed: DIAL_CAP, cap: DIAL_CAP, remaining: 0, spent: true, reason: '60 dials today reaches the daily limit of 60.'};
+  // Days 1 and 2 done, so the call is what is due.
+  const beforeCall = [touch(4, {step: 'opener'}), touch(3, {step: 'connect', channel: 'linkedin'})];
+  const held = cadenceState({lead, now, activities: beforeCall, dials: spent});
+  assert.equal(held.step.channel, 'phone');
+  assert.equal(held.status, 'hold');
+  assert.equal(held.step.ready, false);
+  assert.match(held.reason, /daily limit of 60/);
+  assert.equal(held.dials.spent, true);
+  // The same prospect on an email step is unaffected.
+  assert.equal(cadenceState({lead, now, activities: [], dials: spent}).status, 'ready');
+  // And a dial that happened is still recorded: the app did not place it.
+  assert.equal(admitTouch(held, {channel: 'phone', now}).ok, true);
+  // With budget left the call is ready again.
+  assert.equal(cadenceState({lead, now, activities: beforeCall,
+    dials: {...spent, placed: 10, remaining: 50, spent: false}}).status, 'ready');
+});
+
+test('the worklist reports one budget for the line, and the profile sets its day', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    let work = await lab.advisor.worklist(user, {});
+    assert.equal(work.dials.placed, 0);
+    assert.equal(work.dials.remaining, DIAL_CAP);
+    assert.equal(work.dials.zone, 'UTC', 'an unset profile still has a day boundary');
+
+    const d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'no_answer', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'dial-1'});
+    work = await lab.advisor.worklist(user, {});
+    assert.equal(work.dials.placed, 1, 'the budget is the line’s, counted across every prospect');
+    assert.equal((await lab.advisor.detail(user, id)).cadence.dials.placed, 1);
+
+    const saved = await lab.advisor.saveProfile(user, {display_name: 'Dana', time_zone: 'America/New_York'});
+    assert.equal(saved.time_zone, 'America/New_York');
+    assert.equal((await lab.advisor.dialsToday(user)).zone, 'America/New_York');
+    // A zone the runtime cannot use would move the boundary silently, so it is
+    // refused in favour of the working one rather than resetting the day to UTC.
+    assert.equal((await lab.advisor.saveProfile(user, {time_zone: 'Mars/Olympus'})).time_zone, 'America/New_York');
+    // With nothing usable ever stored, UTC is still the fallback.
+    assert.equal((await lab.advisor.saveProfile({uid: 'fresh', email: 'fresh@example.com'},
+      {time_zone: 'Mars/Olympus'})).time_zone, 'UTC');
+    // Another advisor's dials are not on this line.
+    assert.equal((await lab.advisor.dialsToday({uid: 'other', email: 'other@example.com'})).placed, 0);
+  } finally { await db.close(); }
+});
+
+// --- raised in review on the dial budget ---------------------------------------
+
+test('a due follow-up on hold does not head the list of things you can do', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    // Walk to the phone step. Each unanswered touch sets follow_up_date, so by
+    // the call the saved date has arrived and the due branch would otherwise win.
+    for (const [n, channel] of [[1, 'email'], [2, 'linkedin']]) {
+      const d = await lab.advisor.detail(user, id);
+      await lab.advisor.save(user, id, {outcome: 'no_answer', channel,
+        signature: d.action.signature, idempotency_key: 'step-' + n});
+    }
+    // Backdate the sequence so day 4 has genuinely arrived. The saved follow-up
+    // date is the step's own due date, so in practice the two agree — the point
+    // of the finding is that the saved date was being read first.
+    await db.query(`UPDATE advisor_activities SET created_at='2026-09-20T10:00:00Z' WHERE idempotency_key='step-1'`);
+    await db.query(`UPDATE advisor_activities SET created_at='2026-09-21T10:00:00Z' WHERE idempotency_key='step-2'`);
+    await db.query(`UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{follow_up_date}','"2026-09-23T10:00:00Z"')::text WHERE id=$1`, [id]);
+    let d = await lab.advisor.detail(user, id);
+    assert.equal(d.cadence.step.channel, 'phone');
+    assert.equal(d.action.bucket, 'due');
+    assert.equal(d.action.rank, 0, 'with budget left the call is ordinary due work');
+
+    // Spend the day's dials on a different prospect: the budget belongs to the
+    // line, and piling them onto this one would trip the 45-day cap instead.
+    await db.query(`INSERT INTO discovery_leads(id,team,owner_user_id,owner_email,payload,created_at)
+      VALUES('other','wealth-management',$1,$2,$3,$4)`,
+      [user.uid, user.email, JSON.stringify({first_name: 'Sam', last_name: 'Ortiz', company: 'Example Co'}), now.toISOString()]);
+    await db.query(`INSERT INTO advisor_activities(id,lead_id,user_id,idempotency_key,outcome,channel,created_at)
+      SELECT 'bulk-'||n,'other',$1,'bulk-'||n,'no_answer','phone',$2::timestamptz FROM generate_series(1,${DIAL_CAP}) n`,
+      [user.uid, now.toISOString()]);
+    d = await lab.advisor.detail(user, id);
+    assert.equal(d.cadence.dials.spent, true);
+    assert.equal(d.action.bucket, 'due', 'it is still due — the prospect is owed a call');
+    assert.equal(d.action.held, true);
+    assert.ok(d.action.rank > 0, 'but it no longer outranks work that can be done now');
+    assert.match(d.action.reason, /daily limit/);
+    assert.equal(d.action.label, 'Follow-up due, on hold');
+  } finally { await db.close(); }
+});
+
+test('a dial counts against the line however the call ended', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    const d = await lab.advisor.detail(user, id);
+    // "Not interested" is not a touch for the 45-day cap, but it was a dial.
+    await lab.advisor.save(user, id, {outcome: 'not_interested', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'rejected'});
+    const dials = await lab.advisor.dialsToday(user);
+    assert.equal(dials.placed, 1, 'a call that ended in rejection still put volume on the number');
+    // And it is still not a touch against the contact limit.
+    assert.equal(touchWindow([{outcome: 'not_interested', channel: 'phone', created_at: now.toISOString()}], {now}).count, 0);
+  } finally { await db.close(); }
+});
+
+// --- raised in review on the merge to main -------------------------------------
+
+test('a meeting is counted in the window it happened in, not the one it was logged in', async () => {
+  // An advisor who writes up the week's meetings on Friday should not move them
+  // into Friday's window. Both directions are wrong: an old meeting recorded
+  // today would inflate the current show rate, and a meeting inside the window
+  // recorded after it closed would vanish from the period it belongs to.
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    let d = await lab.advisor.detail(user, id);
+    // Booked for a time 40 days ago. The save has to take a future date, so the
+    // meeting time is moved back afterwards, as the other meeting tests do.
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'stale-meeting'});
+    await db.query(`UPDATE advisor_activities SET next_at='2026-08-15T14:00:00Z' WHERE idempotency_key='stale-meeting'`);
+    d = await lab.advisor.detail(user, id);
+    // Recorded today, six weeks after it happened.
+    await lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'written-up-late'});
+
+    const thirty = await lab.advisor.scoreboard(user, {days: 30});
+    assert.equal(thirty.meetings.held, 0,
+      'a meeting held six weeks ago is not part of the last thirty days because the note was typed today');
+    assert.equal(thirty.measured.find(m => m.id === 'show_rate').value, null);
+    // Widen the window past the meeting itself and it appears.
+    const sixty = await lab.advisor.scoreboard(user, {days: 60});
+    assert.equal(sixty.meetings.held, 1);
+    assert.equal(sixty.measured.find(m => m.id === 'show_rate').value, 100);
+    // The booking's own time is what places it, so the unresolved count and the
+    // show rate are drawn from the same clock and cannot disagree.
+    assert.equal(sixty.meetings.awaiting_outcome, 0);
+    assert.equal(thirty.meetings.awaiting_outcome, 0,
+      'a meeting outside the window is neither held in it nor outstanding in it');
+  } finally { await db.close(); }
+});
+
+test('a no-show is dated by the meeting that was missed, not by its replacement', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    let d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'missed'});
+    await db.query(`UPDATE advisor_activities SET next_at='2026-08-10T14:00:00Z' WHERE idempotency_key='missed'`);
+    d = await lab.advisor.detail(user, id);
+    // The replacement is inside the thirty-day window. The missed meeting is not,
+    // and it is the missed meeting this outcome describes.
+    await lab.advisor.save(user, id, {outcome: 'no_show', channel: 'phone', next_at: '2026-09-30T14:00:00Z',
+      signature: d.action.signature, idempotency_key: 'absent'});
+
+    assert.equal((await lab.advisor.scoreboard(user, {days: 30})).meetings.no_shows, 0);
+    assert.equal((await lab.advisor.scoreboard(user, {days: 60})).meetings.no_shows, 1);
+  } finally { await db.close(); }
+});
+
+test('the browser can correct a stored time zone without wiping the rest of the profile', async () => {
+  // The profile field is readonly by design -- nobody types an IANA zone -- so
+  // if a saved zone won a tie against the browser, an advisor who moved could
+  // never fix it and the dial allowance would keep rolling over on the old day.
+  // The page reconciles it on load, which means a one-field write must leave the
+  // four typed fields alone.
+  const {db, lab, user} = await fixture();
+  try {
+    await lab.advisor.saveProfile(user, {display_name: 'Dana Reyes', firm: 'Northline Advisors',
+      phone: '+15165550101', metro: 'Long Island', time_zone: 'America/New_York'});
+    const moved = await lab.advisor.saveProfile(user, {time_zone: 'America/Denver'});
+    assert.equal(moved.time_zone, 'America/Denver');
+    assert.equal(moved.name, 'Dana Reyes', 'a zone correction is not a request to blank the signature');
+    assert.equal(moved.firm, 'Northline Advisors');
+    assert.equal(moved.phone, '+15165550101');
+    assert.equal(moved.metro, 'Long Island');
+    // The dial day follows the corrected zone immediately.
+    assert.match((await lab.advisor.dialsToday(user)).reason, /\d/);
+    // A zone the runtime cannot use leaves the working one in place rather than
+    // silently moving the day boundary to UTC.
+    assert.equal((await lab.advisor.saveProfile(user, {time_zone: 'Mars/Olympus'})).time_zone, 'America/Denver');
+    assert.equal((await lab.advisor.saveProfile(user, {time_zone: ''})).time_zone, 'America/Denver');
+    // The details form still sends every field, and an emptied field still clears.
+    const cleared = await lab.advisor.saveProfile(user, {display_name: '', firm: '', phone: '', metro: '',
+      time_zone: 'America/Denver'});
+    assert.equal(cleared.firm, '');
+    assert.equal(cleared.time_zone, 'America/Denver', 'clearing the typed fields is not a request to reset the zone');
+    assert.equal((await db.query('SELECT count(*)::int AS n FROM advisor_profiles')).rows[0].n, 1);
+  } finally { await db.close(); }
+});
+
+test('only a first conversation can lead to a second, and the window is the first meeting’s', async () => {
+  // Dating by the meeting makes the label true: the figure asks what share of
+  // first conversations produced another. A prospect first met months ago is not
+  // a new first conversation because they were met again this month -- counting
+  // them would quietly measure second-to-third and report it as discovery.
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    let d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'b1'});
+    await db.query(`UPDATE advisor_activities SET next_at='2026-08-01T14:00:00Z' WHERE idempotency_key='b1'`);
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'h1'});
+    await db.query(`UPDATE advisor_activities SET created_at='2026-08-01T15:00:00Z' WHERE idempotency_key='h1'`);
+    // A second meeting, inside the thirty-day window.
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'b2'});
+    await db.query(`UPDATE advisor_activities SET next_at='2026-09-20T14:00:00Z' WHERE idempotency_key='b2'`);
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'h2'});
+
+    const thirty = await lab.advisor.scoreboard(user, {days: 30});
+    // The second meeting is a meeting held in the window and counts as one.
+    assert.equal(thirty.meetings.held, 1);
+    assert.equal(thirty.measured.find(m => m.id === 'show_rate').value, 100);
+    // It is not a first conversation, so it is not in this rate either way.
+    assert.equal(thirty.measured.find(m => m.id === 'second_meeting').value, null);
+    // Widen the window to reach the first conversation and it is measured, and
+    // it did lead to a second.
+    const ninety = await lab.advisor.scoreboard(user, {days: 90});
+    assert.equal(ninety.meetings.held, 2);
+    assert.equal(ninety.measured.find(m => m.id === 'second_meeting').value, 100);
+    assert.match(ninety.measured.find(m => m.id === 'second_meeting').basis, /1 of 1 prospects you have met/);
   } finally { await db.close(); }
 });

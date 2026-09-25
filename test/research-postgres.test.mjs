@@ -29,7 +29,7 @@ test('PostgreSQL serializes a new review behind an in-flight assessment',{
  }};
  try{
   await admin.query(`CREATE SCHEMA ${schema}`);
-  for(const file of ['generated/schema.sql','migrations/006-research-lab.sql','migrations/007-quality-v2.sql','migrations/012-plan-catalog-summary.sql','migrations/008-prospect-workspace.sql','migrations/013-advisor-workflow.sql','migrations/014-outreach-cadence.sql'])await pool.query(readFileSync(new URL('../'+file,import.meta.url),'utf8'));
+  for(const file of ['generated/schema.sql','migrations/006-research-lab.sql','migrations/007-quality-v2.sql','migrations/012-plan-catalog-summary.sql','migrations/008-prospect-workspace.sql','migrations/013-advisor-workflow.sql','migrations/014-outreach-cadence.sql', 'migrations/015-dial-budget.sql'])await pool.query(readFileSync(new URL('../'+file,import.meta.url),'utf8'));
   const lab=createResearchLab({pool:wrapper,sources:{readiness:{},quote:()=>0}}),user={uid:'synthetic',email:'synthetic@example.com'};
   await lab.importCSV(user,{csv:'First Name,Last Name,Company,Estimated Age Range,Country\nJamie,Rivera,Example Manufacturing,62,US'});
   const row=(await pool.query('SELECT id,payload FROM discovery_leads')).rows[0],lead={...JSON.parse(row.payload),id:row.id};

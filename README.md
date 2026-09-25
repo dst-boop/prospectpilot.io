@@ -60,6 +60,21 @@ Two sequences ship, as data in `outreach-cadence.mjs`: a six-touch priority plan
 over fourteen days across three channels, and a four-email nurture plan over six
 weeks. Editing the plan is an edit to that table.
 
+**Sixty dials a day from one line.** Carriers judge behaviour, not intent:
+volume from a single number, short calls and repeated redials are what earn a
+"Spam Likely" label, and a labelled number ends the channel for the whole list,
+not just today's calls. Every dial counts, however the call ended — a call that finished in "not
+interested" still put volume on the number, which is what a carrier measures.
+When the budget is spent the worklist stops offering phone steps and says why,
+including a follow-up whose saved time has arrived: it stays due, because the
+prospect is owed the call, but it no longer heads a list of work that can
+actually be done. Email and connection requests are unaffected. The day
+rolls over in **your** timezone, read from your browser and reconciled every time
+the workspace loads — at UTC midnight it would reset at 5pm on the west coast and
+hand one working afternoon two allowances. Nobody types an IANA zone name, so if
+you move, the page corrects it rather than asking; a zone the server cannot use
+leaves the working one in place instead of quietly resetting your day to UTC.
+
 Calling hours are 8am-9pm local to the prospect's state, and a state spanning
 two zones is judged in both - if it is 7am anywhere in the state it is too early
 for the state. A prospect with no recorded state is not shown as ready to dial.
@@ -67,14 +82,46 @@ The window is reported, not enforced against the log: this application does not
 place calls, so refusing to record one that happened would lose the touch from
 the budget that governs the next six.
 
+**A booked meeting is an intention; whether it happened is a separate fact.**
+Record **Met** or **No-show** against it — and only against a meeting that was
+actually booked, since attendance is an outcome of something. A no-show settles
+the meeting that was missed and arranges its replacement, so it carries a
+required new time and leaves one meeting outstanding. A no-show needs a new time, because
+otherwise the prospect quietly falls out of the worklist. A held meeting counts
+as engagement and restarts the touch budget; a no-show does not, since they
+agreed and did not appear, so what follows is outreach again and is paced like
+it. When a meeting is what is next, the brief opens with the five discovery
+questions rather than the evidence prompts.
+
 **Pacing is only as good as the logging.** A touch nobody recorded is invisible
-to the limit and to the scoreboard. `GET /api/lab/scoreboard` reports first-touch
-service level, response rate and meetings booked per 100 prospects worked, and
-names the two metrics it cannot report - whether a booked meeting was held, and
-whether a first conversation led to a second - rather than estimating them.
+to the limit and to the scoreboard. `GET /api/lab/scoreboard`, shown on the
+workspace under **Your funnel**, reports all five measurements: first-touch
+service level, response rate, meetings booked per 100 prospects worked, the
+share of booked meetings that were held, and first conversations that led to a
+second.
+
+The first three measure the prospects **added** in the window; the meeting rates
+measure the meetings that **happened** in it, whoever they were with. The page
+says which under each figure, because one label reading "last 30 days" over both
+would mean two different things at once.
+
+A meeting is dated by the meeting, not by the note. Writing up the week on Friday
+would otherwise pull Tuesday's meetings into Friday's window: a meeting held six
+weeks ago and recorded today would appear in the last thirty days, and one held
+inside the window but recorded after it closed would disappear from the period it
+belongs to. Each recorded attendance is placed at the latest booked time that had
+already passed when it was logged, so the show rate and the count of meetings
+still awaiting an outcome are read from the same clock and cannot disagree.
+
+Each rate names what it could not count instead of letting it improve the
+number. A prospect added and never touched past its deadline counts against the
+service level; a meeting whose time passed with neither Met nor No-show recorded
+is reported as **awaiting outcome** and counts as neither held nor missed. A
+rate with nothing behind it reads as unmeasured, not as zero.
 
 Requires migration **014**, which adds the channel and sequence step to logged
-activity, the rest-period table, and the advisor profile used to sign drafts.
+activity, the rest-period table, and the advisor profile used to sign drafts, and
+**015**, which adds the timezone that the daily dial limit rolls over in.
 
 **A verified quality lead must meet all five reviewed criteria:** age 45–73 inclusive, US residence, retained retirement assets with an eligible distribution or IRA transfer, an identified phone/email/LinkedIn contact route, and a disclosed net-worth lower bound of at least $250,000 excluding the home and net of liabilities.
 

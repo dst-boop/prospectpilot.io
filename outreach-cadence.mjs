@@ -24,11 +24,14 @@ const DAY = 86400000;
 // Outcomes that represent a contact attempt. `reopen` is an administrative
 // action and is deliberately absent: reopening a record is not a touch, and
 // counting it would let the cap be consumed without anyone being approached.
-export const TOUCH_OUTCOMES = new Set(['no_answer', 'connected', 'follow_up', 'meeting_booked']);
+export const TOUCH_OUTCOMES = new Set(['no_answer', 'connected', 'follow_up', 'meeting_booked', 'meeting_held', 'no_show']);
 // Outcomes that mean the person responded. The sequence stops here: continuing
 // a scripted cadence at someone who already answered is the most common way a
 // good conversation is lost.
-export const ENGAGED_OUTCOMES = new Set(['connected', 'follow_up', 'meeting_booked']);
+// A meeting that was held is the strongest of these. A no-show is not: the
+// person agreed and did not appear, so the approach that follows is outreach
+// again and is paced like it.
+export const ENGAGED_OUTCOMES = new Set(['connected', 'follow_up', 'meeting_booked', 'meeting_held']);
 export const CHANNELS = new Set(['email', 'phone', 'linkedin']);
 
 // A sequence is data, so changing the plan is an edit to this table rather than
@@ -110,6 +113,12 @@ export function callWindow(state, now = new Date()) {
 // new Date(null) is the epoch, not an invalid date, so a missing timestamp would
 // otherwise read as 1 January 1970 — a lead never touched would look touched,
 // and comfortably inside every service level.
+// Dials per line per day. Carriers judge behaviour, not intent: volume from one
+// number, short calls, repeated redials and low answer rates are what earn a
+// "Spam Likely" label, and a labelled number ends the channel for every prospect
+// on the list, not just today's. The cap is the cheapest protection there is.
+export const DIAL_CAP = 60;
+
 const time = value => {
   if (value === null || value === undefined || value === '') return null;
   const d = new Date(value);
@@ -118,6 +127,22 @@ const time = value => {
 const attempts = activities => activities
   .filter(a => TOUCH_OUTCOMES.has(a.outcome) && time(a.created_at))
   .sort((a, b) => time(a.created_at) - time(b.created_at));
+
+/**
+ * Dials already placed today, and how many the line has left.
+ *
+ * Counted in the advisor's own day, not UTC: a cap that rolls over mid-evening
+ * would let an advisor on the west coast spend two budgets in one sitting.
+ */
+export function dialBudget(activities = [], {now = new Date(), cap = DIAL_CAP, zone = 'UTC'} = {}) {
+  const day = at => { try { return new Intl.DateTimeFormat('en-CA', {timeZone: zone}).format(at); } catch { return at.toISOString().slice(0, 10); } };
+  const today = day(now);
+  const placed = attempts(activities).filter(a => a.channel === 'phone' && day(time(a.created_at)) === today).length;
+  return {placed, cap, remaining: Math.max(0, cap - placed), spent: placed >= cap, zone, day: today,
+    reason: placed >= cap
+      ? `${placed} dials today reaches the daily limit of ${cap}. More volume from one number is what gets it labelled.`
+      : `${placed} of ${cap} dials placed today.`};
+}
 
 /** Contact attempts inside the rolling window, and when the oldest one leaves it. */
 export function touchWindow(activities = [], {now = new Date(), windowDays = WINDOW_DAYS} = {}) {
@@ -185,7 +210,8 @@ export function cycleStart(activities = [], rest = null, now = new Date()) {
  *   hold      the next step is scheduled, or its calling window is shut
  *   ready     the next touch is due now
  */
-export function cadenceState({activities = [], lead = {}, quality = null, rest = null, sequence = 'priority', now = new Date()} = {}) {
+export function cadenceState({activities = [], lead = {}, quality = null, rest = null, sequence = 'priority',
+  now = new Date(), dials = null} = {}) {
   const plan = sequencePlan(sequence);
   // Only this cycle counts. A response or a completed rest closes the previous
   // one, so neither an old sequence nor a spent budget follows someone forever.
@@ -196,7 +222,7 @@ export function cadenceState({activities = [], lead = {}, quality = null, rest =
   const progress = sequenceProgress(current, plan, {now});
   const state = String(lead.state ?? '').trim().toUpperCase();
   const base = {version: CADENCE_VERSION, sequence: plan.id, label: plan.label, touches: window, progress,
-    resume_at: null, call_window: null, step: null};
+    resume_at: null, call_window: null, dials: dials || null, step: null};
 
   // Order matters. A restriction outranks every schedule below it, and this
   // module must never be the reason a suppressed record is contacted.
@@ -223,12 +249,16 @@ export function cadenceState({activities = [], lead = {}, quality = null, rest =
 
   const step = progress.step;
   const call = step.channel === 'phone' ? callWindow(state, now) : null;
-  const ready = step.due && (!call || call.open);
-  return {...base, status: ready ? 'ready' : 'hold', allowed: true, call_window: call,
-    step: {...step, ready, hold: ready ? null : !step.due ? `Scheduled for ${step.due_at.slice(0, 10)}.` : call.reason},
+  // The day's dial budget holds a call the same way the calling window does:
+  // it stops the worklist offering more phone work, and never touches email.
+  const overDialled = step.channel === 'phone' && dials?.spent === true;
+  const ready = step.due && (!call || call.open) && !overDialled;
+  const hold = !step.due ? `Scheduled for ${step.due_at.slice(0, 10)}.` : overDialled ? dials.reason : call?.reason || null;
+  return {...base, status: ready ? 'ready' : 'hold', allowed: true, call_window: call, dials: dials || null,
+    step: {...step, ready, hold: ready ? null : hold},
     reason: ready
       ? `Touch ${progress.completed + 1} of ${plan.steps.length}: ${step.label.toLowerCase()}. ${window.remaining} of ${MAX_TOUCHES} touches left in this window.`
-      : !step.due ? `Next touch is ${step.label.toLowerCase()} on ${step.due_at.slice(0, 10)}.` : call.reason};
+      : !step.due ? `Next touch is ${step.label.toLowerCase()} on ${step.due_at.slice(0, 10)}.` : hold};
 }
 
 /**

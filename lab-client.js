@@ -90,7 +90,18 @@ $('detail').addEventListener('close',()=>{leadDetailVersion++;current=null;$('sa
 $('runDialog').addEventListener('close',()=>{runDetailVersion++;});
 document.querySelectorAll('[data-close]').forEach(e=>e.onclick=()=>$(e.dataset.close).close());
 document.addEventListener('visibilitychange',()=>{if(document.hidden){clearTimeout(pollTimer);}else refresh(false);});
-async function init(){try{const [me,settings,sources]=await Promise.all([request('/api/me'),request('/api/lab/settings'),request('/api/lab/sources')]);$('account').textContent=me.name||me.email;readSettings(settings);sourceReadiness=sources.readiness;const searchOption=document.querySelector('input[name="source"][value="web_search"]');searchOption.disabled=!sourceReadiness.web_search;if(searchOption.disabled)searchOption.checked=false;$('searchReadiness').textContent=sources.readiness.web_search?'Licensed search: '+(Number(sources.readiness.web_search_query_cost_micros)/1000000).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:6})+' per query, at most one query per employer. The daily budget is enforced before each request.':'Licensed web search is unavailable and has been deselected. Free company research and authorized CSV imports remain available.';$('sourceCatalog').innerHTML=sources.sources.map(s=>`<div class="source-card"><h3>${esc(s.name)} ${badge(s.mode)}</h3><p>${esc(s.supports)}</p><p>${esc(s.limit)}</p>${s.url?link(s.url,'Source information'):''}</div>`).join('');await refresh();}catch(e){notice(e.message,true);}}
+// The daily dial limit rolls over in the advisor's own day, and the browser is
+// the only thing here that knows which day that is. Reconciled on every load so
+// an advisor who moves is corrected without being asked, and without having to
+// find a setting: the field is detected, not typed. Failure is silent because
+// nothing the advisor did caused it and the stored zone still works.
+async function syncTimeZone(){
+  const detected=Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if(!detected)return;
+  const stored=(await request('/api/lab/advisor-profile')).time_zone;
+  if(stored!==detected)await request('/api/lab/advisor-profile',{method:'POST',body:JSON.stringify({time_zone:detected})});
+}
+async function init(){try{const [me,settings,sources]=await Promise.all([request('/api/me'),request('/api/lab/settings'),request('/api/lab/sources')]);$('account').textContent=me.name||me.email;readSettings(settings);sourceReadiness=sources.readiness;const searchOption=document.querySelector('input[name="source"][value="web_search"]');searchOption.disabled=!sourceReadiness.web_search;if(searchOption.disabled)searchOption.checked=false;$('searchReadiness').textContent=sources.readiness.web_search?'Licensed search: '+(Number(sources.readiness.web_search_query_cost_micros)/1000000).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:6})+' per query, at most one query per employer. The daily budget is enforced before each request.':'Licensed web search is unavailable and has been deselected. Free company research and authorized CSV imports remain available.';$('sourceCatalog').innerHTML=sources.sources.map(s=>`<div class="source-card"><h3>${esc(s.name)} ${badge(s.mode)}</h3><p>${esc(s.supports)}</p><p>${esc(s.limit)}</p>${s.url?link(s.url,'Source information'):''}</div>`).join('');await syncTimeZone().catch(()=>{});await refresh();}catch(e){notice(e.message,true);}}
 async function loadActivity(id,version,reset=true){try{const data=await request('/api/lab/leads/'+encodeURIComponent(id)+'/activity');if(version!==leadDetailVersion)return;currentWorkflow=data;$('activityForm').hidden=false;if(reset)prepareActivity();else renderConversation();}catch(e){if(version===leadDetailVersion){$('activityForm').hidden=true;$('conversationBrief').textContent='The activity record could not load. Close and reopen to retry. '+e.message;}}}
 let workOffset=0,workTotal=0,workRequest=0,currentWorkflow=null,activityKey='',activitySaving=false;
 const workSelected=new Set();
@@ -100,7 +111,9 @@ function selectionLabel(){$('workSelection').textContent=`${workSelected.size} s
 async function loadWorklist(){
   const serial=++workRequest;const data=await request('/api/lab/worklist?'+new URLSearchParams({view:$('workView').value,search:$('workSearch').value,offset:workOffset,limit:24}));if(serial!==workRequest)return;
   if(workOffset>0&&workOffset>=data.total){workOffset=0;return loadWorklist();}
+  loadScoreboard().catch(()=>{});
   workTotal=data.total;$('workDue').textContent=num(data.counts.due);$('workReady').textContent=num(data.counts.ready);$('workConversations').textContent=num(data.activity.conversations);$('workMeetings').textContent=num(data.activity.meetings);
+  if(data.dials){$('workDials').textContent=num(data.dials.remaining);$('workDialsNote').textContent=data.dials.reason;}
   const [emptyTitle,emptyBody]=emptyMessages[$('workView').value];
   $('workList').innerHTML=data.items.length?data.items.map(({lead:l,quality:q,action:a})=>`<article class="work-card"><label class="select-lead"><input type="checkbox" data-work-select="${esc(l.id)}" aria-label="Select ${esc(l.first_name)} ${esc(l.last_name)} for enrichment" ${workSelected.has(l.id)?'checked':''} ${a.bucket==='closed'?'disabled':''}></label><div><button class="person-button" data-work-open="${esc(l.id)}">${esc(l.first_name)} ${esc(l.last_name)}</button><p class="muted">${esc(l.current_title||'Title unknown')} · ${esc(l.company||'Employer unknown')}</p>${l.location?`<p class="muted">${esc(l.location)}</p>`:''}${badge(q.status)} <span class="muted">${Object.values(q.gates).filter(g=>g.state==='confirmed').length}/5 criteria reviewed</span></div><div class="work-reason"><p class="next-step">${esc(a.label)}</p><p class="muted">${esc(a.reason)}</p>${a.due_at?`<p class="due-label">${esc(when(a.due_at))}</p>`:''}${a.cadence?`<p class="muted">${esc(a.cadence.touches.count)}/${esc(a.cadence.touches.cap)} touches · ${esc(a.cadence.step?a.cadence.step.label:a.cadence.status)}</p>`:''}${l.notes?`<p class="muted">Last note: ${esc(l.notes.split('\n').filter(Boolean).at(-1)?.slice(0,240))}</p>`:''}</div><button class="secondary work-open" data-work-open="${esc(l.id)}">Open brief</button></article>`).join(''):`<div class="work-empty"><h3>${esc($('workSearch').value?'No matching prospects.':emptyTitle)}</h3><p class="muted">${esc($('workSearch').value?'Try a different full name or employer.':emptyBody)}</p></div>`;
   document.querySelectorAll('[data-work-open]').forEach(e=>e.onclick=()=>openLead(e.dataset.workOpen));
@@ -110,12 +123,31 @@ async function loadWorklist(){
 }
 function renderConversation(){
   const a=currentWorkflow.action,q=current.quality;
+  const discovery=['Walk me through where your retirement savings live today — current plan, any former employer plans, IRAs, anything else.',
+    'When you left a previous employer, what did you decide to do with that plan — or is it still sitting there?',
+    'What does retirement look like for you — age, lifestyle, anything you are already planning around?',
+    'Have you worked with an advisor before? What worked, and what did not?',
+    'If we found something worth fixing, what would you want to happen next?'];
   const questions={age:'What is your current age?',residence:'Which state do you currently live in?',retirement:'Do you still have a retirement account from a previous employer, or another retirement account you would like reviewed?',contact:'What is the best way to contact you for an agreed follow-up?',net_worth:'If you want a planning review, would you be comfortable sharing an authorized financial summary?'};
-  $('conversationBrief').innerHTML=`<p><strong>${esc(a.label)}</strong></p><p>${esc(a.reason)}</p>${a.due_at?`<p>Saved time: <strong>${esc(when(a.due_at))}</strong></p>`:''}${cadenceLine(currentWorkflow.cadence)}<p>${q.status==='verified'?'All five criteria have reviewed evidence. Ask about goals and whether the person wants help; qualification is not a recommendation to transfer assets.':'Still to establish: '+esc(q.gaps.map(k=>labels[k]).join(' · '))+'.'}</p>`+(a.bucket==='closed'?'':`<details><summary>Questions for an appropriate conversation</summary><ul>${(q.gaps.length?q.gaps.map(g=>questions[g]):['What would you like to improve about your current retirement plan?','Would a 15-minute introduction be useful?']).map(v=>`<li>${esc(v)}</li>`).join('')}</ul><p>Answers do not verify a criterion until its evidence review is saved below.</p></details>`);
+  $('conversationBrief').innerHTML=`<p><strong>${esc(a.label)}</strong></p><p>${esc(a.reason)}</p>${a.due_at?`<p>Saved time: <strong>${esc(when(a.due_at))}</strong></p>`:''}${cadenceLine(currentWorkflow.cadence)}<p>${q.status==='verified'?'All five criteria have reviewed evidence. Ask about goals and whether the person wants help; qualification is not a recommendation to transfer assets.':'Still to establish: '+esc(q.gaps.map(k=>labels[k]).join(' · '))+'.'}</p>`+(a.bucket==='closed'?'':`<details${a.bucket==='meetings'?' open':''}><summary>${a.bucket==='meetings'?'Questions for the review':'Questions for an appropriate conversation'}</summary><ul>${(a.bucket==='meetings'?discovery:q.gaps.length?q.gaps.map(g=>questions[g]):['What would you like to improve about your current retirement plan?','Would a 15-minute introduction be useful?']).map(v=>`<li>${esc(v)}</li>`).join('')}</ul><p>${a.bucket==='meetings'?'All open-ended. Ask, then write down what you hear — answers do not verify a criterion until its evidence review is saved below.':'Answers do not verify a criterion until its evidence review is saved below.'}</p></details>`);
   renderDraft();
   $('contactActions').replaceChildren();const c=a.contact;
   if(c){const anchor=document.createElement('a');anchor.className='contact-link';anchor.textContent=c.channel==='phone'?`Call ${c.address}`:c.channel==='email'?`Email ${c.address}`:'Open reviewed LinkedIn profile';anchor.href=c.channel==='phone'?'tel:'+c.address:c.channel==='email'?'mailto:'+encodeURIComponent(c.address):safeURL(c.address);if(c.channel==='linkedin'){anchor.target='_blank';anchor.rel='noopener noreferrer';}$('contactActions').append(anchor);}else $('contactActions').textContent='No reviewed contact shortcut available. Review the contact evidence below.';
   $('activityHistory').innerHTML=(current.lead.notes?`<p class="existing-notes">${esc(current.lead.notes)}</p>`:'')+(currentWorkflow.activities.length?currentWorkflow.activities.map(a=>`<div class="activity-entry"><strong>${esc(title(a.outcome))}</strong> · ${esc(when(a.created_at))}<p>${esc(a.note)}</p>${a.next_at?`<small>Next: ${esc(when(a.next_at))}</small>`:''}</div>`).join(''):'<p>No outcomes recorded yet.</p>');
+}
+async function loadScoreboard(){
+  const b=await request('/api/lab/scoreboard?days=30');
+  // A rate with nothing in its denominator is not zero, it is unmeasured. Say
+  // so rather than printing a 0% nobody earned.
+  $('scoreboard').innerHTML=b.measured.map(m=>{
+    const unmet=m.value!==null&&m.value<m.target;
+    return `<article${unmet?'':' class="highlight"'}><span>${esc(m.label)}</span>`+
+      `<strong>${m.value===null?'—':esc(m.value)+(m.unit==='%'?'%':'')}</strong>`+
+      `<small>${m.value===null?'Nothing recorded yet':esc(m.basis)} · target ${esc(m.target)}${m.unit==='%'?'%':''}`+
+      `${b.scopes&&m.scope?' · '+esc(b.scopes[m.scope]):''}</small></article>`;
+  }).join('');
+  const gaps=[b.untouched?`${num(b.untouched)} prospect${b.untouched===1?'':'s'} added and never touched`:'',b.meetings.note].filter(Boolean);
+  $('scoreboardBasis').textContent=[b.basis,...gaps].join(' ');
 }
 function cadenceLine(c){
   if(!c)return '';
@@ -144,9 +176,14 @@ $('draftCopy').onclick=async()=>{
   try{await navigator.clipboard.writeText(text);$('draftCopied').textContent='Copied.';}
   catch{$('draftBody').select();$('draftCopied').textContent='Select the message and copy it.';}
 };
-function activityFields(){const outcome=$('activityOutcome').value,closed=['not_interested','do_not_contact','reopen'].includes(outcome);$('nextAtLabel').hidden=closed;$('activityNext').required=['follow_up','meeting_booked'].includes(outcome);$('activityNext').disabled=closed;
-  // A channel is only meaningful for a touch that actually reached out.
-  $('channelLabel').hidden=closed;$('activityChannel').disabled=closed;}
+function activityFields(){const outcome=$('activityOutcome').value,closed=['not_interested','do_not_contact','reopen'].includes(outcome);$('nextAtLabel').hidden=closed;
+  // A no-show needs a new time; a meeting that happened may or may not produce one.
+  $('activityNext').required=['follow_up','meeting_booked','no_show'].includes(outcome);$('activityNext').disabled=closed;
+  // The channel stays available for "not interested" and "do not contact": a
+  // call that ended in either still put volume on the number and still spends
+  // the day's dials. Only reopening a record reaches nobody.
+  const reached=outcome!=='reopen';
+  $('channelLabel').hidden=!reached;$('activityChannel').disabled=!reached;}
 function prepareActivity(){renderConversation();$('activityForm').reset();$('activityError').textContent='';activityKey=crypto.randomUUID();
   // The sequence already knows which channel this touch uses and when the next
   // one falls due, so neither is the advisor's to work out.
@@ -173,12 +210,17 @@ $('profileOpen').onclick=async()=>{
   $('profileError').textContent='';
   try{const p=await request('/api/lab/advisor-profile');
     $('profileName').value=p.name||'';$('profileFirm').value=p.firm||'';$('profilePhone').value=p.phone||'';$('profileMetro').value=p.metro||'';
+    // Read from the browser rather than asked for: it is a fact this page knows,
+    // and the browser is the current answer. Preferring a previously saved zone
+    // here would strand an advisor who moved, because the field is readonly and
+    // there would be no way left to correct it.
+    $('profileZone').value=Intl.DateTimeFormat().resolvedOptions().timeZone||p.time_zone||'UTC';
   }catch(e){$('profileError').textContent=e.message;}
   $('profileDialog').showModal();
 };
 $('profileForm').onsubmit=async e=>{
   e.preventDefault();const button=e.submitter;button.disabled=true;$('profileError').textContent='';
-  try{await request('/api/lab/advisor-profile',{method:'POST',body:JSON.stringify({display_name:$('profileName').value,firm:$('profileFirm').value,phone:$('profilePhone').value,metro:$('profileMetro').value})});
+  try{await request('/api/lab/advisor-profile',{method:'POST',body:JSON.stringify({display_name:$('profileName').value,firm:$('profileFirm').value,phone:$('profilePhone').value,metro:$('profileMetro').value,time_zone:$('profileZone').value})});
     $('profileDialog').close();notice('Saved. Drafted messages will sign themselves with these details.');
   }catch(err){$('profileError').textContent=err.message;}finally{button.disabled=false;}
 };
