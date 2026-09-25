@@ -12,7 +12,7 @@ import {readFileSync} from 'node:fs';
 import {createResearchLab} from '../research-lab.mjs';
 import {cadenceState, touchWindow, sequenceProgress, callWindow, composeTouch, admitTouch, cycleStart,
   restPeriod, nextFollowUp, firstTouchSLA, addBusinessDays, offerDays, sequencePlan,
-  MAX_TOUCHES, WINDOW_DAYS, SEQUENCES} from '../outreach-cadence.mjs';
+  MAX_TOUCHES, WINDOW_DAYS, SEQUENCES, dialBudget, DIAL_CAP} from '../outreach-cadence.mjs';
 
 const now = new Date('2026-09-24T15:00:00Z');           // a Thursday, 11:00 in New York
 const lead = {id: 'fixture', first_name: 'Jamie', last_name: 'Rivera', company: 'Northline Manufacturing',
@@ -25,7 +25,7 @@ async function fixture() {
   const db = new PGlite();
   for (const file of ['generated/schema.sql', 'migrations/006-research-lab.sql', 'migrations/007-quality-v2.sql',
     'migrations/008-prospect-workspace.sql', 'migrations/012-plan-catalog-summary.sql',
-    'migrations/013-advisor-workflow.sql', 'migrations/014-outreach-cadence.sql'])
+    'migrations/013-advisor-workflow.sql', 'migrations/014-outreach-cadence.sql', 'migrations/015-dial-budget.sql'])
     await db.exec(readFileSync(new URL('../' + file, import.meta.url), 'utf8'));
   const pool = {query: (...a) => db.query(...a), connect: async () => ({query: (...a) => db.query(...a), release() {}})};
   const user = {uid: 'owner', email: 'owner@example.com'};
@@ -273,14 +273,14 @@ test('an unusable channel is refused, and the scoreboard separates what it measu
 test('the advisor profile signs the drafts and is scoped to its owner', async () => {
   const {db, lab, user, id} = await fixture();
   try {
-    assert.deepEqual(await lab.advisor.profile(user), {name: '', firm: '', phone: '', metro: ''});
+    assert.deepEqual(await lab.advisor.profile(user), {name: '', firm: '', phone: '', metro: '', time_zone: 'UTC'});
     const saved = await lab.advisor.saveProfile(user, {display_name: 'Dana Whitfield', firm: 'Example Advisors',
       phone: '516-555-0142', metro: 'Long Island', ignored: 'x'});
     assert.equal(saved.name, 'Dana Whitfield');
     const detail = await lab.advisor.detail(user, id);
     assert.match(detail.draft.body, /Dana Whitfield/);
     assert.deepEqual(detail.draft.needs, []);
-    assert.deepEqual(await lab.advisor.profile({uid: 'other', email: 'other@example.com'}), {name: '', firm: '', phone: '', metro: ''});
+    assert.deepEqual(await lab.advisor.profile({uid: 'other', email: 'other@example.com'}), {name: '', firm: '', phone: '', metro: '', time_zone: 'UTC'});
   } finally { await db.close(); }
 });
 
@@ -329,7 +329,12 @@ test('a resting prospect is never shown as due, whatever date is saved on them',
         signature: d.action.signature, idempotency_key: 'r-' + n});
     }
     // A follow-up date left over from the sequence must not outrank the rest.
-    await db.query(`UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{follow_up_date}','"2026-09-20T10:00:00Z"')::text WHERE id=$1`, [id]);
+    // Backdate the sequence so day 4 has genuinely arrived. The saved follow-up
+    // date is the step's own due date, so in practice the two agree — the point
+    // of the finding is that the saved date was being read first.
+    await db.query(`UPDATE advisor_activities SET created_at='2026-09-20T10:00:00Z' WHERE idempotency_key='step-1'`);
+    await db.query(`UPDATE advisor_activities SET created_at='2026-09-21T10:00:00Z' WHERE idempotency_key='step-2'`);
+    await db.query(`UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{follow_up_date}','"2026-09-23T10:00:00Z"')::text WHERE id=$1`, [id]);
     const d = await lab.advisor.detail(user, id);
     assert.equal(d.action.bucket, 'resting', 'a past due date does not make a resting prospect due');
     assert.equal((await lab.advisor.worklist(user, {view: 'due'})).total, 0);
@@ -663,5 +668,143 @@ test('meeting rates are dated by the meeting, not by when the prospect arrived',
     assert.equal((await lab.advisor.scoreboard(user, {days: 1})).meetings.held, 1);
     await db.query(`UPDATE advisor_activities SET created_at='2026-06-02T10:00:00Z' WHERE idempotency_key='held-now'`);
     assert.equal((await lab.advisor.scoreboard(user, {days: 30})).meetings.held, 0);
+  } finally { await db.close(); }
+});
+
+// --- the daily dial budget -----------------------------------------------------
+// Carriers judge behaviour, not intent. A number labelled "Spam Likely" ends the
+// channel for the whole list, so the cap is the cheapest protection available.
+
+test('dials are counted in the advisor’s own day, not UTC', () => {
+  const dial = (minutesAgo, at = now) => ({outcome: 'no_answer', channel: 'phone',
+    created_at: new Date(at.getTime() - minutesAgo * 60000).toISOString()});
+  const budget = dialBudget([dial(0), dial(30), dial(60)], {now});
+  assert.equal(budget.placed, 3);
+  assert.equal(budget.remaining, DIAL_CAP - 3);
+  assert.equal(budget.spent, false);
+  // Email and LinkedIn are not dials.
+  assert.equal(dialBudget([{outcome: 'no_answer', channel: 'email', created_at: now.toISOString()}], {now}).placed, 0);
+  // Yesterday does not count against today.
+  assert.equal(dialBudget([dial(60 * 30)], {now}).placed, 0);
+
+  const full = dialBudget(Array.from({length: DIAL_CAP}, (_, i) => dial(i)), {now});
+  assert.equal(full.spent, true);
+  assert.equal(full.remaining, 0);
+  assert.match(full.reason, /reaches the daily limit of 60/);
+
+  // 22:00 Thursday in Los Angeles is already Friday in UTC. Rolling the budget
+  // at UTC midnight would hand one working evening a second allowance.
+  const evening = new Date('2026-09-25T05:00:00Z');
+  assert.equal(dialBudget([dial(0, evening)], {now: evening, zone: 'America/Los_Angeles'}).placed, 1);
+  assert.equal(dialBudget([dial(0, evening)], {now: evening, zone: 'UTC'}).placed, 1);
+  // 23:00Z on the 24th: a different UTC day from 05:00Z on the 25th, but the
+  // same working afternoon in Los Angeles.
+  assert.equal(dialBudget([dial(60 * 6, evening)], {now: evening, zone: 'UTC'}).placed, 0,
+    'in UTC that dial was yesterday');
+  assert.equal(dialBudget([dial(60 * 6, evening)], {now: evening, zone: 'America/Los_Angeles'}).placed, 1,
+    'in the advisor’s day it was this afternoon, and spends the same budget');
+  // An unusable zone falls back rather than throwing.
+  assert.equal(dialBudget([dial(0)], {now, zone: 'Not/AZone'}).placed, 1);
+});
+
+test('a spent dial budget holds the call without holding up the email', () => {
+  const spent = {placed: DIAL_CAP, cap: DIAL_CAP, remaining: 0, spent: true, reason: '60 dials today reaches the daily limit of 60.'};
+  // Days 1 and 2 done, so the call is what is due.
+  const beforeCall = [touch(4, {step: 'opener'}), touch(3, {step: 'connect', channel: 'linkedin'})];
+  const held = cadenceState({lead, now, activities: beforeCall, dials: spent});
+  assert.equal(held.step.channel, 'phone');
+  assert.equal(held.status, 'hold');
+  assert.equal(held.step.ready, false);
+  assert.match(held.reason, /daily limit of 60/);
+  assert.equal(held.dials.spent, true);
+  // The same prospect on an email step is unaffected.
+  assert.equal(cadenceState({lead, now, activities: [], dials: spent}).status, 'ready');
+  // And a dial that happened is still recorded: the app did not place it.
+  assert.equal(admitTouch(held, {channel: 'phone', now}).ok, true);
+  // With budget left the call is ready again.
+  assert.equal(cadenceState({lead, now, activities: beforeCall,
+    dials: {...spent, placed: 10, remaining: 50, spent: false}}).status, 'ready');
+});
+
+test('the worklist reports one budget for the line, and the profile sets its day', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    let work = await lab.advisor.worklist(user, {});
+    assert.equal(work.dials.placed, 0);
+    assert.equal(work.dials.remaining, DIAL_CAP);
+    assert.equal(work.dials.zone, 'UTC', 'an unset profile still has a day boundary');
+
+    const d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'no_answer', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'dial-1'});
+    work = await lab.advisor.worklist(user, {});
+    assert.equal(work.dials.placed, 1, 'the budget is the line’s, counted across every prospect');
+    assert.equal((await lab.advisor.detail(user, id)).cadence.dials.placed, 1);
+
+    const saved = await lab.advisor.saveProfile(user, {display_name: 'Dana', time_zone: 'America/New_York'});
+    assert.equal(saved.time_zone, 'America/New_York');
+    assert.equal((await lab.advisor.dialsToday(user)).zone, 'America/New_York');
+    // A zone the runtime cannot use would move the boundary silently.
+    assert.equal((await lab.advisor.saveProfile(user, {time_zone: 'Mars/Olympus'})).time_zone, 'UTC');
+    // Another advisor's dials are not on this line.
+    assert.equal((await lab.advisor.dialsToday({uid: 'other', email: 'other@example.com'})).placed, 0);
+  } finally { await db.close(); }
+});
+
+// --- raised in review on the dial budget ---------------------------------------
+
+test('a due follow-up on hold does not head the list of things you can do', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    // Walk to the phone step. Each unanswered touch sets follow_up_date, so by
+    // the call the saved date has arrived and the due branch would otherwise win.
+    for (const [n, channel] of [[1, 'email'], [2, 'linkedin']]) {
+      const d = await lab.advisor.detail(user, id);
+      await lab.advisor.save(user, id, {outcome: 'no_answer', channel,
+        signature: d.action.signature, idempotency_key: 'step-' + n});
+    }
+    // Backdate the sequence so day 4 has genuinely arrived. The saved follow-up
+    // date is the step's own due date, so in practice the two agree — the point
+    // of the finding is that the saved date was being read first.
+    await db.query(`UPDATE advisor_activities SET created_at='2026-09-20T10:00:00Z' WHERE idempotency_key='step-1'`);
+    await db.query(`UPDATE advisor_activities SET created_at='2026-09-21T10:00:00Z' WHERE idempotency_key='step-2'`);
+    await db.query(`UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{follow_up_date}','"2026-09-23T10:00:00Z"')::text WHERE id=$1`, [id]);
+    let d = await lab.advisor.detail(user, id);
+    assert.equal(d.cadence.step.channel, 'phone');
+    assert.equal(d.action.bucket, 'due');
+    assert.equal(d.action.rank, 0, 'with budget left the call is ordinary due work');
+
+    // Spend the day's dials on a different prospect: the budget belongs to the
+    // line, and piling them onto this one would trip the 45-day cap instead.
+    await db.query(`INSERT INTO discovery_leads(id,team,owner_user_id,owner_email,payload,created_at)
+      VALUES('other','wealth-management',$1,$2,$3,$4)`,
+      [user.uid, user.email, JSON.stringify({first_name: 'Sam', last_name: 'Ortiz', company: 'Example Co'}), now.toISOString()]);
+    await db.query(`INSERT INTO advisor_activities(id,lead_id,user_id,idempotency_key,outcome,channel,created_at)
+      SELECT 'bulk-'||n,'other',$1,'bulk-'||n,'no_answer','phone',$2::timestamptz FROM generate_series(1,${DIAL_CAP}) n`,
+      [user.uid, now.toISOString()]);
+    d = await lab.advisor.detail(user, id);
+    assert.equal(d.cadence.dials.spent, true);
+    assert.equal(d.action.bucket, 'due', 'it is still due — the prospect is owed a call');
+    assert.equal(d.action.held, true);
+    assert.ok(d.action.rank > 0, 'but it no longer outranks work that can be done now');
+    assert.match(d.action.reason, /daily limit/);
+    assert.equal(d.action.label, 'Follow-up due, on hold');
+  } finally { await db.close(); }
+});
+
+test('a dial counts against the line however the call ended', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    const d = await lab.advisor.detail(user, id);
+    // "Not interested" is not a touch for the 45-day cap, but it was a dial.
+    await lab.advisor.save(user, id, {outcome: 'not_interested', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'rejected'});
+    const dials = await lab.advisor.dialsToday(user);
+    assert.equal(dials.placed, 1, 'a call that ended in rejection still put volume on the number');
+    // And it is still not a touch against the contact limit.
+    assert.equal(touchWindow([{outcome: 'not_interested', channel: 'phone', created_at: now.toISOString()}], {now}).count, 0);
   } finally { await db.close(); }
 });

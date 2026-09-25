@@ -102,6 +102,7 @@ async function loadWorklist(){
   if(workOffset>0&&workOffset>=data.total){workOffset=0;return loadWorklist();}
   loadScoreboard().catch(()=>{});
   workTotal=data.total;$('workDue').textContent=num(data.counts.due);$('workReady').textContent=num(data.counts.ready);$('workConversations').textContent=num(data.activity.conversations);$('workMeetings').textContent=num(data.activity.meetings);
+  if(data.dials){$('workDials').textContent=num(data.dials.remaining);$('workDialsNote').textContent=data.dials.reason;}
   const [emptyTitle,emptyBody]=emptyMessages[$('workView').value];
   $('workList').innerHTML=data.items.length?data.items.map(({lead:l,quality:q,action:a})=>`<article class="work-card"><label class="select-lead"><input type="checkbox" data-work-select="${esc(l.id)}" aria-label="Select ${esc(l.first_name)} ${esc(l.last_name)} for enrichment" ${workSelected.has(l.id)?'checked':''} ${a.bucket==='closed'?'disabled':''}></label><div><button class="person-button" data-work-open="${esc(l.id)}">${esc(l.first_name)} ${esc(l.last_name)}</button><p class="muted">${esc(l.current_title||'Title unknown')} · ${esc(l.company||'Employer unknown')}</p>${l.location?`<p class="muted">${esc(l.location)}</p>`:''}${badge(q.status)} <span class="muted">${Object.values(q.gates).filter(g=>g.state==='confirmed').length}/5 criteria reviewed</span></div><div class="work-reason"><p class="next-step">${esc(a.label)}</p><p class="muted">${esc(a.reason)}</p>${a.due_at?`<p class="due-label">${esc(when(a.due_at))}</p>`:''}${a.cadence?`<p class="muted">${esc(a.cadence.touches.count)}/${esc(a.cadence.touches.cap)} touches · ${esc(a.cadence.step?a.cadence.step.label:a.cadence.status)}</p>`:''}${l.notes?`<p class="muted">Last note: ${esc(l.notes.split('\n').filter(Boolean).at(-1)?.slice(0,240))}</p>`:''}</div><button class="secondary work-open" data-work-open="${esc(l.id)}">Open brief</button></article>`).join(''):`<div class="work-empty"><h3>${esc($('workSearch').value?'No matching prospects.':emptyTitle)}</h3><p class="muted">${esc($('workSearch').value?'Try a different full name or employer.':emptyBody)}</p></div>`;
   document.querySelectorAll('[data-work-open]').forEach(e=>e.onclick=()=>openLead(e.dataset.workOpen));
@@ -167,8 +168,11 @@ $('draftCopy').onclick=async()=>{
 function activityFields(){const outcome=$('activityOutcome').value,closed=['not_interested','do_not_contact','reopen'].includes(outcome);$('nextAtLabel').hidden=closed;
   // A no-show needs a new time; a meeting that happened may or may not produce one.
   $('activityNext').required=['follow_up','meeting_booked','no_show'].includes(outcome);$('activityNext').disabled=closed;
-  // A channel is only meaningful for a touch that actually reached out.
-  $('channelLabel').hidden=closed;$('activityChannel').disabled=closed;}
+  // The channel stays available for "not interested" and "do not contact": a
+  // call that ended in either still put volume on the number and still spends
+  // the day's dials. Only reopening a record reaches nobody.
+  const reached=outcome!=='reopen';
+  $('channelLabel').hidden=!reached;$('activityChannel').disabled=!reached;}
 function prepareActivity(){renderConversation();$('activityForm').reset();$('activityError').textContent='';activityKey=crypto.randomUUID();
   // The sequence already knows which channel this touch uses and when the next
   // one falls due, so neither is the advisor's to work out.
@@ -195,12 +199,14 @@ $('profileOpen').onclick=async()=>{
   $('profileError').textContent='';
   try{const p=await request('/api/lab/advisor-profile');
     $('profileName').value=p.name||'';$('profileFirm').value=p.firm||'';$('profilePhone').value=p.phone||'';$('profileMetro').value=p.metro||'';
+    // Read from the browser rather than asked for: it is a fact this page knows.
+    $('profileZone').value=p.time_zone&&p.time_zone!=='UTC'?p.time_zone:(Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC');
   }catch(e){$('profileError').textContent=e.message;}
   $('profileDialog').showModal();
 };
 $('profileForm').onsubmit=async e=>{
   e.preventDefault();const button=e.submitter;button.disabled=true;$('profileError').textContent='';
-  try{await request('/api/lab/advisor-profile',{method:'POST',body:JSON.stringify({display_name:$('profileName').value,firm:$('profileFirm').value,phone:$('profilePhone').value,metro:$('profileMetro').value})});
+  try{await request('/api/lab/advisor-profile',{method:'POST',body:JSON.stringify({display_name:$('profileName').value,firm:$('profileFirm').value,phone:$('profilePhone').value,metro:$('profileMetro').value,time_zone:$('profileZone').value})});
     $('profileDialog').close();notice('Saved. Drafted messages will sign themselves with these details.');
   }catch(err){$('profileError').textContent=err.message;}finally{button.disabled=false;}
 };
