@@ -28,6 +28,16 @@ until it ends — a saved follow-up date does not make a resting prospect look
 due. A rest survives its touches ageing out of the 45-day window, so waiting
 does not quietly restore contact.
 
+**The budget belongs to the prospect, not to you.** Six touches means this person
+is approached six times, however many advisors are working the list. The history
+and the rest period are read across the whole record, so a prospect a colleague
+has already spent the budget on is shown to you as resting rather than ready, and
+the worklist cannot offer them. When touches in force were somebody else's, the
+record says so by name — a prospect who rests for reasons you cannot see invites
+exactly the workaround the limit exists to prevent. Entries a colleague logged are
+marked with their name in the history. The daily dial limit stays yours alone,
+because that one protects a phone line's reputation rather than the person.
+
 A prospect who responds leaves the sequence immediately, and the budget
 restarts from their reply: a reply ends the script, it does not buy an
 unlimited number of further approaches. Six unanswered touches after a reply

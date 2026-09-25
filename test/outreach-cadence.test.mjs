@@ -1160,3 +1160,180 @@ test('one save is judged and written at a single instant', async () => {
       'the note and the row it describes carry the same time');
   } finally { await db.close(); }
 });
+
+// --- the limit belongs to the prospect ----------------------------------------
+// Six touches in 45 days is a limit on how often this person is approached. Read
+// per advisor it became a limit on how often each advisor approaches them, so two
+// people working one list spent twelve approaches between them and neither could
+// see the other's. The prospect is who the limit is for.
+
+/** A signed-in advisor, as authentication would have left them. */
+async function register(db, {uid, email, name, role = 'advisor'}) {
+  await db.query(`INSERT INTO discovery_users(user_id,email,full_name,role) VALUES($1,$2,$3,$4)
+    ON CONFLICT (user_id) DO UPDATE SET full_name=EXCLUDED.full_name,role=EXCLUDED.role`, [uid, email, name, role]);
+  return {uid, email};
+}
+/** A second advisor on the same team, able to see the same prospect. */
+const colleague = db => register(db, {uid: 'advisor-b', email: 'b@example.com', name: 'Dana Reyes', role: 'admin'});
+const confirmBasics = async (lab, user, id) => {
+  const d = await lab.detail(user, id);
+  for (const [field, value] of Object.entries({age: {min: 62, max: 62}, residence: {country: 'US', scope: 'residence'},
+    contact: {channel: 'email', address: 'jamie@example.com', identity_confirmed: true}}))
+    await lab.review(user, id, {field, value, verdict: 'confirmed', source: 'Synthetic authorized fixture',
+      note: 'Synthetic evidence only.', observed_at: now.toISOString(), identity_signature: d.quality.identity_signature});
+};
+
+test('two advisors share one prospect’s touch budget, not one each', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    const other = await colleague(db);
+    await confirmBasics(lab, other, id);
+    const spend = async (who, tag) => {
+      let placed = 0;
+      for (let i = 0; i < MAX_TOUCHES + 2; i++) {
+        const d = await lab.advisor.detail(who, id);
+        try {
+          await lab.advisor.save(who, id, {outcome: 'no_answer', channel: 'email',
+            signature: d.action.signature, idempotency_key: tag + i});
+          placed++;
+        } catch { return placed; }
+      }
+      return placed;
+    };
+    const mine = await spend(user, 'a');
+    assert.equal(mine, MAX_TOUCHES, 'the first advisor spends the budget');
+    assert.equal(await spend(other, 'b'), 0, 'and there is none left for the second');
+
+    const total = (await db.query(
+      `SELECT count(*)::int AS n FROM advisor_activities WHERE lead_id=$1 AND outcome='no_answer'`, [id])).rows[0].n;
+    assert.equal(total, MAX_TOUCHES, 'this person was approached six times in total, not six times each');
+  } finally { await db.close(); }
+});
+
+test('a rest one advisor opened holds for everyone, and says whose touches spent it', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    await register(db, {uid: user.uid, email: user.email, name: 'Sam Okafor'});
+    const other = await colleague(db);
+    await confirmBasics(lab, other, id);
+    for (let i = 0; i < MAX_TOUCHES; i++) {
+      const d = await lab.advisor.detail(user, id);
+      await lab.advisor.save(user, id, {outcome: 'no_answer', channel: 'email',
+        signature: d.action.signature, idempotency_key: 'spend' + i});
+    }
+    // The colleague sees the rest the first advisor's work opened…
+    const seen = await lab.advisor.detail(other, id);
+    assert.equal(seen.action.bucket, 'resting');
+    assert.equal(seen.cadence.touches.count, MAX_TOUCHES);
+    // …and is told why, by name. A prospect that rests for invisible reasons
+    // invites exactly the workaround the limit exists to prevent.
+    assert.equal(seen.cadence.shared.touches, MAX_TOUCHES);
+    assert.deepEqual(seen.cadence.shared.advisors, ['Sam Okafor']);
+    assert.match(seen.cadence.shared.reason, /logged by Sam Okafor/);
+    assert.match(seen.cadence.shared.reason, /not on how often you approach them/);
+    // The worklist pages on the same history, so it cannot offer them as ready.
+    const work = await lab.advisor.worklist(other, {view: 'resting'});
+    assert.equal(work.total, 1);
+    assert.equal((await lab.advisor.worklist(other, {view: 'ready'})).total, 0);
+    // The advisor who did the work is not told their own touches are someone else's.
+    assert.equal((await lab.advisor.detail(user, id)).cadence.shared, null);
+  } finally { await db.close(); }
+});
+
+test('the history says which entries are a colleague’s', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    await register(db, {uid: user.uid, email: user.email, name: 'Sam Okafor'});
+    const other = await colleague(db);
+    await confirmBasics(lab, other, id);
+    let d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'no_answer', channel: 'email',
+      signature: d.action.signature, idempotency_key: 'mine'});
+    d = await lab.advisor.detail(other, id);
+    await lab.advisor.save(other, id, {outcome: 'no_answer', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'theirs'});
+
+    const asOther = (await lab.advisor.detail(other, id)).activities;
+    assert.equal(asOther.length, 2);
+    // Yours carries no name; a colleague's is named.
+    assert.equal(asOther.find(a => a.channel === 'phone').logged_by, null);
+    assert.equal(asOther.find(a => a.channel === 'email').logged_by, 'Sam Okafor');
+    const asOwner = (await lab.advisor.detail(user, id)).activities;
+    assert.equal(asOwner.find(a => a.channel === 'email').logged_by, null);
+    assert.equal(asOwner.find(a => a.channel === 'phone').logged_by, 'Dana Reyes');
+    // An advisor authentication never recorded is still named as somebody, not
+    // silently merged into the viewer's own history.
+    await db.query(`UPDATE advisor_activities SET user_id='ghost' WHERE idempotency_key='theirs'`);
+    assert.equal((await lab.advisor.detail(user, id)).activities.find(a => a.channel === 'phone').logged_by,
+      'another advisor');
+  } finally { await db.close(); }
+});
+
+test('attendance and client status describe the prospect, not the advisor', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    const other = await colleague(db);
+    await confirmBasics(lab, other, id);
+    let d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'booked-by-a'});
+    // The colleague can record that the meeting happened: it did.
+    d = await lab.advisor.detail(other, id);
+    await lab.advisor.save(other, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'held-by-b'});
+    assert.equal((await lab.detail(other, id)).lead.follow_up_status, 'Met');
+  } finally { await db.close(); }
+});
+
+test('an inbound call ends the rest in force even when a colleague opened it', async () => {
+  // The shared budget would otherwise strand the fix from the inbound work: the
+  // prospect calls back, their own advisor's rest ends, and a colleague's row
+  // keeps them resting anyway.
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    const other = await colleague(db);
+    await confirmBasics(lab, other, id);
+    await db.query(`INSERT INTO advisor_rest_periods(lead_id,user_id,reason,started_at,resume_at)
+      VALUES($1,$2,'Completed sequence','2026-08-01T00:00:00Z','2026-11-30T00:00:00Z')`, [id, other.uid]);
+    let d = await lab.advisor.detail(user, id);
+    assert.equal(d.action.bucket, 'resting', 'a colleague’s rest holds for this advisor too');
+
+    await lab.advisor.save(user, id, {outcome: 'connected', channel: 'phone', direction: 'inbound',
+      signature: d.action.signature, idempotency_key: 'they-called'});
+    assert.notEqual((await lab.advisor.detail(user, id)).action.bucket, 'resting');
+    assert.notEqual((await lab.advisor.detail(other, id)).action.bucket, 'resting',
+      'and it is over for everyone, because the prospect asked to talk');
+    // Expired, not deleted: the row is still the boundary the next cycle starts from.
+    const rows = (await db.query('SELECT resume_at FROM advisor_rest_periods WHERE lead_id=$1', [id])).rows;
+    assert.equal(rows.length, 1);
+    assert.equal(new Date(rows[0].resume_at).toISOString(), now.toISOString());
+  } finally { await db.close(); }
+});
+
+test('more than two colleagues are summarised rather than listed', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    const team = [];
+    for (const [i, name] of ['Dana Reyes', 'Sam Okafor', 'Lee Park', 'Robin Vale'].entries())
+      team.push(await register(db, {uid: 'adv-' + i, email: `adv${i}@example.com`, name, role: 'admin'}));
+    for (const [i, who] of team.entries()) {
+      await confirmBasics(lab, who, id);
+      const d = await lab.advisor.detail(who, id);
+      await lab.advisor.save(who, id, {outcome: 'no_answer', channel: 'email',
+        signature: d.action.signature, idempotency_key: 'touch-' + i});
+    }
+    const seen = await lab.advisor.detail(user, id);
+    assert.equal(seen.cadence.shared.touches, 4);
+    assert.deepEqual(seen.cadence.shared.advisors, ['Dana Reyes', 'Sam Okafor', 'Lee Park', 'Robin Vale']);
+    assert.match(seen.cadence.shared.reason, /Dana Reyes, Sam Okafor and 2 others/);
+    // The budget they spent between them is the one this advisor has left.
+    assert.equal(seen.cadence.touches.count, 4);
+    assert.equal(seen.cadence.touches.remaining, MAX_TOUCHES - 4);
+  } finally { await db.close(); }
+});
