@@ -133,7 +133,7 @@ function renderConversation(){
   renderDraft();
   $('contactActions').replaceChildren();const c=a.contact;
   if(c){const anchor=document.createElement('a');anchor.className='contact-link';anchor.textContent=c.channel==='phone'?`Call ${c.address}`:c.channel==='email'?`Email ${c.address}`:'Open reviewed LinkedIn profile';anchor.href=c.channel==='phone'?'tel:'+c.address:c.channel==='email'?'mailto:'+encodeURIComponent(c.address):safeURL(c.address);if(c.channel==='linkedin'){anchor.target='_blank';anchor.rel='noopener noreferrer';}$('contactActions').append(anchor);}else $('contactActions').textContent='No reviewed contact shortcut available. Review the contact evidence below.';
-  $('activityHistory').innerHTML=(current.lead.notes?`<p class="existing-notes">${esc(current.lead.notes)}</p>`:'')+(currentWorkflow.activities.length?currentWorkflow.activities.map(a=>`<div class="activity-entry"><strong>${esc(title(a.outcome))}</strong> · ${esc(when(a.created_at))}<p>${esc(a.note)}</p>${a.next_at?`<small>Next: ${esc(when(a.next_at))}</small>`:''}</div>`).join(''):'<p>No outcomes recorded yet.</p>');
+  $('activityHistory').innerHTML=(current.lead.notes?`<p class="existing-notes">${esc(current.lead.notes)}</p>`:'')+(currentWorkflow.activities.length?currentWorkflow.activities.map(a=>`<div class="activity-entry"><strong>${esc(title(a.outcome))}</strong>${a.direction==='inbound'?' <span class="inbound-tag">they called</span>':''} · ${esc(when(a.created_at))}<p>${esc(a.note)}</p>${a.next_at?`<small>Next: ${esc(when(a.next_at))}</small>`:''}</div>`).join(''):'<p>No outcomes recorded yet.</p>');
 }
 async function loadScoreboard(){
   const b=await request('/api/lab/scoreboard?days=30');
@@ -183,7 +183,11 @@ function activityFields(){const outcome=$('activityOutcome').value,closed=['not_
   // call that ended in either still put volume on the number and still spends
   // the day's dials. Only reopening a record reaches nobody.
   const reached=outcome!=='reopen';
-  $('channelLabel').hidden=!reached;$('activityChannel').disabled=!reached;}
+  $('channelLabel').hidden=!reached;$('activityChannel').disabled=!reached;
+  // Only a conversation can be inbound. A missed call from them is not an event,
+  // and a meeting is mutual by the time it is held.
+  const inbound=['connected','follow_up','meeting_booked'].includes(outcome);
+  $('inboundField').hidden=!inbound;if(!inbound)$('activityInbound').checked=false;}
 function prepareActivity(){renderConversation();$('activityForm').reset();$('activityError').textContent='';activityKey=crypto.randomUUID();
   // The sequence already knows which channel this touch uses and when the next
   // one falls due, so neither is the advisor's to work out.
@@ -197,7 +201,7 @@ function prepareActivity(){renderConversation();$('activityForm').reset();$('act
   activityFields();}
 $('activityOutcome').onchange=activityFields;
 $('activityForm').onsubmit=async e=>{e.preventDefault();if(!current||!currentWorkflow||activitySaving)return;const version=leadDetailVersion;activitySaving=true;$('saveActivity').disabled=true;$('activityError').textContent='';try{
-  const result=await request('/api/lab/leads/'+encodeURIComponent(current.lead.id)+'/activity',{method:'POST',body:JSON.stringify({outcome:$('activityOutcome').value,channel:$('activityChannel').disabled?null:$('activityChannel').value,note:$('activityNote').value,next_at:$('activityNext').disabled||!$('activityNext').value?null:new Date($('activityNext').value).toISOString(),signature:currentWorkflow.action.signature,idempotency_key:activityKey})});
+  const result=await request('/api/lab/leads/'+encodeURIComponent(current.lead.id)+'/activity',{method:'POST',body:JSON.stringify({outcome:$('activityOutcome').value,channel:$('activityChannel').disabled?null:$('activityChannel').value,note:$('activityNote').value,next_at:$('activityNext').disabled||!$('activityNext').value?null:new Date($('activityNext').value).toISOString(),direction:$('activityInbound').checked&&!$('inboundField').hidden?'inbound':'outbound',signature:currentWorkflow.action.signature,idempotency_key:activityKey})});
   if(result.saved){if(version===leadDetailVersion)$('detail').close();notice('Outcome saved. Your follow-up and worklist are updated.');await refresh(false);}
 }catch(err){if(version===leadDetailVersion)$('activityError').textContent=err.message;else notice(err.message,true);}finally{activitySaving=false;$('saveActivity').disabled=false;}};
 $('quickImport').onclick=()=>$('importOpen').click();
