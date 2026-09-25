@@ -37,15 +37,25 @@ export function nextAction(lead,quality,now=new Date(),cadence=null) {
   const blocked=quality.status==='excluded'||lead.identity_status==='excluded';
   const contact=quality.gates.contact.state==='confirmed'&&!blocked&&quality.status!=='identity_review'?quality.gates.contact.evidence?.value:null;
   const base={contact:contact||null,signature:workflowSignature(lead),due_at:validDue,status:lead.follow_up_status||'New'};
+  // Checked before the quality buckets, and before the closed one. A client who
+  // later picks up a conflicting identifier from an import, or has a criterion
+  // rejected, is still a client: letting review or closed win here would drop them
+  // out of the Clients view, and -- because review is not terminal -- would put
+  // them back into today's prospecting work with a drafted touch. The quality
+  // problem is not swallowed, it is said in the reason instead.
+  //
+  // No contact shortcut either. The workspace would otherwise offer a Call or
+  // Email button for outreach it has just said requires reopening first, and the
+  // server would refuse the outcome that came back.
+  if(lead.follow_up_status==='Client') {
+    const warning=blocked?(quality.warnings[0]||Object.values(quality.gates).find(g=>g.state==='failed')?.reason||'This record is also excluded from the campaign.')
+      :quality.status==='identity_review'?'Conflicting identifiers on this record still need review.':'';
+    return {...base,bucket:'clients',rank:85,label:'Became a client',contact:null,
+      reason:'Recorded as a client. Prospecting is finished for this person; reopen the record to work them again.'+(warning?' '+warning:'')};
+  }
   if(blocked)return {...base,bucket:'closed',rank:90,label:'Excluded from this campaign',reason:quality.warnings[0]||Object.values(quality.gates).find(g=>g.state==='failed')?.reason||'Identity excluded.',contact:null};
   if(quality.status==='identity_review')return {...base,bucket:'review',rank:55,label:'Resolve identity',reason:'Conflicting identifiers must be resolved before contact.',contact:null};
   if(lead.follow_up_status==='Not a Fit')return {...base,bucket:'closed',rank:90,label:'No further follow-up',reason:'Marked not interested or not a fit.',contact:null};
-  // A client leaves the worklist, but not into the same drawer as the records
-  // that were disqualified or restricted. Kept as its own bucket so filtering
-  // "closed" does not show somebody their new clients beside the people who
-  // told them no, and so the count is readable on its own.
-  if(lead.follow_up_status==='Client')return {...base,bucket:'clients',rank:85,label:'Became a client',
-    reason:'Recorded as a client. Prospecting is finished for this person; reopen the record to work them again.'};
   if(lead.follow_up_status==='Meeting Set')return {...base,bucket:'meetings',rank:0,label:'Prepare for the meeting',reason:validDue&&due<now?'Meeting time has passed. Record the outcome or next follow-up.':'Review the evidence gaps before your conversation.'};
   // Pacing outranks both readiness and any saved follow-up date: a person who
   // may not be contacted is not "due", whatever time is stored against them.

@@ -236,3 +236,42 @@ test('a client is offered no drafted touch and no next follow-up time',async()=>
   assert.equal(d.schedules,null,'nor a next follow-up time');
  }finally{await db.close();}
 });
+
+// A client stays a client when the record develops other problems. These drive
+// nextAction directly, because the scenarios -- a later import bringing a
+// conflicting identifier, a criterion being rejected -- are states of the quality
+// assessment rather than sequences of saved outcomes.
+test('a client outranks the evidence buckets, keeps no contact shortcut, and still reports the problem',()=>{
+ const gates=state=>({age:{state},residence:{state},retirement:{state},net_worth:{state},
+   contact:{state:'confirmed',reason:'Reviewed.',evidence:{value:{channel:'email',address:'jamie@example.com'}}}});
+ const verified={status:'verified',score:100,warnings:[],gaps:[],gates:gates('confirmed')};
+ const client={...lead,follow_up_status:'Client'};
+
+ // A confirmed contact route exists, and is deliberately not offered: the
+ // workspace would be handing over a Call or Email button for outreach it has
+ // just said requires reopening, and the server would refuse the outcome.
+ const plain=nextAction(client,verified,now);
+ assert.equal(plain.bucket,'clients');
+ assert.equal(plain.contact,null,'no prospecting shortcut for a client');
+ // A prospect with the same evidence does get one, so this is the status at work.
+ assert.equal(nextAction(lead,verified,now).contact.address,'jamie@example.com');
+
+ // Conflicting identifiers would otherwise send them to Review, which is counted
+ // in today's prospecting work and is not terminal, so they would be drafted to.
+ const conflicted=nextAction(client,{...verified,status:'identity_review'},now);
+ assert.equal(conflicted.bucket,'clients');
+ assert.match(conflicted.reason,/Conflicting identifiers/);
+ // The control: a prospect with the same conflict does go to Review.
+ assert.equal(nextAction(lead,{...verified,status:'identity_review'},now).bucket,'review');
+
+ // An excluded record would otherwise land in Closed, beside the disqualified.
+ const excluded=nextAction(client,{...verified,status:'excluded',warnings:['Suppressed by the directory.']},now);
+ assert.equal(excluded.bucket,'clients');
+ assert.match(excluded.reason,/Suppressed by the directory/);
+ assert.equal(nextAction(lead,{...verified,status:'excluded',warnings:['Suppressed by the directory.']},now).bucket,'closed');
+
+ // An excluded record with no stated warning still says something true.
+ assert.match(nextAction(client,{...verified,status:'excluded'},now).reason,/also excluded from the campaign/);
+ // And a client with no problem at all says nothing extra.
+ assert.doesNotMatch(plain.reason,/excluded|Conflicting/);
+});
