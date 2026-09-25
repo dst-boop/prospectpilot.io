@@ -203,3 +203,21 @@ test('the health host can be separated from the host whose public surface is ver
   // A health base that is not a URL is refused rather than quietly ignored.
   await assert.rejects(verifyRelease({base: 'https://prospectpilot.io', healthBase: 'localhost:8080'}), /health check/);
 });
+
+test('a version body that is valid JSON but not an object fails rather than matching nothing',async()=>{
+  // Each of these parses, and each would leave the field comparison with nothing
+  // to disagree with -- so the check would pass on a response containing none of
+  // the fields it exists to check. With no release identifier supplied, that was
+  // enough for the whole run to exit successfully.
+  for (const body of ['null', 'false', '0', '""', '[]']) {
+    const report = await run(service({'GET /version': res =>
+      res.writeHead(200, {'content-type': 'application/json', 'cache-control': 'no-store'}).end(body)}),
+      {release: null});
+    assert.ok(failed(report).includes('version'), `${body} must fail the version check`);
+    assert.equal(report.ok, false, `${body} must not read as verified`);
+  }
+  // A JSON object missing the fields still reports which ones, as before.
+  const empty = await run(service({'GET /version': res =>
+    res.writeHead(200, {'content-type': 'application/json', 'cache-control': 'no-store'}).end('{}')}));
+  assert.match(empty.checks.find(c => c.id === 'version').detail, /feature_set: expected research-lab-v1/);
+});

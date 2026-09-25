@@ -105,8 +105,15 @@ export async function verifyRelease({base, release = null, expect = EXPECTED, al
     try { response = await call('/version'); } catch (error) { failure = `request failed: ${error.message}`; }
     if (response && response.status !== 200) failure = `GET /version -> ${response.status}`;
     else if (response) {
-      try { version = JSON.parse(response.text); }
+      let parsed;
+      try { parsed = JSON.parse(response.text); }
       catch { failure = 'GET /version returned a body that is not JSON'; }
+      // `null`, `false` and `0` are all valid JSON, and all of them would make the
+      // field comparison below find nothing to disagree with -- so the check
+      // would pass on a response containing none of the fields it is checking.
+      if (failure === null && (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)))
+        failure = `GET /version returned JSON that is not an object: ${JSON.stringify(parsed)}`;
+      else if (failure === null) version = parsed;
     }
     const wrong = version
       ? Object.entries(expect).filter(([key, value]) => version[key] !== value)
