@@ -131,6 +131,18 @@ const FOLLOW_UP_STATUSES = new Set([
 // Statuses that end prospecting. A held meeting is not one of them -- it is
 // followed up -- but a client and a closed record are.
 const TERMINAL_STATUSES = new Set(["Meeting Set", "Client", "Not a Fit"]);
+// A client is not a prospect to enrich, and every paid provider route has to ask,
+// because they are separate entry points to the same spend: the ZoomInfo candidate
+// CSV, the /enrichment batch export and a direct WealthFeed submission.
+//
+// Refused rather than quietly filtered. The advisor reconciles what they
+// submitted against what the provider charges for, and a selection that silently
+// shrank is the one thing that makes those two disagree.
+function refuseClientEnrichment(leads) {
+  const clients = leads.filter(lead => lead.follow_up_status === "Client").length;
+  if (!clients) return;
+  throw new HttpError(422, `${clients === 1 ? "One selected record is already a client" : clients + " selected records are already clients"}. Provider enrichment is for prospects; remove them from the selection.`);
+}
 // Statuses the outcome workflow owns. The lab derives these from a logged
 // activity -- Met from a meeting that was booked and then held, Client from a
 // recorded conversation -- and each carries a rule the generic status field
@@ -2426,16 +2438,11 @@ async function apiRoutes(request, env, path, url) {
     if (!selected.size) throw new HttpError(422, "Select at least one lead before export.");
     const leadsForExport = (await visibleLeadRows(env.DB, user)).filter(item => selected.has(item.lead.id)).map(item => item.lead);
     if (leadsForExport.length !== selected.size) throw new HttpError(404, "One or more selected leads are unavailable.");
-    // Nobody pays a provider to enrich somebody who is already a client. This is
-    // the candidate list for outbound research, unlike the Salesforce export
-    // above, which is a handoff to a CRM and where a client belongs. Dropped
-    // rather than refused, so one client in a selection of a hundred does not
-    // block the export -- and counted in the audit, so it is not invisible.
-    const candidates = leadsForExport.filter(lead => lead.follow_up_status !== "Client");
-    const clients = leadsForExport.length - candidates.length;
-    if (!candidates.length) throw new HttpError(422, "Every selected lead is already a client. Provider enrichment is for prospects.");
-    await audit(env.DB, user, "export", "lead", "zoominfo", `${candidates.length} leads${clients ? `, ${clients} client${clients === 1 ? "" : "s"} excluded` : ""}`);
-    return new Response(zoomInfoCandidateCSV(candidates), { headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="zoominfo-candidates-${today()}.csv"`, "cache-control": "no-store" } });
+    // The candidate list for outbound research, unlike the Salesforce export above,
+    // which is a handoff to a CRM and is exactly where a client belongs.
+    refuseClientEnrichment(leadsForExport);
+    await audit(env.DB, user, "export", "lead", "zoominfo", `${leadsForExport.length} leads`);
+    return new Response(zoomInfoCandidateCSV(leadsForExport), { headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="zoominfo-candidates-${today()}.csv"`, "cache-control": "no-store" } });
   }
   throw new HttpError(404, "Not found.");
 }

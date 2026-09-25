@@ -102,7 +102,7 @@ test('the bulk endpoint cannot assign or clear a workflow status either',async()
   } finally { await pg.close(); }
 });
 
-test('a client is dropped from the provider candidate export but kept for the CRM',async()=>{
+test('a client is refused by the provider candidate export but kept for the CRM',async()=>{
   const {pg, db, id, setStatus} = await fixture();
   try {
     const exportTo = target => worker.fetch(new Request(`${API}/export/${target}`,
@@ -113,11 +113,13 @@ test('a client is dropped from the provider candidate export but kept for the CR
     assert.match(await before.text(), /Jamie/);
 
     await setStatus('Client');
-    // Every selected lead is a client, so there is nothing to enrich and the
-    // refusal says why rather than handing back an empty file.
+    // Refused rather than quietly filtered: the advisor reconciles what they
+    // submitted against what the provider charges for, and a selection that
+    // silently shrank is what makes those two disagree.
     const after = await exportTo('zoominfo');
     assert.equal(after.status, 422);
     assert.match(JSON.stringify(await after.json()), /already a client/);
+    assert.match(JSON.stringify(await (await exportTo('zoominfo')).json()), /remove them from the selection/);
 
     // The CRM handoff is exactly where a client belongs, and is unaffected.
     const crm = await exportTo('salesforce');
@@ -171,4 +173,44 @@ test('an imported record cannot arrive already a client',async()=>{
     assert.equal(again.status, 201, await again.clone().text());
     assert.equal(await status(), 'Client', 'an existing client survives a re-import');
   } finally { await pg.close(); }
+});
+
+test('every paid provider route refuses a client, not only the CSV export',async()=>{
+  const {pg, db, id, setStatus} = await fixture();
+  try {
+    const post = (path, body) => worker.fetch(new Request(`https://prospectpilot.io${path}`,
+      {method: 'POST', headers: json, body: JSON.stringify(body)}), {DB: db});
+
+    // The dedicated /enrichment workflow is a separate entry point to the same
+    // spend. While they are a prospect it lists them as eligible and exports them.
+    const eligible = async () => (await (await worker.fetch(new Request(
+      'https://prospectpilot.io/api/enrichment/leads', {headers}), {DB: db})).json())
+      .leads.find(l => l.id === id)?.eligible;
+    assert.equal(await eligible(), true);
+    const before = await post('/api/enrichment/export', {provider: 'zoominfo', lead_ids: [id]});
+    assert.equal(before.status, 200, await before.clone().text());
+
+    await setStatus('Client');
+    // Not offered any more, and refused at the gate that actually spends -- the
+    // listing alone would only be a hidden button.
+    assert.equal(await eligible(), false, 'a client is not an enrichment candidate');
+    const refused = await post('/api/enrichment/export', {provider: 'zoominfo', lead_ids: [id]});
+    assert.equal(refused.status, 422);
+    assert.match(JSON.stringify(await refused.json()), /already a client/);
+  } finally { await pg.close(); }
+});
+
+test('the WealthFeed submission asks the same question',()=>{
+  // Asserted at the call site rather than over HTTP: that route opens an encrypted
+  // provider key before it reaches any selection check, so exercising it would mean
+  // standing up real provider credentials for a refusal that never contacts them.
+  // The check sits immediately after the ownership check, before the job is claimed
+  // and before anything is sent.
+  const bundle = readFileSync(new URL('../generated/worker.mjs', import.meta.url), 'utf8');
+  const submit = bundle.match(/api\/wealthfeed\/submit'\)\{[\s\S]*?INSERT INTO wealthfeed_jobs/)[0];
+  assert.match(submit, /refuseClientEnrichment\(ids\.map\(/);
+  assert.ok(submit.indexOf('refuseClientEnrichment') < submit.indexOf('INSERT INTO wealthfeed_jobs'),
+    'the refusal must come before the job is claimed');
+  // One definition, three routes: the CSV export, the batch export, the direct submit.
+  assert.equal((bundle.match(/refuseClientEnrichment/g) || []).length, 4);
 });

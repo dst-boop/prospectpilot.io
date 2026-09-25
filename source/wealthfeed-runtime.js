@@ -110,6 +110,7 @@ async function wealthfeedRoutes(request,env,user,path){
     if(previous)return json({...previous,replayed:true});
     const ids=Array.isArray(body.lead_ids)?[...new Set(body.lead_ids)]:[];
     if(!ids.length||ids.length>100||ids.some(id=>!owned.some(x=>x.lead.id===id)))throw new HttpError(422,'Select 1 to 100 people assigned to you.');
+    refuseClientEnrichment(ids.map(id=>owned.find(x=>x.lead.id===id).lead));
     const records=ids.map(id=>WF.locator(owned.find(x=>x.lead.id===id).lead));
     // Claim before sending: uncertain submissions are never automatically sent a second time.
     const claimed=await one(db,'INSERT INTO wealthfeed_jobs(id,user_id,connection_id,status,payload) VALUES(?,?,?,?,?) ON CONFLICT(id) DO NOTHING RETURNING id',body.request_id,user.user_id,connection.connection_id,'sending',JSON.stringify({ids}));

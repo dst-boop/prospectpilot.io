@@ -124,7 +124,14 @@ the save is refused: the strongest figure in the report stays tied to the work
 that produced it, and a client marked on an untouched record would be measured
 against a funnel that skipped them. The record leaves the worklist into its own
 **Clients** view, not the closed drawer that holds disqualified and restricted
-people, and it is excluded from provider enrichment exports. It is **not**
+people. Every paid provider route refuses them — the ZoomInfo candidate CSV, the
+`/enrichment` batch export and a direct WealthFeed submission — because nobody
+pays to enrich somebody they have already signed, and those are three entry
+points to the same spend. Refused rather than quietly filtered: an advisor
+reconciles what they submitted against what the provider charged for, and a
+selection that silently shrank is what makes those two disagree. The Salesforce
+export is untouched — a CRM handoff is exactly where a client belongs. It is
+**not**
 suppressed — a client is a relationship, not a contact restriction.
 
 Every other outcome is refused on a client until the record is explicitly
