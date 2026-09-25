@@ -137,3 +137,38 @@ test('the writing pickers do not offer a workflow status, while the filter still
   assert.ok(!filter.includes('<option disabled>Client</option>'));
   assert.match(bundle, /Met and Client are set by saving an outcome in the advisor workspace/);
 });
+
+test('an imported record cannot arrive already a client',async()=>{
+  const {pg, db, id, status} = await fixture();
+  try {
+    // The fixture's own import lands on New, like any fresh candidate.
+    assert.equal(await status(), 'New');
+
+    // A CSV claiming the status directly. normalizeLead used to keep it, and
+    // saveCandidates inserts without going through the transition guard, so the
+    // record would enter the terminal client bucket -- out of prospecting and out
+    // of enrichment -- with no conversation behind it and nothing for the funnel
+    // to count.
+    const claimed = 'First Name,Last Name,Email Address,Route,Age Basis,DNC Status,Follow Up Status\n' +
+      'Morgan,Chen,morgan@example.com,HOLD_UNKNOWN_AGE,UNKNOWN,UNSCRUBBED,Client';
+    const imported = await worker.fetch(new Request(`${API}/imports/csv?provider=qualifier`,
+      {method: 'POST', headers, body: claimed}), {DB: db});
+    assert.equal(imported.status, 201, await imported.clone().text());
+    const rows = (await pg.query('SELECT payload FROM discovery_leads')).rows.map(r => r.payload);
+    const morgan = rows.find(p => p.includes('Morgan'));
+    assert.ok(morgan, 'the record was still imported rather than rejected');
+    assert.match(morgan, /"follow_up_status":\s*"New"/);
+    assert.doesNotMatch(morgan, /"follow_up_status":\s*"Client"/);
+
+    // Deduplication is unaffected: a later import does not disturb a status the
+    // outcome workflow set on an existing record.
+    await pg.query(
+      `UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{follow_up_status}','"Client"')::text WHERE id=$1`,
+      [id]);
+    const again = await worker.fetch(new Request(`${API}/imports/csv?provider=qualifier`,
+      {method: 'POST', headers,
+       body: 'First Name,Last Name,Email Address,Route,Age Basis,DNC Status\nJamie,Rivera,jamie@example.com,HOLD_UNKNOWN_AGE,UNKNOWN,UNSCRUBBED'}), {DB: db});
+    assert.equal(again.status, 201, await again.clone().text());
+    assert.equal(await status(), 'Client', 'an existing client survives a re-import');
+  } finally { await pg.close(); }
+});

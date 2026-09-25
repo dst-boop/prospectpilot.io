@@ -364,6 +364,18 @@ const now = () => new Date().toISOString();
 const today = () => now().slice(0, 10);
 const uid = prefix => `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
 const text = (value, limit = 2_000) => String(value ?? "").trim().slice(0, limit);
+// A follow-up status arriving in imported data is not evidence of anything. The
+// lab derives Met and Client from a logged activity, so a CSV or LinkedIn record
+// claiming one would land a brand-new candidate in the terminal client bucket --
+// out of prospecting and out of enrichment -- with no conversation behind it and
+// no activity for the funnel to count. An unrecognized status is no better: it
+// would be stored and then rejected by the first edit of the record. Both become
+// New, which is what a freshly imported candidate is. Deduplication is unaffected:
+// mergeLead keeps the status the existing record already had.
+const importedStatus = value => {
+  const status = text(value || "New", 80);
+  return FOLLOW_UP_STATUSES.has(status) && !WORKFLOW_ASSIGNED.has(status) ? status : "New";
+};
 const lower = value => text(value).toLowerCase();
 const array = value => Array.isArray(value) ? value : value ? [value] : [];
 const unique = values => [...new Set(values.map(value => text(value)).filter(Boolean))];
@@ -710,7 +722,7 @@ export function normalizeLead(raw, context = {}) {
     plan_average_balance: Number(field(raw, "Plan Average Balance") || raw.plan_average_balance) || null,
     signals, activity_signals: array(raw.activity_signals), connection_degree: Number(raw.connection_degree) || null,
     mutual_connections: Number(raw.mutual_connections) || 0, relationship_score: 0, timing_score: 0, priority_score: 0,
-    warm_path: text(raw.warm_path, 240), follow_up_status: text(raw.follow_up_status || "New", 80), follow_up_date: raw.follow_up_date || null,
+    warm_path: text(raw.warm_path, 240), follow_up_status: importedStatus(raw.follow_up_status), follow_up_date: raw.follow_up_date || null,
     notes: text(field(raw, "Notes") || raw.notes, 20_000), score: 0, tier: "Watch", confidence: 0, score_breakdown: {},
     identity_status: raw.identity_status === "review" ? "review" : "matched", identity_conflicts: unique(raw.identity_conflicts || []),
     data_quality_warnings: unique(qualityWarnings), evidence: evidenceRows.slice(-200),
