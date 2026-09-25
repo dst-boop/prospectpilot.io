@@ -90,7 +90,18 @@ $('detail').addEventListener('close',()=>{leadDetailVersion++;current=null;$('sa
 $('runDialog').addEventListener('close',()=>{runDetailVersion++;});
 document.querySelectorAll('[data-close]').forEach(e=>e.onclick=()=>$(e.dataset.close).close());
 document.addEventListener('visibilitychange',()=>{if(document.hidden){clearTimeout(pollTimer);}else refresh(false);});
-async function init(){try{const [me,settings,sources]=await Promise.all([request('/api/me'),request('/api/lab/settings'),request('/api/lab/sources')]);$('account').textContent=me.name||me.email;readSettings(settings);sourceReadiness=sources.readiness;const searchOption=document.querySelector('input[name="source"][value="web_search"]');searchOption.disabled=!sourceReadiness.web_search;if(searchOption.disabled)searchOption.checked=false;$('searchReadiness').textContent=sources.readiness.web_search?'Licensed search: '+(Number(sources.readiness.web_search_query_cost_micros)/1000000).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:6})+' per query, at most one query per employer. The daily budget is enforced before each request.':'Licensed web search is unavailable and has been deselected. Free company research and authorized CSV imports remain available.';$('sourceCatalog').innerHTML=sources.sources.map(s=>`<div class="source-card"><h3>${esc(s.name)} ${badge(s.mode)}</h3><p>${esc(s.supports)}</p><p>${esc(s.limit)}</p>${s.url?link(s.url,'Source information'):''}</div>`).join('');await refresh();}catch(e){notice(e.message,true);}}
+// The daily dial limit rolls over in the advisor's own day, and the browser is
+// the only thing here that knows which day that is. Reconciled on every load so
+// an advisor who moves is corrected without being asked, and without having to
+// find a setting: the field is detected, not typed. Failure is silent because
+// nothing the advisor did caused it and the stored zone still works.
+async function syncTimeZone(){
+  const detected=Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if(!detected)return;
+  const stored=(await request('/api/lab/advisor-profile')).time_zone;
+  if(stored!==detected)await request('/api/lab/advisor-profile',{method:'POST',body:JSON.stringify({time_zone:detected})});
+}
+async function init(){try{const [me,settings,sources]=await Promise.all([request('/api/me'),request('/api/lab/settings'),request('/api/lab/sources')]);$('account').textContent=me.name||me.email;readSettings(settings);sourceReadiness=sources.readiness;const searchOption=document.querySelector('input[name="source"][value="web_search"]');searchOption.disabled=!sourceReadiness.web_search;if(searchOption.disabled)searchOption.checked=false;$('searchReadiness').textContent=sources.readiness.web_search?'Licensed search: '+(Number(sources.readiness.web_search_query_cost_micros)/1000000).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:6})+' per query, at most one query per employer. The daily budget is enforced before each request.':'Licensed web search is unavailable and has been deselected. Free company research and authorized CSV imports remain available.';$('sourceCatalog').innerHTML=sources.sources.map(s=>`<div class="source-card"><h3>${esc(s.name)} ${badge(s.mode)}</h3><p>${esc(s.supports)}</p><p>${esc(s.limit)}</p>${s.url?link(s.url,'Source information'):''}</div>`).join('');await syncTimeZone().catch(()=>{});await refresh();}catch(e){notice(e.message,true);}}
 async function loadActivity(id,version,reset=true){try{const data=await request('/api/lab/leads/'+encodeURIComponent(id)+'/activity');if(version!==leadDetailVersion)return;currentWorkflow=data;$('activityForm').hidden=false;if(reset)prepareActivity();else renderConversation();}catch(e){if(version===leadDetailVersion){$('activityForm').hidden=true;$('conversationBrief').textContent='The activity record could not load. Close and reopen to retry. '+e.message;}}}
 let workOffset=0,workTotal=0,workRequest=0,currentWorkflow=null,activityKey='',activitySaving=false;
 const workSelected=new Set();
@@ -199,8 +210,11 @@ $('profileOpen').onclick=async()=>{
   $('profileError').textContent='';
   try{const p=await request('/api/lab/advisor-profile');
     $('profileName').value=p.name||'';$('profileFirm').value=p.firm||'';$('profilePhone').value=p.phone||'';$('profileMetro').value=p.metro||'';
-    // Read from the browser rather than asked for: it is a fact this page knows.
-    $('profileZone').value=p.time_zone&&p.time_zone!=='UTC'?p.time_zone:(Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC');
+    // Read from the browser rather than asked for: it is a fact this page knows,
+    // and the browser is the current answer. Preferring a previously saved zone
+    // here would strand an advisor who moved, because the field is readonly and
+    // there would be no way left to correct it.
+    $('profileZone').value=Intl.DateTimeFormat().resolvedOptions().timeZone||p.time_zone||'UTC';
   }catch(e){$('profileError').textContent=e.message;}
   $('profileDialog').showModal();
 };

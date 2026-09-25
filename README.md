@@ -69,9 +69,11 @@ When the budget is spent the worklist stops offering phone steps and says why,
 including a follow-up whose saved time has arrived: it stays due, because the
 prospect is owed the call, but it no longer heads a list of work that can
 actually be done. Email and connection requests are unaffected. The day
-rolls over in **your** timezone, taken from your browser when you save **Your
-details** — at UTC midnight it would reset at 5pm on the west coast and hand one
-working afternoon two allowances.
+rolls over in **your** timezone, read from your browser and reconciled every time
+the workspace loads — at UTC midnight it would reset at 5pm on the west coast and
+hand one working afternoon two allowances. Nobody types an IANA zone name, so if
+you move, the page corrects it rather than asking; a zone the server cannot use
+leaves the working one in place instead of quietly resetting your day to UTC.
 
 Calling hours are 8am-9pm local to the prospect's state, and a state spanning
 two zones is judged in both - if it is 7am anywhere in the state it is too early
@@ -102,6 +104,14 @@ The first three measure the prospects **added** in the window; the meeting rates
 measure the meetings that **happened** in it, whoever they were with. The page
 says which under each figure, because one label reading "last 30 days" over both
 would mean two different things at once.
+
+A meeting is dated by the meeting, not by the note. Writing up the week on Friday
+would otherwise pull Tuesday's meetings into Friday's window: a meeting held six
+weeks ago and recorded today would appear in the last thirty days, and one held
+inside the window but recorded after it closed would disappear from the period it
+belongs to. Each recorded attendance is placed at the latest booked time that had
+already passed when it was logged, so the show rate and the count of meetings
+still awaiting an outcome are read from the same clock and cannot disagree.
 
 Each rate names what it could not count instead of letting it improve the
 number. A prospect added and never touched past its deadline counts against the

@@ -745,8 +745,12 @@ test('the worklist reports one budget for the line, and the profile sets its day
     const saved = await lab.advisor.saveProfile(user, {display_name: 'Dana', time_zone: 'America/New_York'});
     assert.equal(saved.time_zone, 'America/New_York');
     assert.equal((await lab.advisor.dialsToday(user)).zone, 'America/New_York');
-    // A zone the runtime cannot use would move the boundary silently.
-    assert.equal((await lab.advisor.saveProfile(user, {time_zone: 'Mars/Olympus'})).time_zone, 'UTC');
+    // A zone the runtime cannot use would move the boundary silently, so it is
+    // refused in favour of the working one rather than resetting the day to UTC.
+    assert.equal((await lab.advisor.saveProfile(user, {time_zone: 'Mars/Olympus'})).time_zone, 'America/New_York');
+    // With nothing usable ever stored, UTC is still the fallback.
+    assert.equal((await lab.advisor.saveProfile({uid: 'fresh', email: 'fresh@example.com'},
+      {time_zone: 'Mars/Olympus'})).time_zone, 'UTC');
     // Another advisor's dials are not on this line.
     assert.equal((await lab.advisor.dialsToday({uid: 'other', email: 'other@example.com'})).placed, 0);
   } finally { await db.close(); }
@@ -806,5 +810,132 @@ test('a dial counts against the line however the call ended', async () => {
     assert.equal(dials.placed, 1, 'a call that ended in rejection still put volume on the number');
     // And it is still not a touch against the contact limit.
     assert.equal(touchWindow([{outcome: 'not_interested', channel: 'phone', created_at: now.toISOString()}], {now}).count, 0);
+  } finally { await db.close(); }
+});
+
+// --- raised in review on the merge to main -------------------------------------
+
+test('a meeting is counted in the window it happened in, not the one it was logged in', async () => {
+  // An advisor who writes up the week's meetings on Friday should not move them
+  // into Friday's window. Both directions are wrong: an old meeting recorded
+  // today would inflate the current show rate, and a meeting inside the window
+  // recorded after it closed would vanish from the period it belongs to.
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    let d = await lab.advisor.detail(user, id);
+    // Booked for a time 40 days ago. The save has to take a future date, so the
+    // meeting time is moved back afterwards, as the other meeting tests do.
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'stale-meeting'});
+    await db.query(`UPDATE advisor_activities SET next_at='2026-08-15T14:00:00Z' WHERE idempotency_key='stale-meeting'`);
+    d = await lab.advisor.detail(user, id);
+    // Recorded today, six weeks after it happened.
+    await lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'written-up-late'});
+
+    const thirty = await lab.advisor.scoreboard(user, {days: 30});
+    assert.equal(thirty.meetings.held, 0,
+      'a meeting held six weeks ago is not part of the last thirty days because the note was typed today');
+    assert.equal(thirty.measured.find(m => m.id === 'show_rate').value, null);
+    // Widen the window past the meeting itself and it appears.
+    const sixty = await lab.advisor.scoreboard(user, {days: 60});
+    assert.equal(sixty.meetings.held, 1);
+    assert.equal(sixty.measured.find(m => m.id === 'show_rate').value, 100);
+    // The booking's own time is what places it, so the unresolved count and the
+    // show rate are drawn from the same clock and cannot disagree.
+    assert.equal(sixty.meetings.awaiting_outcome, 0);
+    assert.equal(thirty.meetings.awaiting_outcome, 0,
+      'a meeting outside the window is neither held in it nor outstanding in it');
+  } finally { await db.close(); }
+});
+
+test('a no-show is dated by the meeting that was missed, not by its replacement', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    let d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'missed'});
+    await db.query(`UPDATE advisor_activities SET next_at='2026-08-10T14:00:00Z' WHERE idempotency_key='missed'`);
+    d = await lab.advisor.detail(user, id);
+    // The replacement is inside the thirty-day window. The missed meeting is not,
+    // and it is the missed meeting this outcome describes.
+    await lab.advisor.save(user, id, {outcome: 'no_show', channel: 'phone', next_at: '2026-09-30T14:00:00Z',
+      signature: d.action.signature, idempotency_key: 'absent'});
+
+    assert.equal((await lab.advisor.scoreboard(user, {days: 30})).meetings.no_shows, 0);
+    assert.equal((await lab.advisor.scoreboard(user, {days: 60})).meetings.no_shows, 1);
+  } finally { await db.close(); }
+});
+
+test('the browser can correct a stored time zone without wiping the rest of the profile', async () => {
+  // The profile field is readonly by design -- nobody types an IANA zone -- so
+  // if a saved zone won a tie against the browser, an advisor who moved could
+  // never fix it and the dial allowance would keep rolling over on the old day.
+  // The page reconciles it on load, which means a one-field write must leave the
+  // four typed fields alone.
+  const {db, lab, user} = await fixture();
+  try {
+    await lab.advisor.saveProfile(user, {display_name: 'Dana Reyes', firm: 'Northline Advisors',
+      phone: '+15165550101', metro: 'Long Island', time_zone: 'America/New_York'});
+    const moved = await lab.advisor.saveProfile(user, {time_zone: 'America/Denver'});
+    assert.equal(moved.time_zone, 'America/Denver');
+    assert.equal(moved.name, 'Dana Reyes', 'a zone correction is not a request to blank the signature');
+    assert.equal(moved.firm, 'Northline Advisors');
+    assert.equal(moved.phone, '+15165550101');
+    assert.equal(moved.metro, 'Long Island');
+    // The dial day follows the corrected zone immediately.
+    assert.match((await lab.advisor.dialsToday(user)).reason, /\d/);
+    // A zone the runtime cannot use leaves the working one in place rather than
+    // silently moving the day boundary to UTC.
+    assert.equal((await lab.advisor.saveProfile(user, {time_zone: 'Mars/Olympus'})).time_zone, 'America/Denver');
+    assert.equal((await lab.advisor.saveProfile(user, {time_zone: ''})).time_zone, 'America/Denver');
+    // The details form still sends every field, and an emptied field still clears.
+    const cleared = await lab.advisor.saveProfile(user, {display_name: '', firm: '', phone: '', metro: '',
+      time_zone: 'America/Denver'});
+    assert.equal(cleared.firm, '');
+    assert.equal(cleared.time_zone, 'America/Denver', 'clearing the typed fields is not a request to reset the zone');
+    assert.equal((await db.query('SELECT count(*)::int AS n FROM advisor_profiles')).rows[0].n, 1);
+  } finally { await db.close(); }
+});
+
+test('only a first conversation can lead to a second, and the window is the first meeting’s', async () => {
+  // Dating by the meeting makes the label true: the figure asks what share of
+  // first conversations produced another. A prospect first met months ago is not
+  // a new first conversation because they were met again this month -- counting
+  // them would quietly measure second-to-third and report it as discovery.
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    let d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'b1'});
+    await db.query(`UPDATE advisor_activities SET next_at='2026-08-01T14:00:00Z' WHERE idempotency_key='b1'`);
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'h1'});
+    await db.query(`UPDATE advisor_activities SET created_at='2026-08-01T15:00:00Z' WHERE idempotency_key='h1'`);
+    // A second meeting, inside the thirty-day window.
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'b2'});
+    await db.query(`UPDATE advisor_activities SET next_at='2026-09-20T14:00:00Z' WHERE idempotency_key='b2'`);
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'h2'});
+
+    const thirty = await lab.advisor.scoreboard(user, {days: 30});
+    // The second meeting is a meeting held in the window and counts as one.
+    assert.equal(thirty.meetings.held, 1);
+    assert.equal(thirty.measured.find(m => m.id === 'show_rate').value, 100);
+    // It is not a first conversation, so it is not in this rate either way.
+    assert.equal(thirty.measured.find(m => m.id === 'second_meeting').value, null);
+    // Widen the window to reach the first conversation and it is measured, and
+    // it did lead to a second.
+    const ninety = await lab.advisor.scoreboard(user, {days: 90});
+    assert.equal(ninety.meetings.held, 2);
+    assert.equal(ninety.measured.find(m => m.id === 'second_meeting').value, 100);
+    assert.match(ninety.measured.find(m => m.id === 'second_meeting').basis, /1 of 1 prospects you have met/);
   } finally { await db.close(); }
 });

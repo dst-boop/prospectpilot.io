@@ -61,12 +61,22 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
   }
   async function saveProfile(user,input) {
     const text=(v,max)=>String(v??'').trim().slice(0,max);
+    // Only the fields the request carries are written; the rest keep what is
+    // stored. The details form always sends all five, so it behaves as before.
+    // What this allows is a one-field correction -- the browser's time zone,
+    // which the page knows and nobody types -- without blanking the other four.
+    const field=(key,max)=>Object.hasOwn(input,key)?text(input[key],max):null;
     // A zone the runtime does not recognize would silently move the day
-    // boundary, so an unusable one falls back rather than being stored.
-    const zone=text(input.time_zone,64)||'UTC';
-    let stored='UTC';try{new Intl.DateTimeFormat('en-CA',{timeZone:zone});stored=zone;}catch{}
-    const values=[user.uid,text(input.display_name,120),text(input.firm,120),text(input.phone,40),text(input.metro,80),stored];
-    await pool.query(`INSERT INTO advisor_profiles(user_id,display_name,firm,phone,metro,time_zone) VALUES($1,$2,$3,$4,$5,$6)
+    // boundary, so an unusable one leaves the stored zone alone rather than
+    // replacing a working one with UTC.
+    let zone=null;
+    if(Object.hasOwn(input,'time_zone')){const candidate=text(input.time_zone,64);
+      try{new Intl.DateTimeFormat('en-CA',{timeZone:candidate});zone=candidate;}catch{}}
+    const values=[user.uid,field('display_name',120),field('firm',120),field('phone',40),field('metro',80),zone];
+    await pool.query(`INSERT INTO advisor_profiles(user_id,display_name,firm,phone,metro,time_zone)
+      SELECT $1::text,COALESCE($2::text,p.display_name,''),COALESCE($3::text,p.firm,''),
+        COALESCE($4::text,p.phone,''),COALESCE($5::text,p.metro,''),COALESCE($6::text,p.time_zone,'UTC')
+      FROM (SELECT $1::text AS user_id) k LEFT JOIN advisor_profiles p ON p.user_id=k.user_id
       ON CONFLICT(user_id) DO UPDATE SET display_name=EXCLUDED.display_name,firm=EXCLUDED.firm,phone=EXCLUDED.phone,metro=EXCLUDED.metro,time_zone=EXCLUDED.time_zone,updated_at=now()`,values);
     return profile(user);
   }
@@ -219,19 +229,34 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
         count(a.id) FILTER(WHERE a.outcome=ANY($5::text[]))::int AS touches,
         bool_or(a.outcome IN ('connected','follow_up','meeting_booked','meeting_held')) AS engaged,
         bool_or(a.outcome='meeting_booked') AS booked,
-        -- Dated by the meeting, not by when the prospect was added: a meeting
-        -- held yesterday belongs in this window even if the person arrived a
-        -- year ago. The three above are cohort measures and stay that way.
-        count(*) FILTER(WHERE a.outcome='meeting_held' AND a.created_at >= $4::timestamptz)::int AS held,
-        count(*) FILTER(WHERE a.outcome='no_show' AND a.created_at >= $4::timestamptz)::int AS no_shows,
         -- A meeting whose time has not arrived is not yet a missed one.
         count(*) FILTER(WHERE a.outcome IN ('meeting_booked','no_show') AND a.next_at IS NOT NULL
-          AND a.next_at < $6::timestamptz AND a.next_at >= $4::timestamptz)::int AS due_meetings,
-        min(a.created_at) FILTER(WHERE a.outcome='meeting_held' AND a.created_at >= $4::timestamptz) AS first_held_at,
-        max(a.created_at) FILTER(WHERE a.outcome='meeting_booked' AND a.created_at >= $4::timestamptz) AS last_booked_at
+          AND a.next_at < $6::timestamptz AND a.next_at >= $4::timestamptz)::int AS due_meetings
       FROM discovery_leads d LEFT JOIN advisor_activities a ON a.lead_id=d.id AND a.user_id=$2
       WHERE ${visibleSQL} GROUP BY d.id,d.created_at`,
       ['wealth-management',user.uid,user.email,since,[...TOUCH_OUTCOMES],now().toISOString()])).rows;
+    // Every recorded attendance, dated by the meeting it settles rather than by
+    // when somebody got round to logging it. An advisor who writes up Tuesday's
+    // meetings on Friday would otherwise move them into Friday's window: a
+    // meeting held 31 days ago and recorded today would land in a 30-day show
+    // rate, and one held inside the window but recorded after it closed would
+    // disappear from the period it belongs to.
+    //
+    // The meeting is the latest booked time that had already passed when the
+    // outcome was logged. A record with no such booking -- attendance entered
+    // ahead of the scheduled time -- is dated by the log, the earliest moment
+    // the meeting is known to have happened.
+    const settled=(await pool.query(`SELECT o.lead_id,o.outcome,
+        COALESCE((SELECT max(b.next_at) FROM advisor_activities b
+            WHERE b.lead_id=o.lead_id AND b.user_id=o.user_id AND b.outcome IN ('meeting_booked','no_show')
+              AND b.next_at IS NOT NULL AND b.next_at <= o.created_at AND b.created_at <= o.created_at),
+          o.created_at) AS met_at,
+        EXISTS(SELECT 1 FROM advisor_activities n WHERE n.lead_id=o.lead_id AND n.user_id=o.user_id
+          AND n.outcome='meeting_booked' AND n.created_at > o.created_at) AS booked_after
+      FROM discovery_leads d JOIN advisor_activities o ON o.lead_id=d.id AND o.user_id=$2
+      WHERE ${visibleSQL} AND o.outcome IN ('meeting_held','no_show')
+      ORDER BY o.lead_id,o.created_at,o.id`,
+      ['wealth-management',user.uid,user.email])).rows;
     // Two populations, deliberately. The service level, the response rate and
     // meetings per 100 ask what became of the prospects added in this window,
     // so they are a cohort. The meeting rates ask what happened in this window,
@@ -244,8 +269,9 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const sla=cohort.map(r=>firstTouchSLA(r.added_at,r.first_touch_at,{now:now()})).filter(r=>r.measurable&&!r.pending);
     const met=sla.filter(r=>r.met).length;
     const rate=(n,d)=>d?Math.round(n/d*1000)/10:null;
-    const sum=key=>rows.reduce((t,r)=>t+(r[key]||0),0);
-    const held=sum('held'),noShows=sum('no_shows');
+    // Counted into this window by the meeting's own date, not the log's.
+    const inWindow=settled.filter(r=>new Date(r.met_at)>=new Date(since));
+    const held=inWindow.filter(r=>r.outcome==='meeting_held').length,noShows=inWindow.filter(r=>r.outcome==='no_show').length;
     // A meeting whose time has passed with neither outcome logged is not a
     // missed meeting and not a held one. It is an unfinished record, so it sits
     // beside the rate instead of quietly improving it.
@@ -253,12 +279,21 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     // Clamped per prospect before summing. A rescheduled no-show gives one
     // person two outcomes against one booking, and a global subtraction would
     // let that surplus cancel somebody else's unresolved meeting.
-    const unresolved=rows.reduce((t,r)=>t+Math.max(0,(r.due_meetings||0)-(r.held||0)-(r.no_shows||0)),0);
-    // A second conversation is a meeting booked strictly after one was held.
-    // Two rows sharing an instant are not counted, which under-reports rather
-    // than inventing a second conversation out of the first booking.
-    const discovered=rows.filter(r=>r.first_held_at);
-    const second=discovered.filter(r=>r.last_booked_at&&new Date(r.last_booked_at)>new Date(r.first_held_at));
+    const resolved=new Map();for(const r of inWindow)resolved.set(r.lead_id,(resolved.get(r.lead_id)||0)+1);
+    const unresolved=rows.reduce((t,r)=>t+Math.max(0,(r.due_meetings||0)-(resolved.get(r.id)||0)),0);
+    // A second conversation is a meeting booked strictly after the first one was
+    // held. Read from the log order, because that is what it is -- the next
+    // meeting gets arranged during this one -- while the window it counts
+    // towards is the first meeting's own date. Rows sharing an instant are not
+    // counted, which under-reports rather than inventing a second conversation
+    // out of the booking that produced the first.
+    //
+    // Only a prospect's first conversation qualifies. Someone first met months
+    // ago is not a new first conversation because they were met again this
+    // month; counting them would measure second-to-third and label it discovery.
+    const first=new Map();for(const r of settled)if(r.outcome==='meeting_held'&&!first.has(r.lead_id))first.set(r.lead_id,r);
+    const discovered=[...first.values()].filter(r=>new Date(r.met_at)>=new Date(since));
+    const second=discovered.filter(r=>r.booked_after);
     return {window_days:days,since,
       added:cohort.length,worked:worked.length,
       // A prospect added but never touched is the gap the SLA exists to close,
