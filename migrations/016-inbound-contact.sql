@@ -1,0 +1,11 @@
+-- Who started the conversation.
+--
+-- The pacing limits exist to bound how often the advisor approaches someone:
+-- six touches in 45 days, then a 90-day rest. A prospect who calls back is not
+-- an approach, and until now there was no way to say so -- every outcome that
+-- means contact happened was refused while a rest was running, so the one event
+-- that should end a rest was the one event the record could not hold.
+--
+-- NULL is outbound. Every row written before this migration was an approach the
+-- advisor made, so backfilling would only restate the default less honestly.
+ALTER TABLE advisor_activities ADD COLUMN IF NOT EXISTS direction TEXT;
