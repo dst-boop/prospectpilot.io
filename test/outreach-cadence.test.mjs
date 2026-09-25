@@ -260,8 +260,9 @@ test('an unusable channel is refused, and the scoreboard separates what it measu
     const reply = board.measured.find(m => m.id === 'reply_rate');
     assert.equal(reply.value, 100);
     assert.equal(board.measured.find(m => m.id === 'meetings_per_100').value, 100);
-    assert.deepEqual(board.unmeasured.map(m => m.id), ['show_rate', 'second_meeting']);
-    for (const m of board.unmeasured) assert.ok(m.reason.length > 20, 'an unmeasured metric says why');
+    assert.deepEqual(board.unmeasured, [], 'every metric on the deck is now recorded');
+    assert.deepEqual(board.measured.map(m => m.id),
+      ['first_touch_sla', 'reply_rate', 'meetings_per_100', 'show_rate', 'second_meeting']);
     assert.match(board.basis, /nobody logged is invisible/);
     await assert.rejects(lab.advisor.scoreboard(user, {days: 0}), {status: 422});
     // Another advisor sees none of this.
@@ -436,6 +437,113 @@ test('the workflow hands the draft only the steps the log shows happened', async
   } finally { await db.close(); }
 });
 
+// --- meeting outcomes ----------------------------------------------------------
+// A booked meeting is an intention. Whether it happened is a separate fact, and
+// without it neither the show rate nor a second conversation can be reported.
+
+test('a held meeting is engagement and a no-show is not', () => {
+  const held = cadenceState({lead, now,
+    activities: [touch(9, {step: 'opener'}), touch(8, {outcome: 'meeting_booked', channel: 'phone'}),
+      touch(2, {outcome: 'meeting_held', channel: 'phone'})]});
+  assert.equal(held.status, 'engaged');
+  assert.equal(held.touches.count, 0, 'the budget restarts at the meeting');
+  // A no-show does not reset anything by itself: they agreed and did not appear,
+  // so what follows is outreach again and is paced like it.
+  const missed = cadenceState({lead, now,
+    activities: [touch(9, {step: 'opener'}), touch(8, {outcome: 'no_show', channel: 'phone'})]});
+  assert.equal(missed.progress.engaged_at, null);
+  assert.equal(missed.touches.count, 2, 'both the approach and the missed meeting spend budget');
+});
+
+test('meeting outcomes are recorded, and a no-show has to be rescheduled', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    let d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'booked'});
+    d = await lab.advisor.detail(user, id);
+    await assert.rejects(lab.advisor.save(user, id, {outcome: 'no_show', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'missed-no-date'}), {status: 422},
+      'a no-show without a new time would lose the prospect');
+    await lab.advisor.save(user, id, {outcome: 'no_show', channel: 'phone', next_at: '2026-09-28T14:00:00Z',
+      signature: d.action.signature, idempotency_key: 'missed'});
+    assert.equal((await lab.detail(user, id)).lead.follow_up_status, 'Follow-up');
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'held'});
+    assert.equal((await lab.detail(user, id)).lead.follow_up_status, 'Met');
+    // Booked and held are conversations. A no-show is not one: nobody spoke.
+    assert.equal((await lab.advisor.worklist(user, {})).activity.conversations, 2);
+  } finally { await db.close(); }
+});
+
+test('the show rate counts only meetings with an outcome, and names the ones without', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    // Two meetings booked in the past; one held, one still unrecorded.
+    let d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'm1'});
+    await db.query(`UPDATE advisor_activities SET next_at='2026-09-20T14:00:00Z' WHERE idempotency_key='m1'`);
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'h1'});
+
+    let board = await lab.advisor.scoreboard(user, {days: 30});
+    assert.equal(board.measured.find(m => m.id === 'show_rate').value, 100);
+    assert.equal(board.meetings.awaiting_outcome, 0);
+
+    // A second past meeting with nothing recorded against it.
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-26T14:00:00Z', signature: d.action.signature, idempotency_key: 'm2'});
+    await db.query(`UPDATE advisor_activities SET next_at='2026-09-21T14:00:00Z' WHERE idempotency_key='m2'`);
+    board = await lab.advisor.scoreboard(user, {days: 30});
+    assert.equal(board.meetings.awaiting_outcome, 1);
+    assert.match(board.meetings.note, /passed without Met or No-show recorded/);
+    assert.equal(board.measured.find(m => m.id === 'show_rate').value, 100,
+      'an unrecorded meeting does not count as held');
+    assert.equal(board.meetings.held, 1);
+
+    // A no-show moves the rate, which is the point of recording it.
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'no_show', channel: 'phone', next_at: '2026-09-30T14:00:00Z',
+      signature: d.action.signature, idempotency_key: 'ns'});
+    board = await lab.advisor.scoreboard(user, {days: 30});
+    assert.equal(board.measured.find(m => m.id === 'show_rate').value, 50);
+    assert.equal(board.meetings.awaiting_outcome, 0);
+  } finally { await db.close(); }
+});
+
+test('a second conversation is a meeting booked after one was held', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    let d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'first'});
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'held'});
+
+    let board = await lab.advisor.scoreboard(user, {days: 30});
+    assert.equal(board.measured.find(m => m.id === 'second_meeting').value, 0,
+      'meeting someone once is not a second conversation');
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-10-05T14:00:00Z', signature: d.action.signature, idempotency_key: 'second'});
+    // The fixture clock is frozen, so every row lands on the same instant. Real
+    // saves are separate requests; the ordering has to be real for the
+    // comparison to mean anything.
+    await db.query(`UPDATE advisor_activities SET created_at='2026-09-24T16:00:00Z' WHERE idempotency_key='second'`);
+    board = await lab.advisor.scoreboard(user, {days: 30});
+    assert.equal(board.measured.find(m => m.id === 'second_meeting').value, 100);
+    assert.match(board.measured.find(m => m.id === 'second_meeting').basis, /1 of 1 prospects you have met/);
+  } finally { await db.close(); }
+});
+
 test('a directory do-not-call blocks pacing, and pacing cannot override it', async () => {
   // The seam between the directory restrictions merged from main and this
   // module. Neither side alone proves a phone that became do-not-call in the
@@ -461,5 +569,99 @@ test('a directory do-not-call blocks pacing, and pacing cannot override it', asy
     assert.equal(d.action.bucket, 'closed');
     await assert.rejects(lab.advisor.save(user, linked, {outcome: 'no_answer', channel: 'phone',
       signature: d.action.signature, idempotency_key: 'after-dnc'}), {status: 422});
+  } finally { await db.close(); }
+});
+
+// --- raised in review on the meeting outcomes ---------------------------------
+
+test('attendance cannot be recorded for a meeting that was never booked', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    let d = await lab.advisor.detail(user, id);
+    // Without this, Meeting held on an untouched prospect marks them Met,
+    // restarts the touch budget and adds a held meeting to the show rate.
+    await assert.rejects(lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'phantom'}), {status: 422});
+    await assert.rejects(lab.advisor.save(user, id, {outcome: 'no_show', channel: 'phone',
+      next_at: '2026-09-30T14:00:00Z', signature: d.action.signature, idempotency_key: 'phantom-ns'}), {status: 422});
+    assert.notEqual((await lab.detail(user, id)).lead.follow_up_status, 'Met', 'the refusal left the record alone');
+    assert.equal((await lab.advisor.scoreboard(user, {})).meetings.held, 0);
+
+    // With a booking outstanding it is accepted, and only once.
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'real'});
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'attended'});
+    d = await lab.advisor.detail(user, id);
+    await assert.rejects(lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'attended-twice'}), {status: 422},
+      'the booking is spent; a second attendance needs a second booking');
+  } finally { await db.close(); }
+});
+
+test('one prospect’s extra outcome cannot hide another’s unresolved meeting', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    // A: books, does not appear, is rebooked, then attends — two outcomes
+    // against two bookings, and a global subtraction would leave a surplus.
+    let d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'a1'});
+    await db.query(`UPDATE advisor_activities SET next_at='2026-09-20T14:00:00Z' WHERE idempotency_key='a1'`);
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'no_show', channel: 'phone', next_at: '2026-09-26T14:00:00Z',
+      signature: d.action.signature, idempotency_key: 'a2'});
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-27T14:00:00Z', signature: d.action.signature, idempotency_key: 'a3'});
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'a4'});
+
+    // B: a booking whose time has passed with nothing recorded against it.
+    await db.query(`INSERT INTO discovery_leads(id,team,owner_user_id,owner_email,payload,created_at)
+      VALUES('b','wealth-management',$1,$2,$3,'2026-09-22T09:00:00Z')`,
+      [user.uid, user.email, JSON.stringify({first_name: 'Sam', last_name: 'Ortiz', company: 'Example Co'})]);
+    await db.query(`INSERT INTO advisor_activities(id,lead_id,user_id,idempotency_key,outcome,next_at,created_at)
+      VALUES('b1','b',$1,'b1','meeting_booked','2026-09-22T14:00:00Z','2026-09-22T10:00:00Z')`, [user.uid]);
+
+    const board = await lab.advisor.scoreboard(user, {days: 30});
+    assert.equal(board.meetings.awaiting_outcome, 1,
+      'B’s unresolved meeting survives A’s surplus of outcomes over due bookings');
+    assert.match(board.meetings.note, /1 meeting passed without/);
+  } finally { await db.close(); }
+});
+
+test('meeting rates are dated by the meeting, not by when the prospect arrived', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    // Added long before the window; the meeting happens inside it.
+    await db.query(`UPDATE discovery_leads SET created_at='2026-06-01T09:00:00Z' WHERE id=$1`, [id]);
+    let d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_booked', channel: 'phone',
+      next_at: '2026-09-25T14:00:00Z', signature: d.action.signature, idempotency_key: 'old-lead'});
+    d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'meeting_held', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'held-now'});
+
+    const board = await lab.advisor.scoreboard(user, {days: 30});
+    assert.equal(board.measured.find(m => m.id === 'show_rate').value, 100,
+      'a meeting held yesterday belongs in this window whenever the person arrived');
+    assert.equal(board.meetings.held, 1);
+    // The cohort measures still describe only the prospects added in the window.
+    assert.equal(board.added, 0, 'nobody was added inside the window');
+    assert.equal(board.measured.find(m => m.id === 'reply_rate').value, null);
+    // And each rate says which population it came from.
+    assert.equal(board.measured.find(m => m.id === 'show_rate').scope, 'activity');
+    assert.equal(board.measured.find(m => m.id === 'first_touch_sla').scope, 'cohort');
+    assert.ok(board.scopes.cohort && board.scopes.activity);
+    // A meeting outside the window is not counted in it.
+    assert.equal((await lab.advisor.scoreboard(user, {days: 1})).meetings.held, 1);
+    await db.query(`UPDATE advisor_activities SET created_at='2026-06-02T10:00:00Z' WHERE idempotency_key='held-now'`);
+    assert.equal((await lab.advisor.scoreboard(user, {days: 30})).meetings.held, 0);
   } finally { await db.close(); }
 });

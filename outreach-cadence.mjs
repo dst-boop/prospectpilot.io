@@ -24,11 +24,14 @@ const DAY = 86400000;
 // Outcomes that represent a contact attempt. `reopen` is an administrative
 // action and is deliberately absent: reopening a record is not a touch, and
 // counting it would let the cap be consumed without anyone being approached.
-export const TOUCH_OUTCOMES = new Set(['no_answer', 'connected', 'follow_up', 'meeting_booked']);
+export const TOUCH_OUTCOMES = new Set(['no_answer', 'connected', 'follow_up', 'meeting_booked', 'meeting_held', 'no_show']);
 // Outcomes that mean the person responded. The sequence stops here: continuing
 // a scripted cadence at someone who already answered is the most common way a
 // good conversation is lost.
-export const ENGAGED_OUTCOMES = new Set(['connected', 'follow_up', 'meeting_booked']);
+// A meeting that was held is the strongest of these. A no-show is not: the
+// person agreed and did not appear, so the approach that follows is outreach
+// again and is paced like it.
+export const ENGAGED_OUTCOMES = new Set(['connected', 'follow_up', 'meeting_booked', 'meeting_held']);
 export const CHANNELS = new Set(['email', 'phone', 'linkedin']);
 
 // A sequence is data, so changing the plan is an edit to this table rather than
