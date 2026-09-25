@@ -47,17 +47,25 @@ export {EXPECTED, healthOptionalFor};
 const result = (id, ok, detail) => ({id, ok, detail});
 
 export async function verifyRelease({base, release = null, expect = EXPECTED, allowUnroutedHealth = null,
-  fetch = globalThis.fetch, timeoutMs = 30000} = {}) {
+  healthBase = null, fetch = globalThis.fetch, timeoutMs = 30000} = {}) {
   if (!base || !/^https?:\/\//.test(base)) throw Error('Pass the base URL of the service to verify.');
-  const {origin, hostname} = new URL(base);
-  // Decided from the host unless the caller says otherwise, so pointing this at
-  // the service URL holds it to the health check the front door cannot answer.
-  const healthOptional = allowUnroutedHealth ?? healthOptionalFor(hostname);
+  if (healthBase !== null && !/^https?:\/\//.test(healthBase)) throw Error('Pass a base URL for the health check, or omit it.');
+  const {origin} = new URL(base);
+  // The two hosts cannot be one host, and this is why. `/healthz` is answered
+  // before the origin check, so the service URL can serve it -- but every other
+  // route is behind that check, and APP_ORIGINS lists only the custom domain and
+  // the Firebase Hosting ones, so the service URL answers 403 for all of them.
+  // The front door is the reverse: it serves the public surface and never
+  // rewrites `/healthz`. Verifying both therefore takes both addresses, and
+  // pointing this at one host alone cannot be made to cover the other.
+  const healthOrigin = healthBase === null ? origin : new URL(healthBase).origin;
+  // Decided from whichever host the health check actually goes to.
+  const healthOptional = allowUnroutedHealth ?? healthOptionalFor(new URL(healthOrigin).hostname);
   const checks = [];
   // Never follow a redirect: a 303 to the sign-in page is the thing being
   // asserted, and following it would report the login page's 200 instead.
-  const call = async (path, {method = 'GET', headers = {}} = {}) => {
-    const response = await fetch(origin + path, {method, headers, redirect: 'manual',
+  const call = async (path, {method = 'GET', headers = {}, host = origin} = {}) => {
+    const response = await fetch(host + path, {method, headers, redirect: 'manual',
       signal: AbortSignal.timeout(timeoutMs)});
     const text = await response.text();
     return {status: response.status, headers: response.headers, text};
@@ -79,11 +87,13 @@ export async function verifyRelease({base, release = null, expect = EXPECTED, al
   // broken health route reported as `n/a` is a health check that cannot fail.
   // Uptime monitoring therefore has to point at the service URL, not the domain.
   await attempt('health', async () => {
-    const {status, text} = await call('/healthz');
+    const {status, text} = await call('/healthz', {host: healthOrigin});
+    const where = healthOrigin === origin ? '' : ` at ${healthOrigin}`;
     if (status === 404) return healthOptional
-      ? result('health', null, 'GET /healthz -> 404; not rewritten to the service on this host, so unchecked here')
-      : result('health', false, 'GET /healthz -> 404; this host should route it to the service');
-    return result('health', status === 200 && text.trim() === 'ok', `GET /healthz -> ${status} ${JSON.stringify(text.slice(0, 40))}`);
+      ? result('health', null, `GET /healthz${where} -> 404; not rewritten to the service on this host, so unchecked here`)
+      : result('health', false, `GET /healthz${where} -> 404; this host should route it to the service`);
+    return result('health', status === 200 && text.trim() === 'ok',
+      `GET /healthz${where} -> ${status} ${JSON.stringify(text.slice(0, 40))}`);
   });
 
   // Reported as three checks rather than one, because a correct release
@@ -158,8 +168,11 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   // excuses one that is known not to route it. Without either, the host decides.
   const flag = name => argv.includes('--' + name);
   const allowUnroutedHealth = flag('health-required') ? false : flag('health-optional') ? true : null;
+  // The front door cannot answer /healthz and the service URL cannot answer the
+  // rest, so covering both takes both addresses.
+  const healthBase = argv.find(a => a.startsWith('--health-base='))?.slice('--health-base='.length) ?? null;
   const [base = 'https://prospectpilot.io', release = null] = argv.filter(a => !a.startsWith('--'));
-  const report = await verifyRelease({base, release, allowUnroutedHealth});
+  const report = await verifyRelease({base, release, allowUnroutedHealth, healthBase});
   for (const c of report.checks) console.log(`${c.ok === null ? 'n/a ' : c.ok ? 'ok  ' : 'FAIL'} ${c.id} — ${c.detail}`);
   const failed = report.checks.filter(c => c.ok === false).length;
   const skipped = report.checks.filter(c => c.ok === null).length;

@@ -169,3 +169,37 @@ test('a health path that is routed but unwell still fails',async()=>{
     assert.equal(report.ok, false, label);
   }
 });
+
+test('the health host can be separated from the host whose public surface is verified',async()=>{
+  // The trap this exists to avoid. The service URL answers /healthz, because the
+  // application handles it before the origin check -- but every other route is
+  // behind that check, and the allowed origins are the custom domain and the
+  // Firebase Hosting ones, so the service URL answers 403 for all of them.
+  // Verifying the whole thing from the service URL alone is not possible.
+  const forbidden = res => res.writeHead(403, {'content-type': 'application/json'})
+    .end(JSON.stringify({detail: 'Use the ProspectPilot website address.'}));
+  const serviceOnly = await run(service({'GET /version': forbidden, 'GET /login': forbidden,
+    'GET /': forbidden, 'GET /prospect': forbidden, api: forbidden}));
+  const healthCheck = serviceOnly.checks.find(c => c.id === 'health');
+  assert.equal(healthCheck.ok, true, 'the service URL does answer the health path');
+  assert.equal(serviceOnly.ok, false, 'and cannot verify anything else, which must not read as verified');
+  assert.ok(failed(serviceOnly).length >= 6, failed(serviceOnly).join(', '));
+
+  // Split across the two: the public surface from the front door, the health path
+  // from the service. Both hosts are named in the report so a passing run says
+  // where each answer came from.
+  const health = service();
+  await new Promise(resolve => health.listen(0, '127.0.0.1', resolve));
+  const healthBase = `http://127.0.0.1:${health.address().port}`;
+  try {
+    const front = service({'GET /healthz': res =>
+      res.writeHead(404, {'content-type': 'text/html'}).end('<!DOCTYPE html>')});
+    const report = await run(front, {healthBase, allowUnroutedHealth: false});
+    assert.deepEqual(failed(report), [], 'the front door serves the surface, the service serves health');
+    assert.equal(report.ok, true);
+    assert.match(report.checks.find(c => c.id === 'health').detail, new RegExp(`at ${healthBase}`));
+  } finally { await new Promise(resolve => health.close(resolve)); }
+
+  // A health base that is not a URL is refused rather than quietly ignored.
+  await assert.rejects(verifyRelease({base: 'https://prospectpilot.io', healthBase: 'localhost:8080'}), /health check/);
+});
