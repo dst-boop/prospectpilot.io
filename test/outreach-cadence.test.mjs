@@ -12,24 +12,27 @@ import {readFileSync} from 'node:fs';
 import {createResearchLab} from '../research-lab.mjs';
 import {cadenceState, touchWindow, sequenceProgress, callWindow, composeTouch, admitTouch, cycleStart,
   restPeriod, nextFollowUp, firstTouchSLA, addBusinessDays, offerDays, sequencePlan,
-  MAX_TOUCHES, WINDOW_DAYS, SEQUENCES, dialBudget, DIAL_CAP} from '../outreach-cadence.mjs';
+  MAX_TOUCHES, WINDOW_DAYS, SEQUENCES, dialBudget, DIAL_CAP, INBOUND_OUTCOMES} from '../outreach-cadence.mjs';
 
 const now = new Date('2026-09-24T15:00:00Z');           // a Thursday, 11:00 in New York
+const DAY = 86400000;
 const lead = {id: 'fixture', first_name: 'Jamie', last_name: 'Rivera', company: 'Northline Manufacturing',
   former_employers: 'Harbor Steel', email: 'jamie@example.com', estimated_age_range: '62', country: 'US', state: 'NY'};
 const csv = 'First Name,Last Name,Company,Title,Email,Estimated Age Range,Country,State,Former Employers\nJamie,Rivera,Northline Manufacturing,Director,jamie@example.com,62,US,NY,Harbor Steel';
 const touch = (days, extra = {}) => ({outcome: 'no_answer', channel: 'email',
   created_at: new Date(now.getTime() - days * 86400000).toISOString(), ...extra});
 
-async function fixture() {
+// `clock` lets a test use a clock that actually moves; the default is frozen,
+// which is what most of these cases want.
+async function fixture(clock = () => now) {
   const db = new PGlite();
   for (const file of ['generated/schema.sql', 'migrations/006-research-lab.sql', 'migrations/007-quality-v2.sql',
     'migrations/008-prospect-workspace.sql', 'migrations/012-plan-catalog-summary.sql',
-    'migrations/013-advisor-workflow.sql', 'migrations/014-outreach-cadence.sql', 'migrations/015-dial-budget.sql'])
+    'migrations/013-advisor-workflow.sql', 'migrations/014-outreach-cadence.sql', 'migrations/015-dial-budget.sql', 'migrations/016-inbound-contact.sql'])
     await db.exec(readFileSync(new URL('../' + file, import.meta.url), 'utf8'));
   const pool = {query: (...a) => db.query(...a), connect: async () => ({query: (...a) => db.query(...a), release() {}})};
   const user = {uid: 'owner', email: 'owner@example.com'};
-  const lab = createResearchLab({pool, now: () => now, sources: {readiness: {}}});
+  const lab = createResearchLab({pool, now: clock, sources: {readiness: {}}});
   await lab.importCSV(user, {csv});
   const id = (await lab.list(user)).leads[0].lead.id;
   return {db, lab, user, id};
@@ -958,5 +961,197 @@ test('only a first conversation can lead to a second, and the window is the firs
     assert.equal(ninety.meetings.held, 2);
     assert.equal(ninety.measured.find(m => m.id === 'second_meeting').value, 100);
     assert.match(ninety.measured.find(m => m.id === 'second_meeting').basis, /1 of 1 prospects you have met/);
+  } finally { await db.close(); }
+});
+
+// --- contact the prospect started ----------------------------------------------
+// Pacing bounds how often this application approaches someone. It was also
+// refusing to record the prospect approaching us, which is a different event and
+// the one that should end a rest. Recording it was impossible, so a prospect who
+// called back on day 30 of a 90-day rest could not be logged, booked, or released.
+
+test('a contact the prospect started is not an approach and spends no budget', () => {
+  const inbound = {outcome: 'connected', channel: 'phone', direction: 'inbound',
+    created_at: new Date(now.getTime() - DAY).toISOString()};
+  // Not one of the six.
+  assert.equal(touchWindow([inbound], {now}).count, 0);
+  assert.equal(touchWindow([touch(1), inbound], {now}).count, 1);
+  // Not one of the day's dials: it left from their number, not the line.
+  assert.equal(dialBudget([{outcome: 'connected', channel: 'phone', direction: 'inbound',
+    created_at: now.toISOString()}], {now}).placed, 0);
+  assert.equal(dialBudget([{outcome: 'no_answer', channel: 'phone', created_at: now.toISOString()}], {now}).placed, 1);
+  // But it is still a response, so it stops the scripted sequence and starts the
+  // next cycle — the two things an answer is supposed to do.
+  assert.equal(sequenceProgress([touch(3, {step: 'opener'}), inbound], SEQUENCES.priority, {now}).engaged_at,
+    inbound.created_at, 'their reply is what stopped the script, even though we never sent it');
+  assert.equal(cycleStart([inbound], null, now).toISOString(), inbound.created_at);
+});
+
+
+test('a rest period does not refuse a call the prospect placed, and a restriction still does', () => {
+  const resting = {activities: [], lead: {state: 'NY'}, rest: {reason: 'Completed sequence',
+    resume_at: new Date(now.getTime() + 60 * DAY).toISOString()}, now};
+  const state = cadenceState(resting);
+  assert.equal(state.status, 'resting');
+  assert.equal(admitTouch(state, {channel: 'phone', now}).ok, false, 'we still may not approach them');
+  const inbound = admitTouch(state, {channel: 'phone', now, direction: 'inbound'});
+  assert.equal(inbound.ok, true, 'but they may approach us');
+  assert.equal(inbound.step, null, 'and it spends no step of the sequence');
+  // Consent is not a pacing question. A contact restriction stands whoever placed
+  // the call; the advisor resolves it and then logs what happened.
+  const blocked = cadenceState({...resting, lead: {state: 'NY', suppressed: true}});
+  assert.equal(blocked.status, 'blocked');
+  assert.equal(admitTouch(blocked, {channel: 'phone', now, direction: 'inbound'}).ok, false);
+  // A spent budget is pacing, so it yields for the same reason a rest does.
+  const capped = cadenceState({activities: Array.from({length: MAX_TOUCHES}, (_, i) => touch(i + 1)),
+    lead: {state: 'NY'}, now});
+  assert.equal(capped.status, 'capped');
+  assert.equal(admitTouch(capped, {channel: 'phone', now}).ok, false);
+  assert.equal(admitTouch(capped, {channel: 'phone', now, direction: 'inbound'}).ok, true);
+  // The channel still has to be one the record can hold.
+  assert.equal(admitTouch(state, {channel: 'carrier pigeon', now, direction: 'inbound'}).ok, false);
+});
+
+test('logging an inbound call ends the rest by expiring it, never by deleting it', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    await db.query(`INSERT INTO advisor_rest_periods(lead_id,user_id,reason,started_at,resume_at)
+      VALUES($1,$2,'Completed sequence','2026-08-01T00:00:00Z','2026-11-30T00:00:00Z')`, [id, user.uid]);
+    let d = await lab.advisor.detail(user, id);
+    assert.equal(d.action.bucket, 'resting');
+    // Before: the conversation could not be recorded at all.
+    await lab.advisor.save(user, id, {outcome: 'connected', channel: 'phone', direction: 'inbound',
+      signature: d.action.signature, idempotency_key: 'they-called'});
+
+    // The row survives — it is the boundary the next cycle starts from, and
+    // nothing in this workflow deletes a rest period. It is simply over.
+    const rest = (await db.query('SELECT resume_at FROM advisor_rest_periods WHERE lead_id=$1', [id])).rows;
+    assert.equal(rest.length, 1, 'the rest period is expired, not removed');
+    assert.equal(new Date(rest[0].resume_at).toISOString(), now.toISOString());
+
+    d = await lab.advisor.detail(user, id);
+    assert.notEqual(d.action.bucket, 'resting', 'they asked to talk, so the rest is over');
+    // And the advisor can now follow up, with a full budget counted from the call.
+    assert.equal(d.cadence.touches.count, 0, 'their call is not one of our six touches');
+    // An approach of our own, which does count. `no_answer` deliberately: an
+    // agreed follow-up is itself a response and would start the cycle again,
+    // which would prove nothing about the budget.
+    await lab.advisor.save(user, id, {outcome: 'no_answer', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'we-called-back'});
+    // The fixture clock is frozen, so that call lands on the same instant the
+    // cycle begins, exactly on the boundary the cycle excludes. A real one is a
+    // later request; dating it as one is what makes the count mean anything.
+    await db.query(`UPDATE advisor_activities SET created_at='2026-09-24T16:00:00Z' WHERE idempotency_key='we-called-back'`);
+    assert.equal((await lab.advisor.detail(user, id)).cadence.touches.count, 1,
+      'our call back is the first of the next six; theirs was none of them');
+  } finally { await db.close(); }
+});
+
+test('a suppressed record refuses an inbound contact like any other', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    let d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'do_not_contact', channel: 'phone',
+      signature: d.action.signature, idempotency_key: 'dnc'});
+    d = await lab.advisor.detail(user, id);
+    await assert.rejects(lab.advisor.save(user, id, {outcome: 'connected', channel: 'phone', direction: 'inbound',
+      signature: d.action.signature, idempotency_key: 'inbound-after-dnc'}), {status: 422},
+      'this workflow cannot lift a contact restriction from either direction');
+  } finally { await db.close(); }
+});
+
+test('only a conversation can be inbound', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    const d = await lab.advisor.detail(user, id);
+    for (const outcome of ['no_answer', 'meeting_held', 'no_show', 'not_interested', 'reopen'])
+      await assert.rejects(lab.advisor.save(user, id, {outcome, channel: 'phone', direction: 'inbound',
+        next_at: '2026-09-30T14:00:00Z', signature: d.action.signature, idempotency_key: 'bad-' + outcome}),
+        {status: 422}, `${outcome} cannot describe a contact the prospect started`);
+    assert.deepEqual([...INBOUND_OUTCOMES].sort(), ['connected', 'follow_up', 'meeting_booked']);
+    // An outbound save is unchanged, and stores no direction.
+    await lab.advisor.save(user, id, {outcome: 'no_answer', channel: 'email',
+      signature: d.action.signature, idempotency_key: 'normal'});
+    assert.equal((await db.query('SELECT direction FROM advisor_activities WHERE idempotency_key=$1',
+      ['normal'])).rows[0].direction, null);
+  } finally { await db.close(); }
+});
+
+test('a prospect who called in first did not meet the service level', async () => {
+  // The rate this could most easily flatter. The service level asks whether the
+  // advisor reached the prospect within a business day; a call the prospect
+  // placed would otherwise answer that question on their behalf.
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    // Added four days ago, so the deadline has passed and the figure is measurable.
+    await db.query(`UPDATE discovery_leads SET created_at='2026-09-18T09:00:00Z' WHERE id=$1`, [id]);
+    const d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'connected', channel: 'phone', direction: 'inbound',
+      signature: d.action.signature, idempotency_key: 'they-called-first'});
+
+    const board = await lab.advisor.scoreboard(user, {days: 30});
+    assert.equal(board.measured.find(m => m.id === 'first_touch_sla').value, 0,
+      'nobody reached them inside a business day, whoever else did');
+    assert.equal(board.worked, 0, 'their call is not the advisor working the prospect');
+    assert.equal(board.untouched, 1);
+    // It is still a response, because it is one.
+    assert.equal((await lab.advisor.worklist(user, {})).activity.conversations, 1);
+    assert.equal((await lab.advisor.worklist(user, {})).activity.attempts, 0,
+      'and it is not an attempt the advisor made');
+  } finally { await db.close(); }
+});
+
+// --- raised in review on the inbound work --------------------------------------
+
+test('the rest and the contact that ended it share one instant, on a clock that moves', async () => {
+  // Every call returns a later time, which is what a real clock does and what the
+  // frozen fixture cannot show. Two calls meant the rest expired a moment after
+  // the contact that ended it, so the rest — not the reply — became the later of
+  // the two marks cycleStart compares. The reply then no longer sat on the cycle
+  // boundary, cadenceState stopped reading it as answered, and a prospect who had
+  // just called in was offered the opening step of a scripted sequence.
+  let tick = 0;
+  const {db, lab, user, id} = await fixture(() => new Date(now.getTime() + tick++));
+  try {
+    await reviewBasics(lab, user, id);
+    await db.query(`INSERT INTO advisor_rest_periods(lead_id,user_id,reason,started_at,resume_at)
+      VALUES($1,$2,'Completed sequence','2026-08-01T00:00:00Z','2026-11-30T00:00:00Z')`, [id, user.uid]);
+    let d = await lab.advisor.detail(user, id);
+    assert.equal(d.action.bucket, 'resting');
+    await lab.advisor.save(user, id, {outcome: 'connected', channel: 'phone', direction: 'inbound',
+      signature: d.action.signature, idempotency_key: 'they-called'});
+
+    const activity = (await db.query(`SELECT created_at FROM advisor_activities WHERE idempotency_key='they-called'`)).rows[0];
+    const rest = (await db.query('SELECT resume_at FROM advisor_rest_periods WHERE lead_id=$1', [id])).rows[0];
+    assert.equal(new Date(rest.resume_at).getTime(), new Date(activity.created_at).getTime(),
+      'the rest ends exactly when they called, not a moment after');
+
+    d = await lab.advisor.detail(user, id);
+    assert.equal(d.cadence.status, 'engaged',
+      'they answered, so a person takes over — the script does not start again');
+    assert.notEqual(d.cadence.status, 'ready', 'and they are not offered an opening email');
+    assert.equal(d.cadence.progress.completed, 0);
+  } finally { await db.close(); }
+});
+
+test('one save is judged and written at a single instant', async () => {
+  // The same root cause, where it is easiest to see: the note stamp, the row and
+  // the pacing decision all come from one reading of the clock.
+  let tick = 0;
+  const {db, lab, user, id} = await fixture(() => new Date(now.getTime() + tick++));
+  try {
+    await reviewBasics(lab, user, id);
+    const d = await lab.advisor.detail(user, id);
+    await lab.advisor.save(user, id, {outcome: 'no_answer', channel: 'email', note: 'Left it with them.',
+      signature: d.action.signature, idempotency_key: 'one-instant'});
+    const row = (await db.query(`SELECT created_at FROM advisor_activities WHERE idempotency_key='one-instant'`)).rows[0];
+    const notes = (await db.query('SELECT payload FROM discovery_leads WHERE id=$1', [id])).rows[0].payload;
+    const stamped = (typeof notes === 'string' ? JSON.parse(notes) : notes).notes.match(/^(\S+) · /m)[1];
+    assert.equal(stamped, new Date(row.created_at).toISOString(),
+      'the note and the row it describes carry the same time');
   } finally { await db.close(); }
 });

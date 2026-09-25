@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {assessLead, leadIdentity, hash, csvCell} from './lead-quality.mjs';
-import {cadenceState, admitTouch, restPeriod, nextFollowUp, composeTouch, firstTouchSLA, dialBudget, TOUCH_OUTCOMES} from './outreach-cadence.mjs';
+import {cadenceState, admitTouch, restPeriod, nextFollowUp, composeTouch, firstTouchSLA, dialBudget, TOUCH_OUTCOMES, INBOUND_OUTCOMES} from './outreach-cadence.mjs';
 import {phoneReadiness} from './prospect-data-quality.mjs';
 
 export function withDirectoryRestrictions(lead,contacts=[]) {
@@ -86,15 +86,21 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     // Every dial, not only the ones that count as a touch. A call that ended in
     // "not interested" still put volume on the number, which is what a carrier
     // is measuring; excluding it would undercount the budget it protects.
+    //
+    // A call the prospect placed is the exception: it left from their number, so
+    // it earns this line no reputation and spends none of its allowance.
     const rows=(await client.query(`SELECT created_at FROM advisor_activities
-      WHERE user_id=$1 AND channel='phone' AND created_at >= $2::timestamptz`,
+      WHERE user_id=$1 AND channel='phone' AND direction IS DISTINCT FROM 'inbound'
+        AND created_at >= $2::timestamptz`,
       [user.uid,since])).rows;
     return dialBudget(rows.map(r=>({outcome:'no_answer',channel:'phone',created_at:r.created_at})),{now:now(),zone});
   }
-  async function cadenceFor(user,id,lead,quality,client=pool,dials=null) {
-    const activities=(await client.query('SELECT outcome,channel,step,created_at FROM advisor_activities WHERE lead_id=$1 AND user_id=$2 ORDER BY created_at',[id,user.uid])).rows;
+  // `at` lets a caller inside a transaction judge the record against the same
+  // instant it is writing, rather than a clock that has moved on since.
+  async function cadenceFor(user,id,lead,quality,client=pool,dials=null,at=null) {
+    const activities=(await client.query('SELECT outcome,channel,step,direction,created_at FROM advisor_activities WHERE lead_id=$1 AND user_id=$2 ORDER BY created_at',[id,user.uid])).rows;
     const rest=(await client.query('SELECT reason,resume_at FROM advisor_rest_periods WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows[0]||null;
-    return cadenceState({activities,lead,quality,rest,now:now(),dials});
+    return cadenceState({activities,lead,quality,rest,now:at||now(),dials});
   }
   async function detail(user,id) {
     const {lead}=await accessible(user,id);
@@ -106,7 +112,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       // The words for the next touch, not a description of them.
       draft:action.bucket==='closed'||!cadence.step?null:composeTouch(cadence.step,{lead,advisor:await profile(user),now:now(),sent:cadence.progress.done}),
       schedules:nextFollowUp(cadence,{now:now()}),
-      activities:(await pool.query('SELECT outcome,channel,step,note,next_at,created_at FROM advisor_activities WHERE lead_id=$1 ORDER BY created_at DESC,id DESC LIMIT 30',[id])).rows};
+      activities:(await pool.query('SELECT outcome,channel,step,direction,note,next_at,created_at FROM advisor_activities WHERE lead_id=$1 ORDER BY created_at DESC,id DESC LIMIT 30',[id])).rows};
   }
   async function worklist(user,{view='today',search='',offset=0,limit=24}={}) {
     if(!['today','ready','due','review','enrich','scheduled','meetings','resting','closed','all'].includes(view))throw fail(422,'Choose a worklist view.');
@@ -121,7 +127,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const records=rows.length?(await pool.query('SELECT lead_id,payload FROM lab_observations WHERE user_id=$1 AND lead_id=ANY($2::text[])',[user.uid,ids])).rows:[];
     const observations=new Map();for(const r of records){if(!observations.has(r.lead_id))observations.set(r.lead_id,[]);observations.get(r.lead_id).push(parse(r.payload));}
     // Pacing for the whole page in two queries rather than two per prospect.
-    const touched=rows.length?(await pool.query('SELECT lead_id,outcome,channel,step,created_at FROM advisor_activities WHERE user_id=$1 AND lead_id=ANY($2::text[]) ORDER BY created_at',[user.uid,ids])).rows:[];
+    const touched=rows.length?(await pool.query('SELECT lead_id,outcome,channel,step,direction,created_at FROM advisor_activities WHERE user_id=$1 AND lead_id=ANY($2::text[]) ORDER BY created_at',[user.uid,ids])).rows:[];
     const history=new Map();for(const a of touched){if(!history.has(a.lead_id))history.set(a.lead_id,[]);history.get(a.lead_id).push(a);}
     const rests=rows.length?(await pool.query('SELECT lead_id,reason,resume_at FROM advisor_rest_periods WHERE user_id=$1 AND lead_id=ANY($2::text[])',[user.uid,ids])).rows:[];
     const resting=new Map(rests.map(r=>[r.lead_id,r]));
@@ -136,7 +142,8 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const counts={today:0,ready:0,due:0,review:0,enrich:0,scheduled:0,meetings:0,resting:0,closed:0,all:all.length};
     for(const r of all){counts[r.action.bucket]++;if(['due','ready','review','enrich'].includes(r.action.bucket))counts.today++;}
     const filtered=all.filter(r=>view==='all'||(view==='today'?['due','ready','review','enrich'].includes(r.action.bucket):r.action.bucket===view));
-    const activity=(await pool.query(`SELECT count(*)::int AS attempts,count(*) FILTER(WHERE a.outcome IN ('connected','follow_up','meeting_booked','meeting_held'))::int AS conversations,
+    const activity=(await pool.query(`SELECT count(*) FILTER(WHERE a.direction IS DISTINCT FROM 'inbound')::int AS attempts,
+      count(*) FILTER(WHERE a.outcome IN ('connected','follow_up','meeting_booked','meeting_held'))::int AS conversations,
       count(DISTINCT a.lead_id) FILTER(WHERE a.outcome='meeting_booked')::int AS meetings FROM advisor_activities a
       JOIN discovery_leads d ON d.id=a.lead_id WHERE a.user_id=$2 AND ${visibleSQL}
       AND a.created_at >= $4::timestamptz AND a.outcome = ANY($5::text[])`,['wealth-management',user.uid,user.email,new Date(now().getTime()-7*86400000).toISOString(),[...TOUCH_OUTCOMES]])).rows[0];
@@ -148,17 +155,24 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const note=String(input.note||'').trim();if(note.length>2000)throw fail(422,'Keep the note under 2,000 characters.');
     return transaction(pool,async client=>{
       await client.query('SELECT pg_advisory_xact_lock(505006)');
+      // One instant for the whole save. Two calls to the clock are two different
+      // times, and the gap has teeth: a rest expired a millisecond after the
+      // inbound contact that ended it becomes the later of the two marks
+      // cycleStart compares, so the reply no longer sits on the cycle boundary,
+      // cadenceState stops reading it as answered, and the prospect who just
+      // called in is offered the opening step of a scripted sequence.
+      const at=now(),stamp=at.toISOString();
       const {lead}=await accessible(user,id,client,true);
       const prior=(await client.query('SELECT id FROM advisor_activities WHERE lead_id=$1 AND user_id=$2 AND idempotency_key=$3',[id,user.uid,key])).rows[0];
       if(prior)return {saved:true,replayed:true};
-    let next=null;if(input.next_at){const d=new Date(input.next_at);if(!Number.isFinite(d.getTime())||d<=now()||d.getUTCFullYear()>now().getUTCFullYear()+5)throw fail(422,'Choose a future follow-up time within five years.');next=d.toISOString();}
+    let next=null;if(input.next_at){const d=new Date(input.next_at);if(!Number.isFinite(d.getTime())||d<=at||d.getUTCFullYear()>at.getUTCFullYear()+5)throw fail(422,'Choose a future follow-up time within five years.');next=d.toISOString();}
     if(['follow_up','meeting_booked','no_show'].includes(input.outcome)&&!next)throw fail(422,'Choose a date and time for the follow-up or meeting.');
     if(['not_interested','do_not_contact','reopen'].includes(input.outcome))next=null;
 
       // Pacing is checked against the record as it stands, before this touch is
       // written, so a refusal reaches the advisor while it can still matter.
-      const quality=assessLead(lead,(await client.query('SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows.map(r=>parse(r.payload)),{now:now()});
-      const before=await cadenceFor(user,id,lead,quality,client);
+      const quality=assessLead(lead,(await client.query('SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows.map(r=>parse(r.payload)),{now:at});
+      const before=await cadenceFor(user,id,lead,quality,client,null,at);
       // Attendance is an outcome of something. Without this, Meeting held on an
       // untouched prospect would mark them Met, restart their touch budget and
       // add a held meeting to the show rate, all without a meeting.
@@ -172,14 +186,21 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
         if(m.booked<=m.held)throw fail(422,'Record the booked meeting first. Met and No-show describe a meeting that was arranged.');
       }
       const channel=input.channel??null;
+      // Who started this contact. Only a conversation can be inbound: a missed
+      // call from them is not an event, and attendance is mutual by the time it
+      // happens and keeps its booking requirement.
+      const inbound=input.direction==='inbound';
+      if(inbound&&!INBOUND_OUTCOMES.has(input.outcome))
+        throw fail(422,'Only Connected, Follow-up agreed and Meeting booked can record a contact the prospect started.');
+      const direction=inbound?'inbound':null;
       let step=null;
       if(TOUCH_OUTCOMES.has(input.outcome)) {
-        const verdict=admitTouch(before,{channel,now:now()});
+        const verdict=admitTouch(before,{channel,now:at,direction:inbound?'inbound':'outbound'});
         if(!verdict.ok)throw fail(verdict.status,verdict.reason);
         step=verdict.step;
         // The schedule is the application's to keep. An unanswered touch does
         // not ask the advisor for a date; the sequence already knows the next one.
-        if(!next&&input.outcome==='no_answer')next=nextFollowUp(before,{now:now()})?.at||null;
+        if(!next&&input.outcome==='no_answer')next=nextFollowUp(before,{now:at})?.at||null;
       }
 
       if(input.signature!==workflowSignature(lead))throw fail(409,'This prospect changed. Close and reopen the record before saving. Your note has not been discarded.');
@@ -187,13 +208,18 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       const activityId=randomUUID();
       lead.follow_up_status=outcomes[input.outcome];lead.follow_up_date=next;lead.advisor_activity_id=activityId;
       if(input.outcome==='do_not_contact'){lead.suppressed=true;await client.query("UPDATE prospect_contacts pc SET payload=jsonb_set(pc.payload,'{suppressed}','true'),updated_at=now() WHERE EXISTS(SELECT 1 FROM advisor_contact_links acl WHERE acl.contact_id=pc.id AND acl.user_id=pc.user_id AND acl.lead_id=$1)",[id]);}
-      if(note)lead.notes=[lead.notes,`${now().toISOString()} · ${input.outcome.replaceAll('_',' ')}: ${note}`].filter(Boolean).join('\n');
+      if(note)lead.notes=[lead.notes,`${stamp} · ${input.outcome.replaceAll('_',' ')}: ${note}`].filter(Boolean).join('\n');
       await client.query('UPDATE discovery_leads SET payload=$1,updated_at=now() WHERE id=$2',[JSON.stringify(lead),id]);
-      await client.query('INSERT INTO advisor_activities(id,lead_id,user_id,idempotency_key,outcome,note,next_at,created_at,channel,step) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',[activityId,id,user.uid,key,input.outcome,note,next,now().toISOString(),channel,step]);
+      await client.query('INSERT INTO advisor_activities(id,lead_id,user_id,idempotency_key,outcome,note,next_at,created_at,channel,step,direction) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',[activityId,id,user.uid,key,input.outcome,note,next,stamp,channel,step,direction]);
+      // A rest bounds how often this application approaches someone. They just
+      // approached us, so the reason for it is gone. It ends now rather than
+      // being deleted: the row is the boundary cycleStart reads to start the
+      // next cycle here, and nothing in this workflow removes a rest period.
+      if(inbound)await client.query('UPDATE advisor_rest_periods SET resume_at=$3 WHERE lead_id=$1 AND user_id=$2 AND resume_at > $3',[id,user.uid,stamp]);
       // Re-read the pacing with this touch included: reaching the limit opens the
       // rest period here rather than waiting for someone to notice the count.
-      const after=await cadenceFor(user,id,lead,quality,client);
-      const rest=restPeriod(after,{now:now()});
+      const after=await cadenceFor(user,id,lead,quality,client,null,at);
+      const rest=restPeriod(after,{now:at});
       if(rest)await client.query(`INSERT INTO advisor_rest_periods(lead_id,user_id,reason,started_at,resume_at) VALUES($1,$2,$3,$4,$5)
         ON CONFLICT(lead_id,user_id) DO UPDATE SET reason=EXCLUDED.reason,started_at=EXCLUDED.started_at,resume_at=EXCLUDED.resume_at`,[id,user.uid,rest.reason,rest.started_at,rest.resume_at]);
       // Reopening changes workflow status, not pacing. Preserve active rests
@@ -226,8 +252,12 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     if(!Number.isSafeInteger(days)||days<1||days>365)throw fail(422,'Choose a window between 1 and 365 days.');
     const since=new Date(now().getTime()-days*86400000).toISOString();
     const rows=(await pool.query(`SELECT d.id,d.created_at AS added_at,
-        min(a.created_at) FILTER(WHERE a.outcome=ANY($5::text[])) AS first_touch_at,
-        count(a.id) FILTER(WHERE a.outcome=ANY($5::text[]))::int AS touches,
+        -- Approaches only. A prospect who called in first did not make the
+        -- service level: it measures whether the advisor reached them within a
+        -- business day, and counting their call would report that as met on a
+        -- prospect nobody had got to. Same for the touched population below.
+        min(a.created_at) FILTER(WHERE a.outcome=ANY($5::text[]) AND a.direction IS DISTINCT FROM 'inbound') AS first_touch_at,
+        count(a.id) FILTER(WHERE a.outcome=ANY($5::text[]) AND a.direction IS DISTINCT FROM 'inbound')::int AS touches,
         bool_or(a.outcome IN ('connected','follow_up','meeting_booked','meeting_held')) AS engaged,
         bool_or(a.outcome='meeting_booked') AS booked,
         -- A meeting whose time has not arrived is not yet a missed one.
