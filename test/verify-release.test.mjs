@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
-import {verifyRelease, EXPECTED} from '../scripts/verify-release.mjs';
+import {verifyRelease, EXPECTED, healthOptionalFor} from '../scripts/verify-release.mjs';
 
 const RELEASE = 'review-20260925010203-4242';
 const version = extra => JSON.stringify({application: 'ProspectPilot', ...EXPECTED, release_id: RELEASE, ...extra});
@@ -125,16 +125,38 @@ test('a missing release identifier is not silently skipped, and a bad base URL i
   await assert.rejects(verifyRelease({}), /base URL/);
 });
 
-test('a health path the host does not rewrite is reported as unexposed, not as a failure',async()=>{
+test('a 404 on the health path only counts as unexposed where the host is known not to route it',async()=>{
   // What the live custom domain actually does: Firebase Hosting serves its own
   // 404 for a path it was not configured to rewrite to the service.
-  const report = await run(service({'GET /healthz': res =>
-    res.writeHead(404, {'content-type': 'text/html'}).end('<!DOCTYPE html><html lang=en>')}));
-  assert.deepEqual(failed(report), []);
-  assert.equal(report.ok, true, 'a routing gap on the host is not a sick release');
-  const health = report.checks.find(c => c.id === 'health');
-  assert.equal(health.ok, null);
-  assert.match(health.detail, /not rewritten to the service/);
+  const missing = {'GET /healthz': res =>
+    res.writeHead(404, {'content-type': 'text/html'}).end('<!DOCTYPE html><html lang=en>')};
+
+  // A loopback host is not a known front door, so the same 404 is a failure --
+  // otherwise a broken health route on the service itself, or on any staging
+  // environment, would report as n/a and the run would still pass.
+  const strict = await run(service(missing));
+  assert.deepEqual(failed(strict), ['health']);
+  assert.equal(strict.ok, false);
+  assert.match(strict.checks.find(c => c.id === 'health').detail, /should route it to the service/);
+
+  // Excused explicitly, or by the host being one of the front doors that is
+  // known not to rewrite the path.
+  const excused = await run(service(missing), {allowUnroutedHealth: true});
+  assert.deepEqual(failed(excused), []);
+  assert.equal(excused.ok, true, 'a routing gap on the front door is not a sick release');
+  assert.equal(excused.checks.find(c => c.id === 'health').ok, null);
+  assert.match(excused.checks.find(c => c.id === 'health').detail, /not rewritten to the service/);
+
+  // And the host list itself: the custom domain and Firebase Hosting are excused,
+  // the Cloud Run service URL and anything unrecognized are not.
+  for (const host of ['prospectpilot.io', 'www.prospectpilot.io', 'lead-qualifier-505002.web.app', 'x.firebaseapp.com'])
+    assert.equal(healthOptionalFor(host), true, host);
+  for (const host of ['prospectpilot-abc123-uc.a.run.app', 'staging.prospectpilot.io', '127.0.0.1', 'prospectpilot.io.example.com'])
+    assert.equal(healthOptionalFor(host), false, host);
+
+  // A required check cannot be waved through by the host being a front door.
+  const required = await run(service(missing), {allowUnroutedHealth: false});
+  assert.deepEqual(failed(required), ['health']);
 });
 
 test('a health path that is routed but unwell still fails',async()=>{

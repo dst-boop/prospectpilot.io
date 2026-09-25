@@ -195,9 +195,15 @@ says so rather than implying otherwise.
 
 `/healthz` is answered by the application but is not rewritten to the service by
 the custom domain's hosting, so through `prospectpilot.io` it returns the host's
-own 404. The check reports that as **not exposed on this host** rather than as a
-failure. Uptime monitoring has to point at the Cloud Run service URL, not the
-custom domain.
+own 404. On that domain and the Firebase Hosting ones, the check reports **not
+exposed on this host** rather than a failure. **Everywhere else a 404 there
+fails** — pointed at the Cloud Run service URL or a staging environment, the path
+should be answered, and a broken health route excused as `n/a` would be a health
+check that cannot fail. `--health-required` holds any host to it;
+`--health-optional` excuses one that is known not to route it.
+
+Uptime monitoring has to point at the Cloud Run service URL, not the custom
+domain, for the same reason: on the domain that path never reaches the app.
 
 The advisor workflow adds migration **013** for activity history and contact links, and **014** for outreach pacing, drafted touches and the advisor profile. The contact workspace requires migrations **008** and **009** before starting the service and worker; these add contacts, lists, imports, saved searches, durable tasks and cost reservations. The migration runner applies all outstanding migrations in order.
 
