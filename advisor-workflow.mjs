@@ -158,8 +158,11 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const ids=[...new Set(others.map(a=>a.user_id))];
     const named=(await client.query("SELECT user_id,COALESCE(NULLIF(full_name,''),email) AS name FROM discovery_users WHERE user_id=ANY($1::text[])",[ids])).rows;
     const names=ids.map(uid=>named.find(r=>r.user_id===uid)?.name||'another advisor');
+    // Named, but not an unbounded list: past two the sentence stops being read.
+    const said=names.length<=2?names.join(' and ')
+      :`${names.slice(0,2).join(', ')} and ${names.length-2} other${names.length-2===1?'':'s'}`;
     return {...state,shared:{touches:others.length,advisors:names,
-      reason:`${others.length} of these touches ${others.length===1?'was':'were'} logged by ${names.join(' and ')}. The limit is on how often this person is approached, not on how often you approach them.`}};
+      reason:`${others.length} of these touches ${others.length===1?'was':'were'} logged by ${said}. The limit is on how often this person is approached, not on how often you approach them.`}};
   }
   async function detail(user,id) {
     const {lead}=await accessible(user,id);
@@ -175,7 +178,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       // which reads as your own history and makes a shared cap inexplicable.
       // `by` is the colleague who logged it, and null when it was you.
       activities:(await pool.query(`SELECT a.outcome,a.channel,a.step,a.direction,a.note,a.next_at,a.created_at,
-          CASE WHEN a.user_id=$2 THEN NULL ELSE COALESCE(NULLIF(u.full_name,''),u.email,'another advisor') END AS by
+          CASE WHEN a.user_id=$2 THEN NULL ELSE COALESCE(NULLIF(u.full_name,''),u.email,'another advisor') END AS logged_by
         FROM advisor_activities a LEFT JOIN discovery_users u ON u.user_id=a.user_id
         WHERE a.lead_id=$1 ORDER BY a.created_at DESC,a.id DESC LIMIT 30`,[id,user.uid])).rows};
   }

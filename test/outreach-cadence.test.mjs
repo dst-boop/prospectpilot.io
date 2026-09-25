@@ -1259,15 +1259,15 @@ test('the history says which entries are a colleague’s', async () => {
     const asOther = (await lab.advisor.detail(other, id)).activities;
     assert.equal(asOther.length, 2);
     // Yours carries no name; a colleague's is named.
-    assert.equal(asOther.find(a => a.channel === 'phone').by, null);
-    assert.equal(asOther.find(a => a.channel === 'email').by, 'Sam Okafor');
+    assert.equal(asOther.find(a => a.channel === 'phone').logged_by, null);
+    assert.equal(asOther.find(a => a.channel === 'email').logged_by, 'Sam Okafor');
     const asOwner = (await lab.advisor.detail(user, id)).activities;
-    assert.equal(asOwner.find(a => a.channel === 'email').by, null);
-    assert.equal(asOwner.find(a => a.channel === 'phone').by, 'Dana Reyes');
+    assert.equal(asOwner.find(a => a.channel === 'email').logged_by, null);
+    assert.equal(asOwner.find(a => a.channel === 'phone').logged_by, 'Dana Reyes');
     // An advisor authentication never recorded is still named as somebody, not
     // silently merged into the viewer's own history.
     await db.query(`UPDATE advisor_activities SET user_id='ghost' WHERE idempotency_key='theirs'`);
-    assert.equal((await lab.advisor.detail(user, id)).activities.find(a => a.channel === 'phone').by,
+    assert.equal((await lab.advisor.detail(user, id)).activities.find(a => a.channel === 'phone').logged_by,
       'another advisor');
   } finally { await db.close(); }
 });
@@ -1312,5 +1312,28 @@ test('an inbound call ends the rest in force even when a colleague opened it', a
     const rows = (await db.query('SELECT resume_at FROM advisor_rest_periods WHERE lead_id=$1', [id])).rows;
     assert.equal(rows.length, 1);
     assert.equal(new Date(rows[0].resume_at).toISOString(), now.toISOString());
+  } finally { await db.close(); }
+});
+
+test('more than two colleagues are summarised rather than listed', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    const team = [];
+    for (const [i, name] of ['Dana Reyes', 'Sam Okafor', 'Lee Park', 'Robin Vale'].entries())
+      team.push(await register(db, {uid: 'adv-' + i, email: `adv${i}@example.com`, name, role: 'admin'}));
+    for (const [i, who] of team.entries()) {
+      await confirmBasics(lab, who, id);
+      const d = await lab.advisor.detail(who, id);
+      await lab.advisor.save(who, id, {outcome: 'no_answer', channel: 'email',
+        signature: d.action.signature, idempotency_key: 'touch-' + i});
+    }
+    const seen = await lab.advisor.detail(user, id);
+    assert.equal(seen.cadence.shared.touches, 4);
+    assert.deepEqual(seen.cadence.shared.advisors, ['Dana Reyes', 'Sam Okafor', 'Lee Park', 'Robin Vale']);
+    assert.match(seen.cadence.shared.reason, /Dana Reyes, Sam Okafor and 2 others/);
+    // The budget they spent between them is the one this advisor has left.
+    assert.equal(seen.cadence.touches.count, 4);
+    assert.equal(seen.cadence.touches.remaining, MAX_TOUCHES - 4);
   } finally { await db.close(); }
 });
