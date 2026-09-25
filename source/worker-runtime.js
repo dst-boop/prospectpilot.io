@@ -119,10 +119,18 @@ const MARKET_INDUSTRY_RULES = [
   { pattern: /funeral home/i, label: "Funeral homes", selectors: [["shop", "funeral_directors"]] },
   { pattern: /veterinar/i, label: "Veterinary practices", selectors: [["amenity", "veterinary"]] },
 ];
+// Every status the application can write, whichever workflow wrote it. The lab
+// records "Met" when a booked meeting is held and "Client" when a prospect signs;
+// a status missing from this set is rejected by the legacy tools and, worse, is
+// absent from their pickers -- so opening such a record there and saving pushes
+// it back to the first option in the list.
 const FOLLOW_UP_STATUSES = new Set([
   "New", "Researching", "Ready to Contact", "Contacted", "Follow-up",
-  "Meeting Set", "Nurture", "Not a Fit",
+  "Meeting Set", "Met", "Client", "Nurture", "Not a Fit",
 ]);
+// Statuses that end prospecting. A held meeting is not one of them -- it is
+// followed up -- but a client and a closed record are.
+const TERMINAL_STATUSES = new Set(["Meeting Set", "Client", "Not a Fit"]);
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -2358,7 +2366,7 @@ async function apiRoutes(request, env, path, url) {
   if (path === `${API}/metrics` && request.method === "GET") {
     const allLeads = (await visibleLeadRows(env.DB, user)).map(item => item.lead);
     const leads = allLeads.filter(lead => lead.identity_status !== "excluded");
-    return json({ leads: leads.length, total_leads: leads.length, high_priority: highPriorityLeadIds(leads).size, high_priority_share: HIGH_PRIORITY_SHARE, timely_signals: leads.filter(lead => lead.timing_score >= 65).length, follow_ups_due: leads.filter(lead => lead.follow_up_date && lead.follow_up_date <= today() && !["Meeting Set", "Not a Fit"].includes(lead.follow_up_status)).length, identity_review: leads.filter(lead => lead.identity_status === "review").length, identity_excluded: allLeads.filter(lead => lead.identity_status === "excluded").length, zoominfo: summarizeZoomInfoMatches(leads) });
+    return json({ leads: leads.length, total_leads: leads.length, high_priority: highPriorityLeadIds(leads).size, high_priority_share: HIGH_PRIORITY_SHARE, timely_signals: leads.filter(lead => lead.timing_score >= 65).length, follow_ups_due: leads.filter(lead => lead.follow_up_date && lead.follow_up_date <= today() && !TERMINAL_STATUSES.has(lead.follow_up_status)).length, identity_review: leads.filter(lead => lead.identity_status === "review").length, identity_excluded: allLeads.filter(lead => lead.identity_status === "excluded").length, zoominfo: summarizeZoomInfoMatches(leads) });
   }
   const campaigns = await campaignRoutes(request, env.DB, user, path, url);
   if (campaigns) return campaigns;
@@ -2383,8 +2391,16 @@ async function apiRoutes(request, env, path, url) {
     if (!selected.size) throw new HttpError(422, "Select at least one lead before export.");
     const leadsForExport = (await visibleLeadRows(env.DB, user)).filter(item => selected.has(item.lead.id)).map(item => item.lead);
     if (leadsForExport.length !== selected.size) throw new HttpError(404, "One or more selected leads are unavailable.");
-    await audit(env.DB, user, "export", "lead", "zoominfo", `${leadsForExport.length} leads`);
-    return new Response(zoomInfoCandidateCSV(leadsForExport), { headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="zoominfo-candidates-${today()}.csv"`, "cache-control": "no-store" } });
+    // Nobody pays a provider to enrich somebody who is already a client. This is
+    // the candidate list for outbound research, unlike the Salesforce export
+    // above, which is a handoff to a CRM and where a client belongs. Dropped
+    // rather than refused, so one client in a selection of a hundred does not
+    // block the export -- and counted in the audit, so it is not invisible.
+    const candidates = leadsForExport.filter(lead => lead.follow_up_status !== "Client");
+    const clients = leadsForExport.length - candidates.length;
+    if (!candidates.length) throw new HttpError(422, "Every selected lead is already a client. Provider enrichment is for prospects.");
+    await audit(env.DB, user, "export", "lead", "zoominfo", `${candidates.length} leads${clients ? `, ${clients} client${clients === 1 ? "" : "s"} excluded` : ""}`);
+    return new Response(zoomInfoCandidateCSV(candidates), { headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="zoominfo-candidates-${today()}.csv"`, "cache-control": "no-store" } });
   }
   throw new HttpError(404, "Not found.");
 }

@@ -35,7 +35,7 @@ export function callEligibility(lead, blocked = new Set()) {
   if(providerCheck?.status==='blocked') reasons.push('WealthFeed reports do not call');
   if(providerCheck?.status==='unknown') reasons.push('Check do-not-call status');
   if (lead.identity_status !== 'matched') reasons.push('Check the person’s identity');
-  if (['Not a Fit', 'Meeting Set', 'Nurture'].includes(lead.follow_up_status)) reasons.push('Removed from new calls');
+  if (['Not a Fit', 'Meeting Set', 'Nurture', 'Client'].includes(lead.follow_up_status)) reasons.push('Removed from new calls');
   return {phone, ready: reasons.length === 0, reasons};
 }
 
