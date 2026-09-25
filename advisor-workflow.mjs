@@ -11,6 +11,12 @@ export function withDirectoryRestrictions(lead,contacts=[]) {
 }
 
 const parse=v=>typeof v==='string'?JSON.parse(v):v;
+// Buckets where prospecting has finished. Neither may be offered a drafted touch
+// or a next follow-up time: the draft is the words for an approach, and there is
+// no approach to make. A client reaches this for a different reason than a closed
+// record -- they signed rather than declined -- but the prospecting consequence
+// is identical, so both are named here rather than checked one at a time.
+const TERMINAL_BUCKETS=new Set(['closed','clients']);
 const fail=(status,message)=>Object.assign(Error(message),{status});
 const fields={age:'Confirm current age',residence:'Confirm US residence',contact:'Verify contact ownership',retirement:'Ask about retained retirement assets and transfer eligibility',net_worth:'Obtain an authorized financial disclosure'};
 const outcomes={no_answer:'Contacted',connected:'Contacted',follow_up:'Follow-up',meeting_booked:'Meeting Set',
@@ -121,8 +127,8 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const action=nextAction(lead,quality,now(),cadence);
     return {action,cadence,
       // The words for the next touch, not a description of them.
-      draft:action.bucket==='closed'||!cadence.step?null:composeTouch(cadence.step,{lead,advisor:await profile(user),now:now(),sent:cadence.progress.done}),
-      schedules:nextFollowUp(cadence,{now:now()}),
+      draft:TERMINAL_BUCKETS.has(action.bucket)||!cadence.step?null:composeTouch(cadence.step,{lead,advisor:await profile(user),now:now(),sent:cadence.progress.done}),
+      schedules:TERMINAL_BUCKETS.has(action.bucket)?null:nextFollowUp(cadence,{now:now()}),
       activities:(await pool.query('SELECT outcome,channel,step,direction,note,next_at,created_at FROM advisor_activities WHERE lead_id=$1 ORDER BY created_at DESC,id DESC LIMIT 30',[id])).rows};
   }
   async function worklist(user,{view='today',search='',offset=0,limit=24}={}) {
@@ -279,7 +285,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const rows=[];for(const id of [...new Set(input.ids)]){
       // Nobody pays a provider to enrich a record they have already closed, and
       // a client's details are the firm's to hold by then, not a research gap.
-      const {lead}=await accessible(user,id),{action}=await detail(user,id);if(['closed','clients'].includes(action.bucket))continue;
+      const {lead}=await accessible(user,id),{action}=await detail(user,id);if(TERMINAL_BUCKETS.has(action.bucket))continue;
       rows.push([lead.first_name,lead.last_name,lead.company,lead.current_title,lead.city,lead.state,lead.linkedin_url,action.label,'Reported identifiers only; verify ownership.']);
     }
     const csv='\uFEFF'+[['First Name','Last Name','Company Name','Job Title','City','State','LinkedIn URL','Research Task','Data Status'],...rows].map(r=>r.map(csvCell).join(',')).join('\r\n');

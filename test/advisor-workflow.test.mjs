@@ -207,3 +207,32 @@ test('a client asking not to be contacted is recorded without being reopened fir
   assert.equal((await lab.advisor.worklist(user,{view:'clients'})).counts.clients,0);
  }finally{await db.close();}
 });
+
+test('a client is offered no drafted touch and no next follow-up time',async()=>{
+ const {db,lab,user,id}=await fixture();try{
+  await reviewBasics(lab,user,id);
+  // The control: a prospect with a due step is handed the words for it.
+  let d=await lab.advisor.detail(user,id);
+  assert.ok(d.draft,'a prospect is given the words for the next approach');
+  assert.ok(d.schedules);
+
+  await lab.advisor.save(user,id,{outcome:'connected',channel:'phone',signature:d.action.signature,idempotency_key:'spoke'});
+  d=await lab.advisor.detail(user,id);
+  await lab.advisor.save(user,id,{outcome:'became_client',signature:d.action.signature,idempotency_key:'signed'});
+
+  // Suppressing this cannot rely on the cadence having no step. Age the
+  // conversation and close a rest period after it, and the cycle starts from the
+  // rest boundary rather than the reply: the response is no longer the mark that
+  // opened the cycle, so pacing computes the opening step again and would compose
+  // an introductory email for somebody who has already signed.
+  await db.query("UPDATE advisor_activities SET created_at=$2 WHERE lead_id=$1 AND outcome='connected'",
+    [id,new Date(now.getTime()-100*86400000).toISOString()]);
+  await db.query('INSERT INTO advisor_rest_periods(lead_id,user_id,reason,started_at,resume_at) VALUES($1,$2,$3,$4,$5)',
+    [id,user.uid,'Synthetic expired rest',new Date(now.getTime()-140*86400000).toISOString(),new Date(now.getTime()-50*86400000).toISOString()]);
+  d=await lab.advisor.detail(user,id);
+  assert.equal(d.action.bucket,'clients');
+  assert.ok(d.cadence.step,'the precondition: pacing does offer a step here');
+  assert.equal(d.draft,null,'a client is not handed a prospecting email or voicemail');
+  assert.equal(d.schedules,null,'nor a next follow-up time');
+ }finally{await db.close();}
+});

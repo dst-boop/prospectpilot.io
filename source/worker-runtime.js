@@ -131,6 +131,24 @@ const FOLLOW_UP_STATUSES = new Set([
 // Statuses that end prospecting. A held meeting is not one of them -- it is
 // followed up -- but a client and a closed record are.
 const TERMINAL_STATUSES = new Set(["Meeting Set", "Client", "Not a Fit"]);
+// Statuses the outcome workflow owns. The lab derives these from a logged
+// activity -- Met from a meeting that was booked and then held, Client from a
+// recorded conversation -- and each carries a rule the generic status field
+// cannot express. Assigning one here would mark a conversion with no
+// conversation behind it and no activity to count, so the funnel would never see
+// it; clearing Client would return a client to prospecting without the reopen the
+// workspace requires. Editing anything else on such a record is unaffected: the
+// status is only checked when a write actually changes it.
+const WORKFLOW_ASSIGNED = new Set(["Met", "Client"]);
+const STATUS_LOCKED = new Set(["Client"]);
+const STATUS_ARTICLE = { Met: "a held meeting", Client: "a client" };
+function checkStatusTransition(previous, next) {
+  if (next === previous) return;
+  if (WORKFLOW_ASSIGNED.has(next))
+    throw new HttpError(422, `Record ${STATUS_ARTICLE[next]} by saving the outcome in the advisor workspace, not by setting the status here.`);
+  if (STATUS_LOCKED.has(previous))
+    throw new HttpError(422, "This record is a client. Reopen it for research in the advisor workspace before changing its status.");
+}
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -2230,8 +2248,12 @@ async function leadRoutes(request, db, user, path, url) {
   }
   const allowed = new Set(["first_name", "last_name", "current_title", "company", "location", "email", "linkedin_url", "identity_status", "follow_up_status", "follow_up_date", "notes"]);
   if (Object.prototype.hasOwnProperty.call(patch, "identity_status") && !["review", "matched", "excluded"].includes(patch.identity_status)) throw new HttpError(422, "Unknown identity status.");
+  const previousStatus = lead.follow_up_status;
   for (const [key, value] of Object.entries(patch)) if (allowed.has(key)) lead[key] = value;
   if (lead.follow_up_status && !FOLLOW_UP_STATUSES.has(lead.follow_up_status)) throw new HttpError(422, "Unknown follow-up status.");
+  // The drawer always submits the status field, so a note or date edit on a client
+  // resends "Client" unchanged and is allowed through.
+  checkStatusTransition(previousStatus, lead.follow_up_status);
   lead.updated_at = now();
   qualifyLead(lead);
   await execute(db, "UPDATE discovery_leads SET payload=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND team=?", JSON.stringify(lead), id, TEAM);
@@ -2258,6 +2280,7 @@ async function bulkRoute(request, db, user) {
       } else if (action === "update") {
         if (body.follow_up_status) {
           if (!FOLLOW_UP_STATUSES.has(body.follow_up_status)) throw new HttpError(422, "Unknown follow-up status.");
+          checkStatusTransition(lead.follow_up_status, body.follow_up_status);
           lead.follow_up_status = body.follow_up_status;
         }
         if (Object.prototype.hasOwnProperty.call(body, "follow_up_date")) lead.follow_up_date = body.follow_up_date || null;
