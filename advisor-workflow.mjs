@@ -224,15 +224,21 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
         throw fail(422,'Only Connected, Follow-up agreed and Meeting booked can record a contact the prospect started.');
       const direction=inbound?'inbound':null;
       let step=null;
-      // The log closes at the client, in both directions. An outbound touch
-      // would spend a dial and one of the six from a budget meant for prospects.
-      // An inbound one is refused for a different and larger reason: every
-      // logged conversation sets the workflow status from its outcome, so
-      // recording that a client rang would quietly move them from Client back to
-      // Contacted and return them to the worklist. It would also end any rest
-      // period, which means nothing for someone who is no longer being paced.
-      // The way back is the explicit one the workflow already has.
-      if(lead.follow_up_status==='Client'&&TOUCH_OUTCOMES.has(input.outcome))
+      // The log closes at the client, and closes for everything rather than for
+      // the touch outcomes alone. Every logged outcome sets the workflow status
+      // from itself, so any of them moves a client back out of Client and into
+      // the worklist: a touch makes them Contacted, "not interested" makes them
+      // Not a Fit. Most also accept a channel, and the daily dial budget counts
+      // every stored phone row whatever its outcome, so they spend a dial too.
+      // Direction does not save an inbound one either -- pacing yields to a
+      // contact the prospect started, but this is not a pacing question.
+      //
+      // Two exceptions, and only two. Reopen is the deliberate way back, and it
+      // is the only one that should be needed. Do not contact is a consent
+      // decision, and consent is never refused on the grounds of workflow state:
+      // a client asking not to be contacted must be recordable the moment they
+      // say it, without first being turned back into a prospect.
+      if(lead.follow_up_status==='Client'&&!['reopen','do_not_contact'].includes(input.outcome))
         throw fail(422,'This person is recorded as a client. Choose Reopen for research first if you are prospecting them again.');
       if(TOUCH_OUTCOMES.has(input.outcome)) {
         const verdict=admitTouch(before,{channel,now:at,direction:inbound?'inbound':'outbound'});
@@ -330,13 +336,24 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       WHERE ${visibleSQL} AND o.outcome IN ('meeting_held','no_show')
       ORDER BY o.lead_id,o.created_at,o.id`,
       ['wealth-management',user.uid,user.email])).rows;
-    // Every prospect recorded as a client, counted once however many times the
-    // conversion was logged, and dated by the log. There is no separate signing
-    // date to read: the record says when somebody wrote it down, and dating the
-    // count by anything else here would be a guess dressed as a measurement.
-    const clients=(await pool.query(`SELECT count(DISTINCT a.lead_id)::int AS total
-      FROM discovery_leads d JOIN advisor_activities a ON a.lead_id=d.id AND a.user_id=$2
-      WHERE ${visibleSQL} AND a.outcome='became_client' AND a.created_at >= $4::timestamptz`,
+    // Every prospect recorded as a client, counted once, and dated by their
+    // first conversion. There is no separate signing date to read: the record
+    // says when somebody wrote it down, and dating the count by anything else
+    // here would be a guess dressed as a measurement.
+    //
+    // Each lead's earliest conversion is found before the window is applied, not
+    // after. A lead whose second conversion -- reopened, worked again, signed
+    // again -- fell inside the window would otherwise be counted as a new client
+    // in a period where nothing arrived, which is the one thing a conversion
+    // count must not do. The consequence is deliberate: somebody who became a
+    // client, was reopened and came back is counted in the period they first
+    // arrived and not again, because it is the arrival being measured.
+    const clients=(await pool.query(`SELECT count(*)::int AS total FROM (
+        SELECT min(a.created_at) AS first_at
+        FROM discovery_leads d JOIN advisor_activities a ON a.lead_id=d.id AND a.user_id=$2
+        WHERE ${visibleSQL} AND a.outcome='became_client'
+        GROUP BY a.lead_id
+      ) conversions WHERE first_at >= $4::timestamptz`,
       ['wealth-management',user.uid,user.email,since])).rows[0].total;
     // Two populations, deliberately. The service level, the response rate and
     // meetings per 100 ask what became of the prospects added in this window,

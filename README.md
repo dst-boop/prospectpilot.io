@@ -125,9 +125,17 @@ that produced it, and a client marked on an untouched record would be measured
 against a funnel that skipped them. The record leaves the worklist into its own
 **Clients** view, not the closed drawer that holds disqualified and restricted
 people, and it is excluded from provider enrichment exports. It is **not**
-suppressed — a client is a relationship, not a contact restriction. Further
-prospecting touches are refused until the record is explicitly reopened, so a
-client cannot quietly spend dials and touches from a budget meant for prospects.
+suppressed — a client is a relationship, not a contact restriction.
+
+Every other outcome is refused on a client until the record is explicitly
+reopened, not only the six-touch ones. Each logged outcome sets the workflow
+status from itself, so any of them would move a client back out of **Client** and
+into the worklist — a touch makes them *Contacted*, not interested makes them
+*Not a Fit* — and most also accept a channel, which the daily dial budget counts
+whatever the outcome. **Do not contact** is the one exception, because consent is
+never refused on the grounds of workflow state: a client asking not to be
+contacted is recorded the moment they say it, without first being turned back
+into a prospect.
 
 The client figure is a **count with no target**, and deliberately not a rate. A
 client who signs this month was very likely met before the window opened, so
@@ -135,10 +143,16 @@ dividing by the prospects added or met inside it would place an arrival over the
 wrong cohort and read as a conversion rate this application cannot measure. A
 target would have to come from the firm's own history rather than from here.
 Zero clients is a true zero — none were recorded — unlike the rates above, whose
-empty denominators have to read as unmeasured. Conversions are counted once per
-person however many times the outcome was logged, and dated by the log, because
-the record holds no separate signing date and dating them by anything else would
-be a guess presented as a measurement.
+empty denominators have to read as unmeasured.
+
+Each person is counted once, dated by **their first conversion**, found before
+the window is applied rather than after. Somebody who became a client, was
+reopened and came back writes a second conversion, and dating the count by any
+matching row would report a brand-new client in a period where nobody arrived.
+It is the arrival being measured, so they are counted where they first arrived
+and not again. The log's own timestamp is that date, because the record holds no
+separate signing date and dating it by anything else would be a guess presented
+as a measurement.
 
 A meeting is dated by the meeting, not by the note. Writing up the week on Friday
 would otherwise pull Tuesday's meetings into Friday's window: a meeting held six

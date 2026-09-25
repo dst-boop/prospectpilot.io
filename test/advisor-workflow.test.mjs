@@ -110,6 +110,14 @@ test('prospecting stops at the client until the record is explicitly reopened',a
   await assert.rejects(lab.advisor.save(user,id,{outcome:'connected',channel:'phone',direction:'inbound',signature:d.action.signature,idempotency_key:'client-rang'}),{status:422});
   assert.equal((await lab.detail(user,id)).lead.follow_up_status,'Client');
 
+  // Not a touch outcome, but it accepts a channel, spends a dial, and would set
+  // the record to Not a Fit -- so recognizing only the touch outcomes here would
+  // let it move somebody out of Client without reopening them.
+  await assert.rejects(lab.advisor.save(user,id,{outcome:'not_interested',channel:'phone',signature:d.action.signature,idempotency_key:'not-a-fit'}),{status:422});
+  assert.equal((await lab.detail(user,id)).lead.follow_up_status,'Client');
+  // A second confirmation is refused too: they are already a client.
+  await assert.rejects(lab.advisor.save(user,id,{outcome:'became_client',signature:d.action.signature,idempotency_key:'again'}),{status:422});
+
   // The way back is the one the workflow already had.
   await lab.advisor.save(user,id,{outcome:'reopen',signature:d.action.signature,idempotency_key:'reopened'});
   d=await lab.advisor.detail(user,id);
@@ -145,11 +153,8 @@ test('the scoreboard counts each client once and states why it is not a conversi
   await lab.advisor.save(user,id,{outcome:'connected',channel:'phone',signature:d.action.signature,idempotency_key:'spoke'});
   d=await lab.advisor.detail(user,id);
   await lab.advisor.save(user,id,{outcome:'became_client',signature:d.action.signature,idempotency_key:'signed'});
-  // Logged twice under different keys -- an advisor confirming it, not a second
-  // client -- so the count has to be of people, not of rows.
-  d=await lab.advisor.detail(user,id);
-  await lab.advisor.save(user,id,{outcome:'became_client',signature:d.action.signature,idempotency_key:'signed-again'});
 
+  const clients=async days=>(await lab.advisor.scoreboard(user,{days})).measured.find(m=>m.id==='clients_recorded');
   const board=await lab.advisor.scoreboard(user,{days:30});
   const won=board.measured.find(m=>m.id==='clients_recorded');
   assert.equal(won.value,1);
@@ -160,5 +165,45 @@ test('the scoreboard counts each client once and states why it is not a conversi
   // Another advisor's scoreboard is unaffected.
   assert.equal((await lab.advisor.scoreboard({uid:'other',email:'other@example.com'},{days:30}))
     .measured.find(m=>m.id==='clients_recorded').value,0);
+
+  // One person arriving once, whatever the log holds. Age the conversion past the
+  // window, then reopen, work them and record them again -- which is legitimate
+  // and writes a second row inside the window. Dating the count by any matching
+  // row would report a brand-new client in a period where nobody arrived; dating
+  // it by each lead's first conversion reports the arrival where it happened.
+  await db.query("UPDATE advisor_activities SET created_at=$2 WHERE lead_id=$1 AND outcome='became_client'",
+    [id,new Date(now.getTime()-60*86400000).toISOString()]);
+  assert.equal((await clients(30)).value,0,'the arrival was 60 days ago, not in the last 30');
+  assert.equal((await clients(90)).value,1,'and it is still one arrival, in the period it happened');
+  d=await lab.advisor.detail(user,id);
+  await lab.advisor.save(user,id,{outcome:'reopen',signature:d.action.signature,idempotency_key:'reopened'});
+  d=await lab.advisor.detail(user,id);
+  await lab.advisor.save(user,id,{outcome:'connected',channel:'phone',signature:d.action.signature,idempotency_key:'spoke-again'});
+  d=await lab.advisor.detail(user,id);
+  await lab.advisor.save(user,id,{outcome:'became_client',signature:d.action.signature,idempotency_key:'signed-again'});
+  assert.equal((await clients(30)).value,0,'a returning client is not a new arrival this month');
+  assert.equal((await clients(90)).value,1,'and never becomes two people');
+ }finally{await db.close();}
+});
+
+test('a client asking not to be contacted is recorded without being reopened first',async()=>{
+ const {db,lab,user,id}=await fixture();try{
+  await reviewBasics(lab,user,id);
+  let d=await lab.advisor.detail(user,id);
+  await lab.advisor.save(user,id,{outcome:'connected',channel:'phone',signature:d.action.signature,idempotency_key:'spoke'});
+  d=await lab.advisor.detail(user,id);
+  await lab.advisor.save(user,id,{outcome:'became_client',signature:d.action.signature,idempotency_key:'signed'});
+  // Consent is never refused on the grounds of workflow state. Everything else is
+  // closed on a client, but making somebody turn a client back into a prospect
+  // before they can record "do not contact" would put a workflow step between a
+  // person saying stop and the record that stops it.
+  d=await lab.advisor.detail(user,id);
+  await lab.advisor.save(user,id,{outcome:'do_not_contact',signature:d.action.signature,idempotency_key:'asked-to-stop',note:'Asked not to be contacted.'});
+  const saved=(await lab.detail(user,id)).lead;
+  assert.equal(saved.suppressed,true);
+  assert.equal(saved.follow_up_status,'Not a Fit');
+  assert.equal((await lab.advisor.detail(user,id)).action.bucket,'closed');
+  // And the suppression reaches the linked directory record, as it does elsewhere.
+  assert.equal((await lab.advisor.worklist(user,{view:'clients'})).counts.clients,0);
  }finally{await db.close();}
 });
