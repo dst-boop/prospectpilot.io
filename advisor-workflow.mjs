@@ -124,10 +124,42 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
   }
   // `at` lets a caller inside a transaction judge the record against the same
   // instant it is writing, rather than a clock that has moved on since.
+  // Pacing belongs to the prospect, not to whoever is looking at them. Six
+  // touches in 45 days is a limit on how often this person is approached; read
+  // per advisor it became a limit on how often each advisor approaches them, and
+  // two people working one list could spend twelve approaches between them
+  // without either seeing the other's. So the history here is the whole
+  // record for the lead, whoever logged it, and the rest period in force is the
+  // longest-standing one anybody opened.
+  //
+  // The daily dial budget stays per advisor, because that limit protects one
+  // phone line's reputation rather than the person being called.
   async function cadenceFor(user,id,lead,quality,client=pool,dials=null,at=null) {
-    const activities=(await client.query('SELECT outcome,channel,step,direction,created_at FROM advisor_activities WHERE lead_id=$1 AND user_id=$2 ORDER BY created_at',[id,user.uid])).rows;
-    const rest=(await client.query('SELECT reason,resume_at FROM advisor_rest_periods WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows[0]||null;
-    return cadenceState({activities,lead,quality,rest,now:at||now(),dials});
+    const activities=(await client.query('SELECT outcome,channel,step,direction,created_at,user_id FROM advisor_activities WHERE lead_id=$1 ORDER BY created_at',[id])).rows;
+    const rest=(await client.query('SELECT reason,resume_at FROM advisor_rest_periods WHERE lead_id=$1 ORDER BY resume_at DESC LIMIT 1',[id])).rows[0]||null;
+    return withSharedHistory(user,activities,cadenceState({activities,lead,quality,rest,now:at||now(),dials}),client);
+  }
+  /**
+   * Says when the budget in force was spent by somebody else.
+   *
+   * Without this a prospect reads as resting for reasons the advisor looking at
+   * them cannot see, which invites exactly the workaround the limit exists to
+   * prevent. Named rather than counted: a colleague is answerable, a number is not.
+   */
+  async function withSharedHistory(user,activities,state,client=pool) {
+    // Exactly the touches the state counted, so the two numbers can never
+    // disagree: first_at is the oldest one inside the current cycle's window, and
+    // anything older belongs to a cycle that a reply or a completed rest closed.
+    const from=state.touches?.first_at;
+    const others=!from?[]:activities.filter(a=>a.user_id&&a.user_id!==user.uid
+      &&TOUCH_OUTCOMES.has(a.outcome)&&a.direction!=='inbound'
+      &&new Date(a.created_at)>=new Date(from));
+    if(!others.length)return {...state,shared:null};
+    const ids=[...new Set(others.map(a=>a.user_id))];
+    const named=(await client.query("SELECT user_id,COALESCE(NULLIF(full_name,''),email) AS name FROM discovery_users WHERE user_id=ANY($1::text[])",[ids])).rows;
+    const names=ids.map(uid=>named.find(r=>r.user_id===uid)?.name||'another advisor');
+    return {...state,shared:{touches:others.length,advisors:names,
+      reason:`${others.length} of these touches ${others.length===1?'was':'were'} logged by ${names.join(' and ')}. The limit is on how often this person is approached, not on how often you approach them.`}};
   }
   async function detail(user,id) {
     const {lead}=await accessible(user,id);
@@ -139,7 +171,13 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       // The words for the next touch, not a description of them.
       draft:TERMINAL_BUCKETS.has(action.bucket)||!cadence.step?null:composeTouch(cadence.step,{lead,advisor:await profile(user),now:now(),sent:cadence.progress.done}),
       schedules:TERMINAL_BUCKETS.has(action.bucket)?null:nextFollowUp(cadence,{now:now()}),
-      activities:(await pool.query('SELECT outcome,channel,step,direction,note,next_at,created_at FROM advisor_activities WHERE lead_id=$1 ORDER BY created_at DESC,id DESC LIMIT 30',[id])).rows};
+      // This list has always carried every advisor's entries and never said so,
+      // which reads as your own history and makes a shared cap inexplicable.
+      // `by` is the colleague who logged it, and null when it was you.
+      activities:(await pool.query(`SELECT a.outcome,a.channel,a.step,a.direction,a.note,a.next_at,a.created_at,
+          CASE WHEN a.user_id=$2 THEN NULL ELSE COALESCE(NULLIF(u.full_name,''),u.email,'another advisor') END AS by
+        FROM advisor_activities a LEFT JOIN discovery_users u ON u.user_id=a.user_id
+        WHERE a.lead_id=$1 ORDER BY a.created_at DESC,a.id DESC LIMIT 30`,[id,user.uid])).rows};
   }
   async function worklist(user,{view='today',search='',offset=0,limit=24}={}) {
     if(!['today','ready','due','review','enrich','scheduled','meetings','resting','clients','closed','all'].includes(view))throw fail(422,'Choose a worklist view.');
@@ -154,9 +192,14 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const records=rows.length?(await pool.query('SELECT lead_id,payload FROM lab_observations WHERE user_id=$1 AND lead_id=ANY($2::text[])',[user.uid,ids])).rows:[];
     const observations=new Map();for(const r of records){if(!observations.has(r.lead_id))observations.set(r.lead_id,[]);observations.get(r.lead_id).push(parse(r.payload));}
     // Pacing for the whole page in two queries rather than two per prospect.
-    const touched=rows.length?(await pool.query('SELECT lead_id,outcome,channel,step,direction,created_at FROM advisor_activities WHERE user_id=$1 AND lead_id=ANY($2::text[]) ORDER BY created_at',[user.uid,ids])).rows:[];
+    // Every touch on these prospects, not only this advisor's: see cadenceFor.
+    // The page has to pace on the same history the record does, or a prospect
+    // capped by a colleague would be offered here as ready.
+    const touched=rows.length?(await pool.query('SELECT lead_id,outcome,channel,step,direction,created_at,user_id FROM advisor_activities WHERE lead_id=ANY($1::text[]) ORDER BY created_at',[ids])).rows:[];
     const history=new Map();for(const a of touched){if(!history.has(a.lead_id))history.set(a.lead_id,[]);history.get(a.lead_id).push(a);}
-    const rests=rows.length?(await pool.query('SELECT lead_id,reason,resume_at FROM advisor_rest_periods WHERE user_id=$1 AND lead_id=ANY($2::text[])',[user.uid,ids])).rows:[];
+    // The longest-standing rest anybody opened is the one in force.
+    const rests=rows.length?(await pool.query(`SELECT DISTINCT ON (lead_id) lead_id,reason,resume_at FROM advisor_rest_periods
+      WHERE lead_id=ANY($1::text[]) ORDER BY lead_id,resume_at DESC`,[ids])).rows:[];
     const resting=new Map(rests.map(r=>[r.lead_id,r]));
     // One budget for the whole page: the limit is per line, not per prospect.
     const dials=await dialsToday(user);
@@ -207,9 +250,12 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
         // A no-show both settles the meeting that was missed and arranges its
         // replacement -- it carries a required new time -- so it nets out, and
         // a meeting is outstanding while more have been booked than held.
+        // Counted across the record, like the pacing above: a meeting a
+        // colleague booked with this person still happened, and attendance is a
+        // fact about the prospect rather than about who typed it.
         const m=(await client.query(`SELECT count(*) FILTER(WHERE outcome='meeting_booked')::int AS booked,
           count(*) FILTER(WHERE outcome='meeting_held')::int AS held
-          FROM advisor_activities WHERE lead_id=$1 AND user_id=$2`,[id,user.uid])).rows[0];
+          FROM advisor_activities WHERE lead_id=$1`,[id])).rows[0];
         if(m.booked<=m.held)throw fail(422,'Record the booked meeting first. Met and No-show describe a meeting that was arranged.');
       }
       // A client is not a prospect the advisor spoke to once. Requiring a
@@ -219,9 +265,9 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       // response rates would be measured against a funnel that skipped them.
       if(input.outcome==='became_client') {
         const spoke=(await client.query(`SELECT count(*)::int AS engaged FROM advisor_activities
-          WHERE lead_id=$1 AND user_id=$2 AND outcome=ANY($3::text[])`,
-          [id,user.uid,['connected','follow_up','meeting_booked','meeting_held']])).rows[0];
-        if(!spoke.engaged)throw fail(422,'Record the conversation first. Client describes someone you have spoken with.');
+          WHERE lead_id=$1 AND outcome=ANY($2::text[])`,
+          [id,['connected','follow_up','meeting_booked','meeting_held']])).rows[0];
+        if(!spoke.engaged)throw fail(422,'Record the conversation first. Client describes someone this firm has spoken with.');
       }
       // An outcome that is not an approach has no channel. Reopening a record
       // reaches nobody, and a client is a status the already-logged conversation
@@ -277,7 +323,10 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       // approached us, so the reason for it is gone. It ends now rather than
       // being deleted: the row is the boundary cycleStart reads to start the
       // next cycle here, and nothing in this workflow removes a rest period.
-      if(inbound)await client.query('UPDATE advisor_rest_periods SET resume_at=$3 WHERE lead_id=$1 AND user_id=$2 AND resume_at > $3',[id,user.uid,stamp]);
+      // Every rest running on this person, not just this advisor's. The rest in
+      // force may be a colleague's, and one row surviving would leave the
+      // prospect resting after they asked to talk.
+      if(inbound)await client.query('UPDATE advisor_rest_periods SET resume_at=$2 WHERE lead_id=$1 AND resume_at > $2',[id,stamp]);
       // Re-read the pacing with this touch included: reaching the limit opens the
       // rest period here rather than waiting for someone to notice the count.
       const after=await cadenceFor(user,id,lead,quality,client,null,at);

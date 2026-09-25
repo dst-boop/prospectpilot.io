@@ -143,7 +143,7 @@ function renderConversation(){
   renderDraft();
   $('contactActions').replaceChildren();const c=a.contact;
   if(c){const anchor=document.createElement('a');anchor.className='contact-link';anchor.textContent=c.channel==='phone'?`Call ${c.address}`:c.channel==='email'?`Email ${c.address}`:'Open reviewed LinkedIn profile';anchor.href=c.channel==='phone'?'tel:'+c.address:c.channel==='email'?'mailto:'+encodeURIComponent(c.address):safeURL(c.address);if(c.channel==='linkedin'){anchor.target='_blank';anchor.rel='noopener noreferrer';}$('contactActions').append(anchor);}else $('contactActions').textContent='No reviewed contact shortcut available. Review the contact evidence below.';
-  $('activityHistory').innerHTML=(current.lead.notes?`<p class="existing-notes">${esc(current.lead.notes)}</p>`:'')+(currentWorkflow.activities.length?currentWorkflow.activities.map(a=>`<div class="activity-entry"><strong>${esc(outcomeLabel(a.outcome))}</strong>${a.direction==='inbound'?` <span class="inbound-tag">${esc(inboundLabel(a.channel))}</span>`:''} · ${esc(when(a.created_at))}<p>${esc(a.note)}</p>${a.next_at?`<small>Next: ${esc(when(a.next_at))}</small>`:''}</div>`).join(''):'<p>No outcomes recorded yet.</p>');
+  $('activityHistory').innerHTML=(current.lead.notes?`<p class="existing-notes">${esc(current.lead.notes)}</p>`:'')+(currentWorkflow.activities.length?currentWorkflow.activities.map(a=>`<div class="activity-entry"><strong>${esc(outcomeLabel(a.outcome))}</strong>${a.direction==='inbound'?` <span class="inbound-tag">${esc(inboundLabel(a.channel))}</span>`:''}${a.by?` <span class="by-tag">${esc(a.by)}</span>`:''} · ${esc(when(a.created_at))}<p>${esc(a.note)}</p>${a.next_at?`<small>Next: ${esc(when(a.next_at))}</small>`:''}</div>`).join(''):'<p>No outcomes recorded yet.</p>');
 }
 async function loadScoreboard(){
   const b=await request('/api/lab/scoreboard?days=30');
@@ -168,7 +168,10 @@ function cadenceLine(c){
   const t=c.touches,used=`${num(t.count)} of ${num(t.cap)} touches used in the last ${num(t.window_days)} days`;
   const hold=c.status==='resting'||c.status==='capped'?`<p class="cadence-hold">${esc(c.reason)}</p>`
     :c.step&&!c.step.ready?`<p class="cadence-hold">${esc(c.step.hold||c.reason)}</p>`:'';
-  return `<p class="muted">${esc(used)}.</p>${hold}`;
+  // Says whose touches spent the budget. Without it a prospect rests for reasons
+  // the advisor looking at them cannot see.
+  const shared=c.shared?`<p class="cadence-shared">${esc(c.shared.reason)}</p>`:'';
+  return `<p class="muted">${esc(used)}.</p>${shared}${hold}`;
 }
 function renderDraft(){
   const d=currentWorkflow.draft,panel=$('draftPanel');
