@@ -196,7 +196,8 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       const rest=restPeriod(after,{now:now()});
       if(rest)await client.query(`INSERT INTO advisor_rest_periods(lead_id,user_id,reason,started_at,resume_at) VALUES($1,$2,$3,$4,$5)
         ON CONFLICT(lead_id,user_id) DO UPDATE SET reason=EXCLUDED.reason,started_at=EXCLUDED.started_at,resume_at=EXCLUDED.resume_at`,[id,user.uid,rest.reason,rest.started_at,rest.resume_at]);
-      else if(input.outcome==='reopen')await client.query('DELETE FROM advisor_rest_periods WHERE lead_id=$1 AND user_id=$2',[id,user.uid]);
+      // Reopening changes workflow status, not pacing. Preserve active rests
+      // and expired rows, which mark the boundary of the previous cycle.
       await evaluate(user,lead,client);
       return {saved:true,scheduled:next,resting_until:rest?.resume_at||null};
     });

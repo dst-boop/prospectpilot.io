@@ -319,6 +319,27 @@ test('a completed rest starts the prospect over instead of capping them again', 
   assert.equal(cycleStart([], null, now), null, 'a prospect never touched has no previous cycle');
 });
 
+test('reopening preserves an active rest and its completed-cycle boundary', async () => {
+  const {db, lab, user, id} = await fixture();
+  try {
+    await reviewBasics(lab, user, id);
+    await db.query(`INSERT INTO advisor_rest_periods(lead_id,user_id,reason,started_at,resume_at)
+      VALUES($1,$2,'Completed sequence','2026-08-01T00:00:00Z','2026-10-30T00:00:00Z')`, [id,user.uid]);
+    let d = await lab.advisor.detail(user,id);
+    await lab.advisor.save(user,id,{outcome:'reopen',signature:d.action.signature,idempotency_key:'reopen-rest'});
+    d = await lab.advisor.detail(user,id);
+    assert.equal(d.action.bucket,'resting');
+    await assert.rejects(lab.advisor.save(user,id,{outcome:'no_answer',channel:'email',
+      signature:d.action.signature,idempotency_key:'blocked-touch'}), /rest period|returns to the worklist/i);
+    assert.equal((await lab.advisor.worklist(user,{view:'due'})).total,0);
+    // The expired row also matters: it marks where the next cycle starts.
+    await db.query(`UPDATE advisor_rest_periods SET resume_at='2026-09-01T00:00:00Z' WHERE lead_id=$1`,[id]);
+    d = await lab.advisor.detail(user,id);
+    await lab.advisor.save(user,id,{outcome:'reopen',signature:d.action.signature,idempotency_key:'reopen-expired'});
+    assert.equal((await db.query('SELECT lead_id FROM advisor_rest_periods WHERE lead_id=$1',[id])).rows.length,1);
+  } finally { await db.close(); }
+});
+
 test('a resting prospect is never shown as due, whatever date is saved on them', async () => {
   const {db, lab, user, id} = await fixture();
   try {
