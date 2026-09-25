@@ -160,6 +160,33 @@ REFRESH_PLAN_CATALOG=1 bash release.sh
 
 Read [the release handoff](RELEASE-2026-09-07.md) for prerequisites, validation, costs, source coverage and rollback. The release verifies the new version through the custom domain. Production deployment is not implied by a successful local build or GitHub push.
 
+### Verify a release afterwards
+
+```bash
+pnpm verify https://prospectpilot.io review-20260101120000-1234
+```
+
+`release.sh` checks the version endpoint once, mid-deploy, and cannot be re-run
+later without deploying something. This checks the same thing and more, from
+outside, at any time: the release identifier and every feature version actually
+being served, that the version endpoint and sign-in page are uncacheable, that an
+unauthenticated visitor is sent to sign in rather than shown a workspace, that
+each API answers `401` rather than data, and that a cross-origin write is
+refused. It exits non-zero and names every failure.
+
+Unauthenticated and read-only, so it is safe against production: every request is
+a `GET` except one deliberately cross-origin `POST` that the origin check refuses
+before reaching a handler, and no session cookie is ever sent. It therefore
+**cannot** see the signed-in workspace — the worklist, cadence display, meeting
+outcomes and dial counter still need a person with an account, and a passing run
+says so rather than implying otherwise.
+
+`/healthz` is answered by the application but is not rewritten to the service by
+the custom domain's hosting, so through `prospectpilot.io` it returns the host's
+own 404. The check reports that as **not exposed on this host** rather than as a
+failure. Uptime monitoring has to point at the Cloud Run service URL, not the
+custom domain.
+
 The advisor workflow adds migration **013** for activity history and contact links, and **014** for outreach pacing, drafted touches and the advisor profile. The contact workspace requires migrations **008** and **009** before starting the service and worker; these add contacts, lists, imports, saved searches, durable tasks and cost reservations. The migration runner applies all outstanding migrations in order.
 
 The separate Research Lab uses migration **007**. It preserves observations, adds the net-worth criterion, and invalidates old qualification totals so four-gate results cannot count under the new definition. Requalification records a new first-verification timestamp under rule `retirement-evidence-2`. The normal migration runner applies it once.
