@@ -123,7 +123,7 @@ async function enrichmentRoutes(request, env, user, path) {
     const locator=!!(lead.email||phone||lead.linkedin_url||(lead.first_name&&lead.last_name&&(lead.address||(lead.city&&lead.state))));
     const matchStrength=(lead.email?4:0)+(phone?4:0)+(lead.linkedin_url?3:0)+(lead.address?2:0)+(lead.city&&lead.state?1:0);
     const pageLabel=/^(privacy|news|disclosure|terms|careers?|contact|read more|learn more|home|about)(\s|$)/i.test(String(lead.first_name||'')+' '+String(lead.last_name||''));
-    return {id:lead.id,first_name:lead.first_name,last_name:lead.last_name,company:lead.company,eligible:locator&&!pageLabel&&lead.identity_status!=='excluded',identity_status:lead.identity_status,match_strength:matchStrength,priority_score:Number(lead.priority_score||0),missing_age:!lead.estimated_age_range,missing_phone:!phone,missing_linkedin:!lead.linkedin_url};
+    return {id:lead.id,first_name:lead.first_name,last_name:lead.last_name,company:lead.company,eligible:locator&&!pageLabel&&lead.identity_status!=='excluded'&&lead.follow_up_status!=='Client',identity_status:lead.identity_status,match_strength:matchStrength,priority_score:Number(lead.priority_score||0),missing_age:!lead.estimated_age_range,missing_phone:!phone,missing_linkedin:!lead.linkedin_url};
   })});
   if(request.method!=='POST')throw new HttpError(404,'Not found.');
   let body;try{body=JSON.parse(await readBody(request));}catch(e){throw new HttpError(422,e.message||'Choose a valid file.');}
@@ -131,6 +131,7 @@ async function enrichmentRoutes(request, env, user, path) {
     const ids=Array.isArray(body.lead_ids)?[...new Set(body.lead_ids)]:[];
     const selected=owned.filter(({lead})=>ids.includes(lead.id));
     if(!ids.length||selected.length!==ids.length)throw new HttpError(422,'Select available leads assigned to you.');
+    refuseClientEnrichment(selected.map(x=>x.lead));
     let csv;try{csv=ENRICH.exportCSV(body.provider,selected.map(x=>x.lead));}catch(e){throw new HttpError(422,e.message);}
     const id=crypto.randomUUID();
     await execute(db,'INSERT INTO enrichment_batches(id,user_id,provider,status,payload) VALUES(?,?,?,?,?)',id,user.user_id,body.provider,'awaiting_upload',JSON.stringify({ids}));

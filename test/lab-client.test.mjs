@@ -78,6 +78,38 @@ test('saving an outcome cannot close a different prospect opened while the save 
  assert.equal(c.element('detail').open,true);assert.equal(c.run('current.lead.id'),'B');
 });
 
+// A figure with no defensible target still has to render. The scoreboard used
+// to print "target " and whatever sat in the field, and to mark anything it
+// could not compare as met, so a count arriving without a benchmark would have
+// claimed one.
+test('the scoreboard omits a target it does not have rather than inventing one',async()=>{
+  const c=client(),loaded=c.run('loadScoreboard()');
+  c.pending[0].respond({window_days:30,since:'2026-08-13T00:00:00Z',added:4,worked:2,untouched:0,
+    scopes:{cohort:'Prospects added in this window',conversions:'Clients recorded in this window, whenever they were first met'},
+    measured:[
+      {id:'reply_rate',scope:'cohort',label:'Prospects who responded',value:50,unit:'%',basis:'1 of 2 prospects touched',target:12},
+      {id:'below_target',scope:'cohort',label:'First touch within one business day',value:80,unit:'%',basis:'4 of 5',target:95},
+      {id:'clients_recorded',scope:'conversions',label:'Clients recorded',value:0,unit:'count',basis:'0 prospects recorded as a client, counted once each',target:null},
+    ],
+    meetings:{held:0,no_shows:0,awaiting_outcome:0,note:''},
+    basis:'Counted from manually logged outcomes.'});
+  await loaded;
+  const html=c.element('scoreboard').innerHTML;
+  assert.doesNotMatch(html,/target null|target undefined|target <|target \b(?!\d)/);
+  // The count renders as a plain number, with its scope, and without a target.
+  assert.match(html,/Clients recorded<\/span><strong>0<\/strong>/);
+  assert.match(html,/whenever they were first met/);
+  // A metric that met its target keeps the highlight; one that missed does not;
+  // one with no target is neither.
+  const tiles=html.split('<article');
+  assert.match(tiles[1],/^ class="highlight"/,'50% against a target of 12 is met');
+  assert.doesNotMatch(tiles[2],/^ class="highlight"/,'80% against a target of 95 is not met');
+  assert.doesNotMatch(tiles[3],/^ class="highlight"/,'a count with no target claims nothing');
+  // Percentages keep their sign; a count does not acquire one.
+  assert.match(tiles[1],/<strong>50%<\/strong>/);
+  assert.doesNotMatch(tiles[3],/0%/);
+});
+
 test('an inbound row is labelled by the channel it arrived on',()=>{
   // The record stores the channel, so the history must not say they called when
   // they sent an email.

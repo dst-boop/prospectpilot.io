@@ -106,15 +106,60 @@ questions rather than the evidence prompts.
 
 **Pacing is only as good as the logging.** A touch nobody recorded is invisible
 to the limit and to the scoreboard. `GET /api/lab/scoreboard`, shown on the
-workspace under **Your funnel**, reports all five measurements: first-touch
+workspace under **Your funnel**, reports six measurements: first-touch
 service level, response rate, meetings booked per 100 prospects worked, the
-share of booked meetings that were held, and first conversations that led to a
-second.
+share of booked meetings that were held, first conversations that led to a
+second, and the number of prospects recorded as clients.
 
 The first three measure the prospects **added** in the window; the meeting rates
-measure the meetings that **happened** in it, whoever they were with. The page
-says which under each figure, because one label reading "last 30 days" over both
-would mean two different things at once.
+measure the meetings that **happened** in it, whoever they were with; the client
+count measures the conversions **recorded** in it, whenever those people were
+first met. The page says which under each figure, because one label reading
+"last 30 days" over all three would mean three different things at once.
+
+**Becoming a client ends the prospecting, and is counted rather than rated.**
+Record **Became a client** on a prospect whose record already holds a
+conversation — connected, follow-up agreed, a meeting booked or held. Without one
+the save is refused: the strongest figure in the report stays tied to the work
+that produced it, and a client marked on an untouched record would be measured
+against a funnel that skipped them. The record leaves the worklist into its own
+**Clients** view, not the closed drawer that holds disqualified and restricted
+people. Every paid provider route refuses them — the ZoomInfo candidate CSV, the
+`/enrichment` batch export and a direct WealthFeed submission — because nobody
+pays to enrich somebody they have already signed, and those are three entry
+points to the same spend. Refused rather than quietly filtered: an advisor
+reconciles what they submitted against what the provider charged for, and a
+selection that silently shrank is what makes those two disagree. The Salesforce
+export is untouched — a CRM handoff is exactly where a client belongs. It is
+**not**
+suppressed — a client is a relationship, not a contact restriction.
+
+Every other outcome is refused on a client until the record is explicitly
+reopened, not only the six-touch ones. Each logged outcome sets the workflow
+status from itself, so any of them would move a client back out of **Client** and
+into the worklist — a touch makes them *Contacted*, not interested makes them
+*Not a Fit* — and most also accept a channel, which the daily dial budget counts
+whatever the outcome. **Do not contact** is the one exception, because consent is
+never refused on the grounds of workflow state: a client asking not to be
+contacted is recorded the moment they say it, without first being turned back
+into a prospect.
+
+The client figure is a **count with no target**, and deliberately not a rate. A
+client who signs this month was very likely met before the window opened, so
+dividing by the prospects added or met inside it would place an arrival over the
+wrong cohort and read as a conversion rate this application cannot measure. A
+target would have to come from the firm's own history rather than from here.
+Zero clients is a true zero — none were recorded — unlike the rates above, whose
+empty denominators have to read as unmeasured.
+
+Each person is counted once, dated by **their first conversion**, found before
+the window is applied rather than after. Somebody who became a client, was
+reopened and came back writes a second conversion, and dating the count by any
+matching row would report a brand-new client in a period where nobody arrived.
+It is the arrival being measured, so they are counted where they first arrived
+and not again. The log's own timestamp is that date, because the record holds no
+separate signing date and dating it by anything else would be a guess presented
+as a measurement.
 
 A meeting is dated by the meeting, not by the note. Writing up the week on Friday
 would otherwise pull Tuesday's meetings into Friday's window: a meeting held six
@@ -133,7 +178,18 @@ rate with nothing behind it reads as unmeasured, not as zero.
 Requires migration **014**, which adds the channel and sequence step to logged
 activity, the rest-period table, and the advisor profile used to sign drafts,
 **015**, which adds the timezone that the daily dial limit rolls over in, and
-**016**, which records who started each contact.
+**016**, which records who started each contact. The client outcome needs **no
+migration**: the activity log already stores the outcome as text, so the
+conversion is a new value in a column that exists, and no released database has
+to change to deploy it.
+
+`GET /version` names the rules the running service is using, not only which
+build it is: `cadence_version` reports the pacing rules alongside
+`quality_version`, `advisor_workspace_version` and `contact_workspace_version`.
+`release.sh` asserts every one of them after updating the service. Without the
+cadence field a release carrying new pacing rules verified identically to the
+one it replaced, because every other version string on the endpoint had been
+live since before pacing shipped and only the opaque release identifier moved.
 
 **A verified quality lead must meet all five reviewed criteria:** age 45–73 inclusive, US residence, retained retirement assets with an eligible distribution or IRA transfer, an identified phone/email/LinkedIn contact route, and a disclosed net-worth lower bound of at least $250,000 excluding the home and net of liabilities.
 

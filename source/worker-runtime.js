@@ -119,10 +119,48 @@ const MARKET_INDUSTRY_RULES = [
   { pattern: /funeral home/i, label: "Funeral homes", selectors: [["shop", "funeral_directors"]] },
   { pattern: /veterinar/i, label: "Veterinary practices", selectors: [["amenity", "veterinary"]] },
 ];
+// Every status the application can write, whichever workflow wrote it. The lab
+// records "Met" when a booked meeting is held and "Client" when a prospect signs;
+// a status missing from this set is rejected by the legacy tools and, worse, is
+// absent from their pickers -- so opening such a record there and saving pushes
+// it back to the first option in the list.
 const FOLLOW_UP_STATUSES = new Set([
   "New", "Researching", "Ready to Contact", "Contacted", "Follow-up",
-  "Meeting Set", "Nurture", "Not a Fit",
+  "Meeting Set", "Met", "Client", "Nurture", "Not a Fit",
 ]);
+// Statuses that end prospecting. A held meeting is not one of them -- it is
+// followed up -- but a client and a closed record are.
+const TERMINAL_STATUSES = new Set(["Meeting Set", "Client", "Not a Fit"]);
+// A client is not a prospect to enrich, and every paid provider route has to ask,
+// because they are separate entry points to the same spend: the ZoomInfo candidate
+// CSV, the /enrichment batch export and a direct WealthFeed submission.
+//
+// Refused rather than quietly filtered. The advisor reconciles what they
+// submitted against what the provider charges for, and a selection that silently
+// shrank is the one thing that makes those two disagree.
+function refuseClientEnrichment(leads) {
+  const clients = leads.filter(lead => lead.follow_up_status === "Client").length;
+  if (!clients) return;
+  throw new HttpError(422, `${clients === 1 ? "One selected record is already a client" : clients + " selected records are already clients"}. Provider enrichment is for prospects; remove them from the selection.`);
+}
+// Statuses the outcome workflow owns. The lab derives these from a logged
+// activity -- Met from a meeting that was booked and then held, Client from a
+// recorded conversation -- and each carries a rule the generic status field
+// cannot express. Assigning one here would mark a conversion with no
+// conversation behind it and no activity to count, so the funnel would never see
+// it; clearing Client would return a client to prospecting without the reopen the
+// workspace requires. Editing anything else on such a record is unaffected: the
+// status is only checked when a write actually changes it.
+const WORKFLOW_ASSIGNED = new Set(["Met", "Client"]);
+const STATUS_LOCKED = new Set(["Client"]);
+const STATUS_ARTICLE = { Met: "a held meeting", Client: "a client" };
+function checkStatusTransition(previous, next) {
+  if (next === previous) return;
+  if (WORKFLOW_ASSIGNED.has(next))
+    throw new HttpError(422, `Record ${STATUS_ARTICLE[next]} by saving the outcome in the advisor workspace, not by setting the status here.`);
+  if (STATUS_LOCKED.has(previous))
+    throw new HttpError(422, "This record is a client. Reopen it for research in the advisor workspace before changing its status.");
+}
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -135,6 +173,18 @@ const now = () => new Date().toISOString();
 const today = () => now().slice(0, 10);
 const uid = prefix => `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
 const text = (value, limit = 2_000) => String(value ?? "").trim().slice(0, limit);
+// A follow-up status arriving in imported data is not evidence of anything. The
+// lab derives Met and Client from a logged activity, so a CSV or LinkedIn record
+// claiming one would land a brand-new candidate in the terminal client bucket --
+// out of prospecting and out of enrichment -- with no conversation behind it and
+// no activity for the funnel to count. An unrecognized status is no better: it
+// would be stored and then rejected by the first edit of the record. Both become
+// New, which is what a freshly imported candidate is. Deduplication is unaffected:
+// mergeLead keeps the status the existing record already had.
+const importedStatus = value => {
+  const status = text(value || "New", 80);
+  return FOLLOW_UP_STATUSES.has(status) && !WORKFLOW_ASSIGNED.has(status) ? status : "New";
+};
 const lower = value => text(value).toLowerCase();
 const array = value => Array.isArray(value) ? value : value ? [value] : [];
 const unique = values => [...new Set(values.map(value => text(value)).filter(Boolean))];
@@ -477,7 +527,7 @@ export function normalizeLead(raw, context = {}) {
     plan_average_balance: Number(field(raw, "Plan Average Balance") || raw.plan_average_balance) || null,
     signals, activity_signals: array(raw.activity_signals), connection_degree: Number(raw.connection_degree) || null,
     mutual_connections: Number(raw.mutual_connections) || 0, relationship_score: 0, timing_score: 0, priority_score: 0,
-    warm_path: text(raw.warm_path, 240), follow_up_status: text(raw.follow_up_status || "New", 80), follow_up_date: raw.follow_up_date || null,
+    warm_path: text(raw.warm_path, 240), follow_up_status: importedStatus(raw.follow_up_status), follow_up_date: raw.follow_up_date || null,
     notes: text(field(raw, "Notes") || raw.notes, 20_000), score: 0, tier: "Watch", confidence: 0, score_breakdown: {},
     identity_status: raw.identity_status === "review" ? "review" : "matched", identity_conflicts: unique(raw.identity_conflicts || []),
     data_quality_warnings: unique(qualityWarnings), evidence: evidenceRows.slice(-200),
@@ -2222,8 +2272,12 @@ async function leadRoutes(request, db, user, path, url) {
   }
   const allowed = new Set(["first_name", "last_name", "current_title", "company", "location", "email", "linkedin_url", "identity_status", "follow_up_status", "follow_up_date", "notes"]);
   if (Object.prototype.hasOwnProperty.call(patch, "identity_status") && !["review", "matched", "excluded"].includes(patch.identity_status)) throw new HttpError(422, "Unknown identity status.");
+  const previousStatus = lead.follow_up_status;
   for (const [key, value] of Object.entries(patch)) if (allowed.has(key)) lead[key] = value;
   if (lead.follow_up_status && !FOLLOW_UP_STATUSES.has(lead.follow_up_status)) throw new HttpError(422, "Unknown follow-up status.");
+  // The drawer always submits the status field, so a note or date edit on a client
+  // resends "Client" unchanged and is allowed through.
+  checkStatusTransition(previousStatus, lead.follow_up_status);
   lead.updated_at = now();
   qualifyLead(lead);
   await execute(db, "UPDATE discovery_leads SET payload=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND team=?", JSON.stringify(lead), id, TEAM);
@@ -2250,6 +2304,7 @@ async function bulkRoute(request, db, user) {
       } else if (action === "update") {
         if (body.follow_up_status) {
           if (!FOLLOW_UP_STATUSES.has(body.follow_up_status)) throw new HttpError(422, "Unknown follow-up status.");
+          checkStatusTransition(lead.follow_up_status, body.follow_up_status);
           lead.follow_up_status = body.follow_up_status;
         }
         if (Object.prototype.hasOwnProperty.call(body, "follow_up_date")) lead.follow_up_date = body.follow_up_date || null;
@@ -2358,7 +2413,7 @@ async function apiRoutes(request, env, path, url) {
   if (path === `${API}/metrics` && request.method === "GET") {
     const allLeads = (await visibleLeadRows(env.DB, user)).map(item => item.lead);
     const leads = allLeads.filter(lead => lead.identity_status !== "excluded");
-    return json({ leads: leads.length, total_leads: leads.length, high_priority: highPriorityLeadIds(leads).size, high_priority_share: HIGH_PRIORITY_SHARE, timely_signals: leads.filter(lead => lead.timing_score >= 65).length, follow_ups_due: leads.filter(lead => lead.follow_up_date && lead.follow_up_date <= today() && !["Meeting Set", "Not a Fit"].includes(lead.follow_up_status)).length, identity_review: leads.filter(lead => lead.identity_status === "review").length, identity_excluded: allLeads.filter(lead => lead.identity_status === "excluded").length, zoominfo: summarizeZoomInfoMatches(leads) });
+    return json({ leads: leads.length, total_leads: leads.length, high_priority: highPriorityLeadIds(leads).size, high_priority_share: HIGH_PRIORITY_SHARE, timely_signals: leads.filter(lead => lead.timing_score >= 65).length, follow_ups_due: leads.filter(lead => lead.follow_up_date && lead.follow_up_date <= today() && !TERMINAL_STATUSES.has(lead.follow_up_status)).length, identity_review: leads.filter(lead => lead.identity_status === "review").length, identity_excluded: allLeads.filter(lead => lead.identity_status === "excluded").length, zoominfo: summarizeZoomInfoMatches(leads) });
   }
   const campaigns = await campaignRoutes(request, env.DB, user, path, url);
   if (campaigns) return campaigns;
@@ -2383,6 +2438,9 @@ async function apiRoutes(request, env, path, url) {
     if (!selected.size) throw new HttpError(422, "Select at least one lead before export.");
     const leadsForExport = (await visibleLeadRows(env.DB, user)).filter(item => selected.has(item.lead.id)).map(item => item.lead);
     if (leadsForExport.length !== selected.size) throw new HttpError(404, "One or more selected leads are unavailable.");
+    // The candidate list for outbound research, unlike the Salesforce export above,
+    // which is a handoff to a CRM and is exactly where a client belongs.
+    refuseClientEnrichment(leadsForExport);
     await audit(env.DB, user, "export", "lead", "zoominfo", `${leadsForExport.length} leads`);
     return new Response(zoomInfoCandidateCSV(leadsForExport), { headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="zoominfo-candidates-${today()}.csv"`, "cache-control": "no-store" } });
   }
