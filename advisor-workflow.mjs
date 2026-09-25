@@ -207,7 +207,15 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
           [id,user.uid,['connected','follow_up','meeting_booked','meeting_held']])).rows[0];
         if(!spoke.engaged)throw fail(422,'Record the conversation first. Client describes someone you have spoken with.');
       }
-      const channel=input.channel??null;
+      // An outcome that is not an approach has no channel. Reopening a record
+      // reaches nobody, and a client is a status the already-logged conversation
+      // produced. The form hides the field for both, but the daily dial budget
+      // counts every stored phone row whatever its outcome -- deliberately, so a
+      // call that ended in "not interested" still counts against the number's
+      // reputation -- so a channel arriving on one of these anyway would spend a
+      // dial on a call that never happened. Dropped here rather than refused:
+      // the outcome is right, only the field is meaningless.
+      const channel=['reopen','became_client'].includes(input.outcome)?null:(input.channel??null);
       // Who started this contact. Only a conversation can be inbound: a missed
       // call from them is not an event, and attendance is mutual by the time it
       // happens and keeps its booking requirement.

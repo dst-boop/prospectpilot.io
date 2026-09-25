@@ -119,6 +119,25 @@ test('prospecting stops at the client until the record is explicitly reopened',a
  }finally{await db.close();}
 });
 
+test('an outcome that is not an approach stores no channel, so it cannot spend a dial',async()=>{
+ const {db,lab,user,id}=await fixture();try{
+  await reviewBasics(lab,user,id);
+  let d=await lab.advisor.detail(user,id);
+  await lab.advisor.save(user,id,{outcome:'connected',channel:'phone',signature:d.action.signature,idempotency_key:'spoke'});
+  const before=(await lab.advisor.dialsToday(user)).placed;
+  // The form hides the channel for both of these, but the budget counts every
+  // stored phone row whatever its outcome, so the field has to be dropped on the
+  // way in rather than trusted to be absent.
+  d=await lab.advisor.detail(user,id);
+  await lab.advisor.save(user,id,{outcome:'became_client',channel:'phone',signature:d.action.signature,idempotency_key:'signed'});
+  d=await lab.advisor.detail(user,id);
+  await lab.advisor.save(user,id,{outcome:'reopen',channel:'phone',signature:d.action.signature,idempotency_key:'reopened'});
+  const stored=(await db.query("SELECT outcome,channel FROM advisor_activities WHERE lead_id=$1 AND outcome IN ('became_client','reopen') ORDER BY outcome",[id])).rows;
+  assert.deepEqual(stored,[{outcome:'became_client',channel:null},{outcome:'reopen',channel:null}]);
+  assert.equal((await lab.advisor.dialsToday(user)).placed,before,'neither may count against the day’s dials');
+ }finally{await db.close();}
+});
+
 test('the scoreboard counts each client once and states why it is not a conversion rate',async()=>{
  const {db,lab,user,id}=await fixture();try{
   await reviewBasics(lab,user,id);
