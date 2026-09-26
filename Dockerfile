@@ -23,6 +23,6 @@ COPY prospect.html prospect.css prospect-client.js prospect-workspace.mjs prospe
 COPY prospect-jobs.mjs prospect-jobs-client.js ./
 COPY prospect-preparation.mjs ./
 COPY migrations ./migrations
-COPY server.mjs http-server.mjs handler.mjs database.mjs migrate.mjs home.html site.css login.html research-jobs.mjs research-worker.mjs warn.mjs warn.html warn-client.js native-research.mjs linkedin.mjs linkedin.html linkedin-client.js ./
+COPY server.mjs http-server.mjs handler.mjs login-destination.mjs database.mjs migrate.mjs home.html site.css login.html research-jobs.mjs research-worker.mjs warn.mjs warn.html warn-client.js native-research.mjs linkedin.mjs linkedin.html linkedin-client.js ./
 USER node
 CMD ["node","server.mjs"]

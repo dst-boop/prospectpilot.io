@@ -33,7 +33,7 @@ test('a verified non-admin can initialize the advisor workspace without legacy a
  const handler=createHandler({auth:{verifySessionCookie:async token=>{if(token!=='member-session')throw Error();return member;}},origins:[origin],ownerEmail:email,lab:{},labPage:'member workspace'});
  const headers={cookie:'__session=member-session'};
  const identity=await handler(req('/api/lab/me',{headers}));assert.equal(identity.status,200);
- assert.deepEqual(await identity.json(),{uid:member.uid,email:member.email,name:member.name});
+ assert.deepEqual(await identity.json(),{uid:member.uid,email:member.email,name:member.name,capabilities:{legacy_tools:false}});
  assert.equal(identity.headers.get('cache-control'),'private, no-store');
  assert.equal(await (await handler(req('/lab',{headers}))).text(),'member workspace');
  assert.equal((await handler(req('/api/me',{headers}))).status,403);
@@ -46,4 +46,20 @@ test('process health uses a non-reserved path, no session, and no cache',async()
   const result=await handler(new Request(host+path));assert.equal(result.status,200);assert.equal(await result.text(),'ok');assert.equal(result.headers.get('cache-control'),'no-store');
  }
  assert.equal((await handler(req('/health',{method:'POST'}))).status,403);
+});
+
+test('signed-out workspace requests retain a safe destination and a lead reference',async()=>{
+ const {handler}=setup();
+ for(const [path,target] of [['/prospect','/prospect'],['/lab?lead=abc-123&next=https://evil.example','/lab?lead=abc-123'],['/research','/lab']]){
+  const response=await handler(req(path));assert.equal(response.status,303);
+  assert.equal(response.headers.get('location'),'/login?next='+encodeURIComponent(target));
+ }
+});
+
+test('legacy navigation capability is derived from verified server identity',async()=>{
+ for(const [identity,owner,expected] of [[claims,email,true],[{...claims,email:'member@example.net'},email,false],[claims,'',false]]){
+  const handler=createHandler({auth:{verifySessionCookie:async()=>identity},origins:[origin],ownerEmail:owner,lab:{}});
+  const result=await handler(req('/api/lab/me',{headers:{cookie:'__session=valid'}}));
+  assert.equal((await result.json()).capabilities.legacy_tools,expected);
+ }
 });

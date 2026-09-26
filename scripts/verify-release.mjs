@@ -128,7 +128,7 @@ export async function verifyRelease({base, release = null, expect = EXPECTED, al
   for (const path of ['/lab', '/prospect']) {
     await attempt('redirect ' + path, async () => {
       const {status, headers} = await call(path);
-      return result('redirect ' + path, status === 303 && headers.get('location') === '/login',
+      return result('redirect ' + path, status === 303 && headers.get('location') === '/login?next='+encodeURIComponent(path),
         `GET ${path} -> ${status} Location: ${headers.get('location')}`);
     });
   }
