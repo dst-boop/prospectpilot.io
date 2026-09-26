@@ -7,7 +7,7 @@ function client(){
   const elements=new Map(),pending=[];
   const element=id=>{
     if(!elements.has(id))elements.set(id,{value:'',textContent:'',innerHTML:'',disabled:false,open:false,
-      classList:{toggle(){}},reset(){},replaceChildren(){},showModal(){this.open=true;},
+      setAttribute(name,value){this[name]=value;},classList:{toggle(){}},reset(){},replaceChildren(){},showModal(){this.open=true;},
       addEventListener(event,handler){this[event+'Handler']=handler;},close(){this.open=false;this.closeHandler?.();}});
     return elements.get(id);
   };
@@ -120,4 +120,40 @@ test('an inbound row is labelled by the channel it arrived on',()=>{
   // A row written before the channel was recorded claims nothing about how.
   assert.equal(c.run("inboundLabel(null)"),'they contacted me');
   assert.equal(c.run("inboundLabel('carrier pigeon')"),'they contacted me');
+});
+
+const emptyQueue={total:0,items:[],counts:{all:0,due:0,ready:0},activity:{conversations:0,meetings:0}};
+test('queue loading clears old cards and failure provides a working retry',async()=>{
+  const c=client();c.element('workView').value='today';
+  c.element('workList').innerHTML='Old prospect';c.run("workSelected.add('old');loadScoreboard=async()=>{}");
+  const loading=c.run('loadWorklist()');
+  assert.match(c.element('workList').innerHTML,/Loading prospects/);
+  assert.equal(c.element('startNext').disabled,true);
+  assert.equal(c.element('enrichExport').disabled,true);
+  assert.equal(c.element('workNext').disabled,true);
+  c.pending[0].respond({detail:'Queue temporarily unavailable'},503);
+  await assert.rejects(loading,/Queue temporarily unavailable/);
+  assert.match(c.element('workList').innerHTML,/Retry/);
+  assert.equal(c.run('workSelected.size'),0);
+  assert.equal(c.element('workList')['aria-busy'],'false');
+  const retry=c.element('retryWorklist').onclick();c.pending[1].respond(emptyQueue);await retry;
+  assert.match(c.element('workList').innerHTML,/Your next actions/);
+  assert.equal(c.element('startNext').disabled,false);
+});
+test('stale queue failure cannot replace a newer successful search',async()=>{
+  const c=client();c.element('workView').value='today';c.run('loadScoreboard=async()=>{}');
+  const old=c.run('loadWorklist()'),fresh=c.run('loadWorklist()');
+  c.pending[1].respond(emptyQueue);await fresh;
+  const shown=c.element('workList').innerHTML;
+  c.pending[0].respond({detail:'Old failure'},503);await old;
+  assert.equal(c.element('workList').innerHTML,shown);
+  assert.equal(c.element('startNext').disabled,false);
+});
+test('typing disables the old next prospect during search debounce',()=>{
+  const c=client();c.element('startNext').onclick=()=>{};
+  c.element('workSearch').oninput();
+  assert.equal(c.element('startNext').disabled,true);
+  assert.equal(c.element('startNext').onclick,null);
+  assert.match(c.element('workList').innerHTML,/Loading prospects/);
+  c.run('clearTimeout(workSearchTimer)');
 });
