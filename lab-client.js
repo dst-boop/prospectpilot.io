@@ -19,7 +19,7 @@ const selected=new Set();
 async function request(path,options={}) {
   const response=await fetch(path,{...options,headers:{'content-type':'application/json',...options.headers}});
   if(response.status===401){location.href='/login?next='+encodeURIComponent(location.pathname+location.search);throw Error('Please sign in.');}
-  if(!response.ok){let data;try{data=await response.json();}catch{}throw Error(data?.detail||`Request failed (${response.status}).`);}
+  if(!response.ok){let data;try{data=await response.json();}catch{}throw Object.assign(Error(data?.detail||`Request failed (${response.status}).`),{status:response.status});}
   return response.headers.get('content-type')?.includes('text/csv')?response.blob():response.json();
 }
 function notice(text,error=false){$('notice').textContent=text;$('notice').classList.toggle('error',error);}
@@ -287,10 +287,25 @@ function prepareActivity(){renderConversation();$('activityForm').reset();$('act
   else $('activityNext').value='';
   activityFields();}
 $('activityOutcome').onchange=activityFields;
+function activityConflict(id,version,message='This prospect changed. Your note and selected outcome are kept. Refresh the prospect, review the latest activity, then save again.'){
+ $('activityError').innerHTML=`${esc(message)} <button type="button" class="secondary" id="reloadActivity">Refresh prospect and keep note</button>`;
+ $('reloadActivity').onclick=async()=>{
+  if(version!==leadDetailVersion||activitySaving)return;
+  activitySaving=true;$('saveActivity').disabled=true;$('reloadActivity').disabled=true;
+  try{
+   const data=await request('/api/lab/leads/'+encodeURIComponent(id));
+   if(version!==leadDetailVersion)return;
+   current=data;renderPerson();
+   $('activityError').textContent='Your note and selected outcome were kept. Review the latest activity before saving.';
+   await loadActivity(id,version,false);
+  }catch(error){if(version===leadDetailVersion)activityConflict(id,version,'Could not refresh this prospect. Your note is still here. '+error.message);}
+  finally{activitySaving=false;if(version===leadDetailVersion)$('saveActivity').disabled=false;}
+ };
+}
 $('activityForm').onsubmit=async e=>{e.preventDefault();if(!current||!currentWorkflow||activitySaving)return;const version=leadDetailVersion;activitySaving=true;$('saveActivity').disabled=true;$('activityError').textContent='';try{
   const result=await request('/api/lab/leads/'+encodeURIComponent(current.lead.id)+'/activity',{method:'POST',body:JSON.stringify({outcome:$('activityOutcome').value,channel:$('activityChannel').disabled?null:$('activityChannel').value,note:$('activityNote').value,next_at:$('activityNext').disabled||!$('activityNext').value?null:new Date($('activityNext').value).toISOString(),direction:$('activityInbound').checked&&!$('inboundField').hidden?'inbound':'outbound',signature:currentWorkflow.action.signature,idempotency_key:activityKey})});
   if(result.saved){if(version===leadDetailVersion)$('detail').close();notice('Outcome saved. Your follow-up and worklist are updated.');await refresh(false);}
-}catch(err){if(version===leadDetailVersion)$('activityError').textContent=err.message;else notice(err.message,true);}finally{activitySaving=false;$('saveActivity').disabled=false;}};
+}catch(err){if(version===leadDetailVersion){if(err.status===409)activityConflict(current.lead.id,version);else $('activityError').textContent=err.message;}else notice(err.message,true);}finally{activitySaving=false;$('saveActivity').disabled=false;}};
 $('startImport').onclick=()=>$('quickImport').click();
 document.querySelectorAll('[data-queue]').forEach(button=>button.onclick=()=>{$('workView').value=button.dataset.queue;$('workSearch').value='';workOffset=0;loadWorklist().catch(e=>notice(e.message,true));});
 $('quickImport').onclick=()=>location.assign('/prospect?import=1');
