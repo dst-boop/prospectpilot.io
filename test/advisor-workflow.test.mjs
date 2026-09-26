@@ -35,8 +35,11 @@ test('directory handoff is owned and replay-safe; suppression stays effective in
  await db.query('INSERT INTO prospect_contacts(id,user_id,payload) VALUES($1,$2,$3::jsonb)',['contact',user.uid,JSON.stringify({...lead,title:'Director',source:'Synthetic professional export'})]);
  let result=await lab.importContacts(user,{ids:['contact']});assert.equal(result.linked,1);assert.equal((await lab.importContacts(user,{ids:['contact']})).replayed,true);
  const linked=(await db.query('SELECT lead_id FROM advisor_contact_links WHERE contact_id=$1',['contact'])).rows[0].lead_id;
+ assert.deepEqual(result.lead_ids,[linked]);assert.deepEqual((await lab.importContacts(user,{ids:['contact']})).lead_ids,[linked]);
  await reviewBasics(lab,user,linked);assert.equal((await lab.advisor.detail(user,linked)).action.bucket,'ready');
  await db.query(`UPDATE prospect_contacts SET payload=jsonb_set(payload,'{suppressed}','true') WHERE id='contact'`);
+ assert.deepEqual((await lab.importContacts(user,{ids:['contact']})).lead_ids,[]);
+ assert.deepEqual((await lab.importContacts(user,{ids:['contact']})).lead_ids,[]);
  assert.equal((await lab.advisor.detail(user,linked)).action.contact,null);assert.equal((await lab.detail(user,linked)).quality.status,'excluded');
  const work=await lab.advisor.worklist(user,{view:'closed'});assert.ok(work.items.some(r=>r.lead.id===linked));
  await assert.rejects(lab.importContacts({uid:'stranger',email:'stranger@example.com'},{ids:['contact']}),{status:404});
