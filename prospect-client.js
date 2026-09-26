@@ -30,7 +30,7 @@ $('removeList').onclick=async()=>{try{await api('lists/'+encodeURIComponent($('l
 let lastImportReport=null,importRevision=0;
 const importMessage=r=>(r.preview?'Preview — nothing saved. ':'')+(r.replayed?'This exact import was already processed. ':`${r.added} new · ${r.duplicates} matched · ${r.conflicts} conflicts · ${r.rejected} rejected.`);
 function renderImportReport(r,{archived=false}={}){
- if(!archived){lastImportReport=r;$('downloadImportReport').hidden=!r.rows?.length;}
+ if(!archived){$('continueImport').hidden=!!r.preview||!(r.added+r.duplicates);lastImportReport=r;$('downloadImportReport').hidden=!r.rows?.length;}
  $(archived?'archivedImportResult':'importResult').textContent=importMessage(r);
  const ignored=r.ignored_columns?.length?`<p><strong>Ignored columns:</strong> ${r.ignored_columns.map(esc).join(', ')}. Imported status claims are never accepted as verification.</p>`:'';
  const rows=r.rows||[];
@@ -43,13 +43,14 @@ async function importInput(){
  if(!csv.trim()||new TextEncoder().encode(csv).length>4000000)throw Error('Provide CSV headers and rows, up to 4 MB.');
  return {csv,format:$('importFormat').value,source:$('source').value,list_id:$('importList').value||undefined,source_url:$('sourceURL').value||undefined,source_observed_at:$('sourceObservedAt').value||undefined};
 }
-function clearPreview(){importRevision++;lastImportReport=null;$('importPreview').replaceChildren();$('importResult').textContent='';$('downloadImportReport').hidden=true;}
+function clearPreview(){$('continueImport').hidden=true;importRevision++;lastImportReport=null;$('importPreview').replaceChildren();$('importResult').textContent='';$('downloadImportReport').hidden=true;}
 $('importInputMode').onchange=()=>{$('csvFileLabel').hidden=$('importInputMode').value==='paste';$('csvTextLabel').hidden=$('importInputMode').value!=='paste';clearPreview();};
 for(const id of ['csvFile','csvText','source','sourceURL','sourceObservedAt','importList','importFormat'])$(id).addEventListener('input',clearPreview);
 $('previewImport').onclick=async()=>{const button=$('previewImport'),version=importRevision;button.disabled=true;try{const r=await api('import/preview',await importInput());if(version===importRevision)renderImportReport(r);}catch(e){if(version===importRevision)$('importResult').textContent=e.message;}finally{button.disabled=false;}};
 $('importForm').onsubmit=e=>submit(e,'importResult',async()=>{const version=importRevision,r=await api('import',await importInput());await loadLists();offset=0;selected.clear();await load();if(version===importRevision)renderImportReport(r);notice(importMessage(r));});
 function downloadCSV(name,rows){const cell=value=>'"'+String(value??'').replace(/^[\s]*[=+@\-\t\r]/,"'$&").replaceAll('"','""')+'"';const blob=new Blob(['\uFEFF'+rows.map(row=>row.map(cell).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 function downloadReport(report){downloadCSV('prospectpilot-import-report.csv',[['Source line','Contact','Result','Message','Review notes'],...(report.rows||[]).map(row=>[row.row,row.name,row.status,row.message,(row.issues||[]).map(issue=>issue.message).join(' ')])]);}
+$('continueImport').onclick=()=>{$('importDialog').close();$('filters').reset();$('listFilter').value=$('importList').value;offset=0;selected.clear();load();$('resultTitle').scrollIntoView({behavior:'smooth',block:'start'});notice('Select the contacts you want to work, then choose Add & open advisor worklist.');};
 $('downloadImportReport').onclick=()=>{if(lastImportReport)downloadReport(lastImportReport);};
 $('export').onclick=async()=>{try{const blob=await api('export',{ids:[...selected]});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='prospectpilot-contacts.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notice('Export ready. Suppressed contacts were omitted.');}catch(e){notice(e.message,true);}};
 try{await Promise.all([loadLists(),loadSearches()]);await load();notice('Your contact workspace is ready.');}catch(e){notice(e.message,true);}
@@ -129,6 +130,6 @@ $('qualityOpen').onclick=async()=>{
 $('sendToWorklist').onclick=async()=>{
  if(!selected.size)return;if(selected.size>100)return notice('Select up to 100 contacts at a time for advisor review.',true);
  const button=$('sendToWorklist');button.disabled=true;
- try{const response=await fetch('/api/lab/contact-import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:[...selected]})});const result=await response.json();if(!response.ok)throw Error(result.detail||'Could not add contacts to the worklist.');notice(result.replayed?'These contacts are already in the advisor worklist.':`${result.linked} contacts linked to the advisor worklist; ${result.suppressed} suppressed contacts omitted. Imported details still need evidence review.`);}
+ try{const response=await fetch('/api/lab/contact-import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:[...selected]})});const result=await response.json();if(!response.ok)throw Error(result.detail||'Could not add contacts to the worklist.');notice(result.replayed?'These contacts are already in the advisor worklist.':`${result.linked} contacts linked to the advisor worklist; ${result.suppressed} suppressed contacts omitted; ${result.result?.rejected||0} rejected; ${result.result?.ambiguous||0} ambiguous matches. Imported details still need evidence review.`);if(result.lead_ids?.length)location.assign('/lab?lead='+encodeURIComponent(result.lead_ids[0]));}
  catch(e){notice(e.message,true);}finally{selection();}
 };

@@ -345,7 +345,8 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       const contacts=(await client.query('SELECT id,payload,updated_at FROM prospect_contacts WHERE user_id=$1 AND id=ANY($2::text[]) ORDER BY id FOR SHARE',[user.uid,ids])).rows;
       if(contacts.length!==ids.length)throw fail(404,'One or more directory contacts are unavailable.');
       const key='directory:'+hash(JSON.stringify(contacts));
-      const prior=(await client.query('SELECT id FROM lab_runs WHERE user_id=$1 AND idempotency_key=$2',[user.uid,key])).rows[0];if(prior)return {replayed:true,run:prior};
+      const handoffIds=async()=>[...new Set((await client.query(`SELECT a.lead_id FROM advisor_contact_links a JOIN prospect_contacts p ON p.id=a.contact_id AND p.user_id=a.user_id WHERE a.user_id=$1 AND a.contact_id=ANY($2::text[]) AND COALESCE(p.payload->>'suppressed','false')!='true' ORDER BY a.contact_id`,[user.uid,ids])).rows.map(row=>row.lead_id))];
+      const prior=(await client.query('SELECT id FROM lab_runs WHERE user_id=$1 AND idempotency_key=$2',[user.uid,key])).rows[0];if(prior)return {replayed:true,run:prior,lead_ids:await handoffIds()};
       const permitted=contacts.filter(c=>!c.payload.suppressed),run={id:randomUUID()};
       await client.query("INSERT INTO lab_runs(id,user_id,user_email,kind,idempotency_key,status) VALUES($1,$2,$3,'import',$4,'running')",[run.id,user.uid,user.email,key]);
       const candidates=permitted.map(c=>({...withDirectoryRestrictions(c.payload,[c.payload]),current_title:c.payload.title,source_names:['Contact directory: '+(c.payload.source||'reported identifiers')]}));
@@ -356,7 +357,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
         await client.query('INSERT INTO advisor_contact_links(contact_id,lead_id,user_id) VALUES($1,$2,$3) ON CONFLICT(contact_id,user_id) DO UPDATE SET lead_id=EXCLUDED.lead_id',[c.id,matches[0].id,user.uid]);linked++;
       }
       await client.query("UPDATE lab_runs SET status='completed',message=$1,completed_at=now() WHERE id=$2",[JSON.stringify({...result,linked,suppressed:contacts.length-permitted.length}),run.id]);
-      return {run,result,linked,suppressed:contacts.length-permitted.length};
+      return {run,result,linked,suppressed:contacts.length-permitted.length,lead_ids:await handoffIds()};
     });
   }
   const advisor=createAdvisorWorkflow({pool,accessible,evaluate,transaction,visibleSQL,now});
