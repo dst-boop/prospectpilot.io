@@ -110,22 +110,31 @@ async function syncTimeZone(){
 }
 async function init(){try{const [me,settings,sources]=await Promise.all([request('/api/lab/me'),request('/api/lab/settings'),request('/api/lab/sources')]);$('account').textContent=me.name||me.email;document.querySelectorAll('[data-legacy-tool]').forEach(link=>link.hidden=me.capabilities?.legacy_tools!==true);readSettings(settings);sourceReadiness=sources.readiness;const searchOption=document.querySelector('input[name="source"][value="web_search"]');searchOption.disabled=!sourceReadiness.web_search;if(searchOption.disabled)searchOption.checked=false;$('searchReadiness').textContent=sources.readiness.web_search?'Licensed search: '+(Number(sources.readiness.web_search_query_cost_micros)/1000000).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:6})+' per query, at most one query per employer. The daily budget is enforced before each request.':'Licensed web search is unavailable and has been deselected. Free company research and authorized CSV imports remain available.';$('sourceCatalog').innerHTML=sources.sources.map(s=>`<div class="source-card"><h3>${esc(s.name)} ${badge(s.mode)}</h3><p>${esc(s.supports)}</p><p>${esc(s.limit)}</p>${s.url?link(s.url,'Source information'):''}</div>`).join('');await syncTimeZone().catch(()=>{});await refresh();const requestedLead=new URL(location.href).searchParams.get('lead');if(requestedLead&&requestedLead.length<=100)await openLead(requestedLead);}catch(e){notice(e.message,true);}}
 async function loadActivity(id,version,reset=true){try{const data=await request('/api/lab/leads/'+encodeURIComponent(id)+'/activity');if(version!==leadDetailVersion)return;currentWorkflow=data;$('activityForm').hidden=false;if(reset){if(labels[data.action.field]){$('reviewField').value=data.action.field;reviewFields();}prepareActivity();}else renderConversation();}catch(e){if(version===leadDetailVersion){$('activityForm').hidden=true;$('conversationBrief').textContent='The activity record could not load. Close and reopen to retry. '+e.message;}}}
-let workOffset=0,workTotal=0,workRequest=0,currentWorkflow=null,activityKey='',activitySaving=false;
+let workLoading=false,workOffset=0,workTotal=0,workRequest=0,currentWorkflow=null,activityKey='',activitySaving=false;
 const workSelected=new Set();
 const when=value=>value?new Date(value).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'';
 const emptyMessages={resting:['Nobody is resting right now.','A prospect rests after six touches in 45 days, or after a sequence ends without a reply. They return automatically when the rest period is over.'],today:['Your next actions will appear here.','Import an existing provider CSV or discover people at named employers. Each prospect will have a specific evidence task.'],due:['You’re caught up on due follow-ups.','Scheduled follow-ups return here when their saved time arrives.'],ready:['No prospects are ready for an initial conversation yet.','Review age, US residence, and contact ownership first. Missing retirement and financial evidence remains a conversation topic, not a verified claim.'],review:['No evidence reviews in this view.','Try another worklist or import research candidates.'],enrich:['No missing-contact records in this view.','Contact details that are present but unverified appear under Evidence to review.'],scheduled:['No follow-ups scheduled.','Open a prospect, record the outcome, and choose a next follow-up time.'],meetings:['No meetings saved yet.','Choose Meeting booked on a prospect and record the agreed time.'],clients:['No clients recorded yet.','Choose Became a client on a prospect you have spoken with. They leave the worklist and are counted on the scoreboard.'],closed:['No closed or excluded records.','Contact restrictions and reviewed disqualifications remove records from active work. Clients are listed separately.'],all:['No prospects found.','Import a CSV or change your search.']};
-function selectionLabel(){$('workSelection').textContent=`${workSelected.size} selected`;$('enrichExport').disabled=!workSelected.size;}
+function selectionLabel(){$('workSelection').textContent=`${workSelected.size} selected`;$('enrichExport').disabled=workLoading||!workSelected.size;}
+function loadingWorklist(){
+  workLoading=true;
+  $('startNext').disabled=true;$('startNext').onclick=null;
+  $('workPrevious').disabled=true;$('workNext').disabled=true;
+  $('workList').setAttribute('aria-busy','true');
+  $('workList').innerHTML='<div class="work-empty" role="status">Loading prospects…</div>';
+  $('workPageInfo').textContent='Loading…';selectionLabel();
+}
 async function loadWorklist(){
-  $('startNext').disabled=true;
-  $('startNext').onclick=null;
-  const serial=++workRequest;const data=await request('/api/lab/worklist?'+new URLSearchParams({view:$('workView').value,search:$('workSearch').value,offset:workOffset,limit:24}));if(serial!==workRequest)return;
+  const serial=++workRequest;loadingWorklist();
+  try{
+  const data=await request('/api/lab/worklist?'+new URLSearchParams({view:$('workView').value,search:$('workSearch').value,offset:workOffset,limit:24}));if(serial!==workRequest)return;
   if(workOffset>0&&workOffset>=data.total){workOffset=0;return loadWorklist();}
   loadScoreboard().catch(()=>{});
   workTotal=data.total;$('workDue').textContent=num(data.counts.due);$('workReady').textContent=num(data.counts.ready);$('workConversations').textContent=num(data.activity.conversations);$('workMeetings').textContent=num(data.activity.meetings);
   if(data.dials){$('workDials').textContent=num(data.dials.remaining);$('workDialsNote').textContent=data.dials.reason;}
   const first=data.items.find(item=>!terminal(item.action));
-  $('dailyTitle').textContent=data.counts.all===0?'Start with the contacts you have.':first?'Your next step is ready.':'You’re caught up in this view.';
-  $('dailyDescription').textContent=first?`${first.action.label}: ${first.lead.first_name||''} ${first.lead.last_name||''}. ${first.action.reason}`:data.counts.all===0?'Import an authorized CSV, or choose contacts from your directory. We’ll organize the next steps here.':'Choose another queue, search for a prospect, or bring in a new list.';
+  const emptyWorkspace=data.counts.all===0&&!$('workSearch').value;
+  $('dailyTitle').textContent=emptyWorkspace?'Start with the contacts you have.':first?'Your next step is ready.':'You’re caught up in this view.';
+  $('dailyDescription').textContent=first?`${first.action.label}: ${first.lead.first_name||''} ${first.lead.last_name||''}. ${first.action.reason}`:emptyWorkspace?'Import an authorized CSV, or choose contacts from your directory. We’ll organize the next steps here.':'Choose another queue, search for a prospect, or bring in a new list.';
   $('startNext').textContent=first?($('workView').value==='today'&&!$('workSearch').value?'Start next prospect →':'Open first result →'):'Import a contact list →';
   $('startNext').disabled=false;
   $('startNext').onclick=first?()=>openLead(first.lead.id):()=>$('quickImport').click();
@@ -134,7 +143,19 @@ async function loadWorklist(){
   document.querySelectorAll('[data-work-open]').forEach(e=>e.onclick=()=>openLead(e.dataset.workOpen));
   document.querySelectorAll('[data-work-select]').forEach(e=>e.onchange=()=>{e.checked?workSelected.add(e.dataset.workSelect):workSelected.delete(e.dataset.workSelect);selectionLabel();});
   $('workPageInfo').textContent=(data.total?`${num(workOffset+1)}–${num(Math.min(workOffset+24,data.total))} of ${num(data.total)}`:'0 prospects')+(data.truncated?` · Showing a working set of ${num(data.scanned)} / ${num(data.scope_total)}; search to narrow.`:'');
-  $('workPrevious').disabled=!workOffset;$('workNext').disabled=workOffset+24>=workTotal;selectionLabel();
+  $('workPrevious').disabled=!workOffset;$('workNext').disabled=workOffset+24>=workTotal;selectionLabel();return true;
+  }catch(error){
+    if(serial!==workRequest)return;
+    workSelected.clear();
+    $('dailyTitle').textContent='Your worklist could not load.';
+    $('dailyDescription').textContent='Retry to load the current queue before opening your next prospect.';
+    $('workList').innerHTML=`<div class="work-empty" role="alert"><h3>Could not load prospects.</h3><p>${esc(error.message)}</p><button id="retryWorklist" class="secondary">Retry</button></div>`;
+    $('workPageInfo').textContent='Results unavailable';
+    $('retryWorklist').onclick=async()=>{try{const loaded=await loadWorklist();if(loaded)notice('Worklist updated.');}catch(e){notice(e.message,true);}};
+    throw error;
+  }finally{
+    if(serial===workRequest){workLoading=false;$('workList').setAttribute('aria-busy','false');selectionLabel();}
+  }
 }
 // What the prospect actually did. The record stores the channel, so the history
 // should not say they called when they sent an email.
@@ -238,9 +259,9 @@ document.querySelectorAll('[data-queue]').forEach(button=>button.onclick=()=>{$(
 $('quickImport').onclick=()=>$('importOpen').click();
 $('findProspects').onclick=()=>{$('researchTools').open=true;$('runForm').scrollIntoView({behavior:'smooth',block:'start'});$('employers').focus({preventScroll:true});};
 $('workView').onchange=()=>{workOffset=0;loadWorklist().catch(e=>notice(e.message,true));};let workSearchTimer;
-$('workSearch').oninput=()=>{workRequest++;clearTimeout(workSearchTimer);workSearchTimer=setTimeout(()=>{workOffset=0;loadWorklist().catch(e=>notice(e.message,true));},250);};
+$('workSearch').oninput=()=>{workRequest++;loadingWorklist();clearTimeout(workSearchTimer);workSearchTimer=setTimeout(()=>{workOffset=0;loadWorklist().catch(e=>notice(e.message,true));},250);};
 $('workPrevious').onclick=()=>{workOffset=Math.max(0,workOffset-24);loadWorklist().catch(e=>notice(e.message,true));};$('workNext').onclick=()=>{workOffset+=24;loadWorklist().catch(e=>notice(e.message,true));};
-$('enrichExport').onclick=async()=>{if(!workSelected.size)return;try{const blob=await request('/api/lab/enrichment-export',{method:'POST',body:JSON.stringify({ids:[...workSelected]})});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='prospectpilot-enrichment.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notice('Provider matching CSV prepared. Import the enriched results to merge them into your existing prospects.');}catch(e){notice(e.message,true);}};
+$('enrichExport').onclick=async()=>{if(workLoading||!workSelected.size)return;try{const blob=await request('/api/lab/enrichment-export',{method:'POST',body:JSON.stringify({ids:[...workSelected]})});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='prospectpilot-enrichment.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notice('Provider matching CSV prepared. Import the enriched results to merge them into your existing prospects.');}catch(e){notice(e.message,true);}};
 $('profileOpen').onclick=async()=>{
   $('profileError').textContent='';
   try{const p=await request('/api/lab/advisor-profile');
