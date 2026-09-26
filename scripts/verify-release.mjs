@@ -137,8 +137,15 @@ export async function verifyRelease({base, release = null, expect = EXPECTED, al
       `GET /login -> ${status} ${headers.get('content-type')} / ${headers.get('cache-control')}`);
   });
 
-  // Pages must send an unauthenticated visitor to sign in rather than rendering.
-  for (const path of ['/', '/prospect']) {
+  await attempt('public_home', async () => {
+    const {status, headers, text} = await call('/');
+    return result('public_home', status === 200 && /text\/html/.test(headers.get('content-type') || '') &&
+      /no-store/.test(headers.get('cache-control') || '') && text.includes('Your contacts.') && text.includes('href="/login"'),
+      `GET / -> ${status}; public homepage and sign-in link expected`);
+  });
+
+  // Private pages must send an unauthenticated visitor to sign in.
+  for (const path of ['/lab', '/prospect']) {
     await attempt('redirect ' + path, async () => {
       const {status, headers} = await call(path);
       return result('redirect ' + path, status === 303 && headers.get('location') === '/login',
