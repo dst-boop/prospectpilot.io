@@ -6,8 +6,8 @@ import {readFileSync} from 'node:fs';
 function client(){
  const elements=new Map(),pending=[];
  const create=id=>{const value={textContent:'',innerHTML:'',disabled:false,open:false,value:'Reviewed source',dataset:{},
-  insertAdjacentHTML(){},showModal(){this.open=true;},addEventListener(event,fn){this[event+'Handler']=fn;},close(){this.open=false;this.closeHandler?.();}};elements.set(id,value);return value;};
- for(const id of ['contactTitle','contactBody','contactError','toggleSuppression','deletePerson','closeContact','correctionForm','conflictReason0'])create(id);
+  insertAdjacentHTML(){},append(element){this.lastChild=element;},scrollIntoView(){this.scrolled=true;},focus(){this.focused=true;},querySelector(){return elements.get('firstField');},showModal(){this.open=true;},addEventListener(event,fn){this[event+'Handler']=fn;},close(){this.open=false;this.closeHandler?.();}};elements.set(id,value);return value;};
+ for(const id of ['contactTitle','contactBody','contactError','toggleSuppression','deletePerson','closeContact','correctionForm','conflictReason0','contactHistory','contactHistoryBody','editContact','reviewContactConflicts','contactConflicts','correctionPanel','firstField'])create(id);
  const conflict=create('conflict');conflict.dataset={conflict:'0',decision:'keep'};
  const context=vm.createContext({selected:new Set(),$:id=>elements.get(id),esc:String,notice(){},load:async()=>{},
   FormData:class{constructor(){return [['first_name','A'],['last_name','Example'],['reason','Reviewed source']];}},
@@ -18,6 +18,17 @@ function client(){
  return {elements,pending,open:id=>vm.runInContext(`showContact(${JSON.stringify(id)})`,context)};
 }
 const record=name=>({contact:{first_name:name,last_name:'Example',edit_revision:name,source_history:[{source:'Fixture',proposed_values:{title:'Manager'}}]},lists:[]});
+
+test('contact actions open and focus the relevant review while history follows the workflow',async()=>{
+ const c=client(),a=c.open('A');c.pending[0].resolve(record('A'));await a;
+ c.elements.get('editContact').onclick();
+ assert.equal(c.elements.get('correctionPanel').open,true);
+ assert.equal(c.elements.get('firstField').focused,true);
+ c.elements.get('reviewContactConflicts').onclick();
+ assert.equal(c.elements.get('contactConflicts').scrolled,true);
+ assert.equal(c.elements.get('contactConflicts').focused,true);
+ assert.equal(c.elements.get('contactBody').lastChild,c.elements.get('contactHistory'));
+});
 
 test('contact dialog ignores stale failures and does not reopen after closing during a request',async()=>{
  const c=client(),a=c.open('A'),b=c.open('B');c.pending[1].resolve(record('B'));await b;

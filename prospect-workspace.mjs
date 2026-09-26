@@ -74,7 +74,7 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
    await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`prospect:${user.uid}`]);
    if(input.list_id)await ownedList(c,user,input.list_id);
    const previous=(await c.query('SELECT result FROM prospect_imports WHERE user_id=$1 AND fingerprint=$2',[user.uid,fingerprint])).rows[0];if(previous)return {...previous.result,replayed:true,preview};
-   const result={id:randomUUID(),added:0,duplicates:0,conflicts:0,rejected:0,errors:[],rows:[],preview,replayed:false,total:records.length,mapped_columns:parsed.mapped_columns,ignored_columns:parsed.ignored_columns};
+   const result={id:randomUUID(),added:0,duplicates:0,conflicts:0,field_reviews:0,rejected:0,errors:[],rows:[],preview,replayed:false,total:records.length,mapped_columns:parsed.mapped_columns,ignored_columns:parsed.ignored_columns};
    const prepared=records.map(({cells,row})=>{
     try{
      if(cells.length!==headers.length)throw fail(422,'Row has the wrong number of columns.');
@@ -93,8 +93,8 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
    const changed=new Map();
    const indexRow=row=>{byId.set(row.id,row);for(const key of row.identity_keys){if(!byKey.has(key))byKey.set(key,new Set());byKey.get(key).add(row.id);}};
    existing.forEach(indexRow);
-   const report=(row,status,message,contact)=>{
-    result.rows.push({row,status,message,name:contact?`${contact.first_name} ${contact.last_name}`:'',issues:contact?contactQuality(contact).issues:[]});
+   const report=(row,status,message,contact,review={})=>{
+    result.rows.push({row,status,message,...review,name:contact?`${contact.first_name} ${contact.last_name}`:'',issues:contact?contactQuality(contact).issues:[]});
     if(['rejected','conflict'].includes(status)&&result.errors.length<50)result.errors.push({row,message});
    };
    const now=new Date().toISOString();
@@ -122,6 +122,7 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
      merged.suppressed=old.suppressed||contact.suppressed;
      if(!old.email&&merged.email)merged.email_status='unverified';if(!old.phone&&merged.phone)merged.phone_status='unverified';
      const differing=['title','company','country','state','city','phone','mobile_phone'].filter(key=>old[key]&&contact[key]&&nameKey(old[key])!==nameKey(contact[key]));
+     if(differing.length)result.field_reviews++;
      merged.source_history=[...(old.source_history||[{source:old.source,kind:old.source_kind,imported_at:null,observed_at:old.source_observed_at||null}]),{...evidence,differing_fields:differing,...differing.length?{proposed_values:Object.fromEntries(differing.map(key=>[key,contact[key]]))}:{}}].slice(-20);
      merged.last_seen_at=now;
      merged.field_sources={...(old.field_sources||{})};for(const key of Object.keys(contact))if(!old[key]&&contact[key]&&parsed.mapped_columns.includes(key))merged.field_sources[key]=evidence;
@@ -129,7 +130,7 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
      merged.source_observed_at=old.source_observed_at||null;
      changed.set(id,{id,payload:merged,identity_keys:identities(merged)});
      indexRow({id,payload:merged,identity_keys:identities(merged)});result.duplicates++;
-     report(record.row,'duplicate',differing.length?`Existing values preserved; source differs in: ${differing.join(', ')}.`:'Matched an existing contact; missing fields can be added without replacing verified data.',merged);
+     report(record.row,'duplicate',differing.length?`Existing values preserved; source differs in: ${differing.join(', ')}.`:'Matched an existing contact; missing fields can be added without replacing verified data.',merged,differing.length?{review_fields:differing,...!preview?{contact_id:id}:{}}:{});
     }else{
      contact.source_history=[evidence];contact.field_sources=Object.fromEntries(parsed.mapped_columns.filter(key=>contact[key]).map(key=>[key,evidence]));if(contact.phone&&!contact.field_sources.phone&&contact.mobile_phone===contact.phone)contact.field_sources.phone=evidence;
      changed.set(id,{id,payload:contact,identity_keys:identities(contact)});

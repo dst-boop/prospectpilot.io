@@ -1,3 +1,4 @@
+import {loginDestination} from './login-destination.mjs';
 import {QUALITY_VERSION} from './lead-quality.mjs';
 import {CADENCE_VERSION} from './outreach-cadence.mjs';
 import {randomUUID} from 'node:crypto';
@@ -32,8 +33,8 @@ export function createHandler({auth,db,worker,loginHtml,loginScript,homeHtml,sit
     const cookie=(request.headers.get('cookie')||'').split(';').map(x=>x.trim()).find(x=>x.startsWith('__session='))?.slice(10);
     let claims;if(cookie){try{claims=await auth.verifySessionCookie(cookie,true);}catch{}}
     if(url.pathname==='/'&&request.method==='GET'&&homeHtml&&(!claims||!authorized(claims)))return publicPage(homeHtml);
-    if(!claims||!authorized(claims))return url.pathname.startsWith('/api/')?responseJSON('Sign in to ProspectPilot.',401):new Response(null,{status:303,headers:{Location:'/login','Cache-Control':'no-store'}});
-    if((prospect&&url.pathname==='/api/prospect/me'||lab&&url.pathname==='/api/lab/me')&&request.method==='GET')return Response.json({uid:claims.uid,email:claims.email,name:claims.name||''},{headers:{'Cache-Control':'private, no-store'}});
+    if(!claims||!authorized(claims))return url.pathname.startsWith('/api/')?responseJSON('Sign in to ProspectPilot.',401):new Response(null,{status:303,headers:{Location:'/login?next='+encodeURIComponent(loginDestination(url.pathname+url.search)),'Cache-Control':'no-store'}});
+    if((prospect&&url.pathname==='/api/prospect/me'||lab&&url.pathname==='/api/lab/me')&&request.method==='GET')return Response.json({uid:claims.uid,email:claims.email,name:claims.name||'',...(url.pathname==='/api/lab/me'?{capabilities:{legacy_tools:!!ownerEmail&&claims.email.toLowerCase()===ownerEmail.toLowerCase()}}:{})},{headers:{'Cache-Control':'private, no-store'}});
     if(prospect && url.pathname==='/prospect-jobs-client.js' && request.method==='GET')return new Response(prospectJobsScript,{headers:{'Content-Type':'text/javascript; charset=utf-8','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
     if(prospect && (['/prospect','/prospect-client.js','/prospect.css'].includes(url.pathname)||(!lab&&url.pathname==='/')) && request.method==='GET') {
       const script=url.pathname==='/prospect-client.js',style=url.pathname==='/prospect.css';
