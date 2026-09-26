@@ -19,7 +19,7 @@ const selected=new Set();
 async function request(path,options={}) {
   const response=await fetch(path,{...options,headers:{'content-type':'application/json',...options.headers}});
   if(response.status===401){location.href='/login?next='+encodeURIComponent(location.pathname+location.search);throw Error('Please sign in.');}
-  if(!response.ok){let data;try{data=await response.json();}catch{}throw Error(data?.detail||`Request failed (${response.status}).`);}
+  if(!response.ok){let data;try{data=await response.json();}catch{}throw Object.assign(Error(data?.detail||`Request failed (${response.status}).`),{status:response.status});}
   return response.headers.get('content-type')?.includes('text/csv')?response.blob():response.json();
 }
 function notice(text,error=false){$('notice').textContent=text;$('notice').classList.toggle('error',error);}
@@ -218,8 +218,15 @@ function renderConversation(){
   if(c){const anchor=document.createElement('a');anchor.className='contact-link';anchor.textContent=c.channel==='phone'?`Call ${c.address}`:c.channel==='email'?`Email ${c.address}`:'Open reviewed LinkedIn profile';anchor.href=c.channel==='phone'?'tel:'+c.address:c.channel==='email'?'mailto:'+encodeURIComponent(c.address):safeURL(c.address);if(c.channel==='linkedin'){anchor.target='_blank';anchor.rel='noopener noreferrer';}$('contactActions').append(anchor);}else $('contactActions').textContent='No reviewed contact shortcut available. Review the contact evidence below.';
   $('activityHistory').innerHTML=(current.lead.notes?`<p class="existing-notes">${esc(current.lead.notes)}</p>`:'')+(currentWorkflow.activities.length?currentWorkflow.activities.map(a=>`<div class="activity-entry"><strong>${esc(outcomeLabel(a.outcome))}</strong>${a.direction==='inbound'?` <span class="inbound-tag">${esc(inboundLabel(a.channel))}</span>`:''}${a.logged_by?` <span class="by-tag">${esc(a.logged_by)}</span>`:''} · ${esc(when(a.created_at))}<p>${esc(a.note)}</p>${a.next_at?`<small>Next: ${esc(when(a.next_at))}</small>`:''}</div>`).join(''):'<p>No outcomes recorded yet.</p>');
 }
+let scoreboardRequest=0;
 async function loadScoreboard(){
+  const serial=++scoreboardRequest;
+  $('scoreboard').setAttribute('aria-busy','true');
+  $('scoreboard').innerHTML='<p role="status">Loading funnel summary…</p>';
+  $('scoreboardBasis').textContent='';
+  try{
   const b=await request('/api/lab/scoreboard?days=30');
+  if(serial!==scoreboardRequest)return;
   // A rate with nothing in its denominator is not zero, it is unmeasured. Say
   // so rather than printing a 0% nobody earned.
   $('scoreboard').innerHTML=b.measured.map(m=>{
@@ -235,6 +242,14 @@ async function loadScoreboard(){
   }).join('');
   const gaps=[b.untouched?`${num(b.untouched)} prospect${b.untouched===1?'':'s'} added and never touched`:'',b.meetings.note].filter(Boolean);
   $('scoreboardBasis').textContent=[b.basis,...gaps].join(' ');
+  }catch(error){
+    if(serial!==scoreboardRequest)return;
+    $('scoreboard').innerHTML='<div role="alert"><p>Funnel summary could not load. '+esc(error.message)+'</p><button id="retryScoreboard" class="secondary" type="button">Retry funnel summary</button></div>';
+    $('scoreboardBasis').textContent='Figures are unavailable until the summary reloads.';
+    $('retryScoreboard').onclick=()=>loadScoreboard();
+  }finally{
+    if(serial===scoreboardRequest)$('scoreboard').setAttribute('aria-busy','false');
+  }
 }
 function cadenceLine(c){
   if(!c)return '';
@@ -293,10 +308,25 @@ function prepareActivity(){renderConversation();$('activityForm').reset();$('act
   else $('activityNext').value='';
   activityFields();}
 $('activityOutcome').onchange=activityFields;
+function activityConflict(id,version,message='This prospect changed. Your note and selected outcome are kept. Refresh the prospect, review the latest activity, then save again.'){
+ $('activityError').innerHTML=`${esc(message)} <button type="button" class="secondary" id="reloadActivity">Refresh prospect and keep note</button>`;
+ $('reloadActivity').onclick=async()=>{
+  if(version!==leadDetailVersion||activitySaving)return;
+  activitySaving=true;$('saveActivity').disabled=true;$('reloadActivity').disabled=true;
+  try{
+   const data=await request('/api/lab/leads/'+encodeURIComponent(id));
+   if(version!==leadDetailVersion)return;
+   current=data;renderPerson();
+   $('activityError').textContent='Your note and selected outcome were kept. Review the latest activity before saving.';
+   await loadActivity(id,version,false);
+  }catch(error){if(version===leadDetailVersion)activityConflict(id,version,'Could not refresh this prospect. Your note is still here. '+error.message);}
+  finally{activitySaving=false;if(version===leadDetailVersion)$('saveActivity').disabled=false;}
+ };
+}
 $('activityForm').onsubmit=async e=>{e.preventDefault();if(!current||!currentWorkflow||activitySaving)return;const version=leadDetailVersion;activitySaving=true;$('saveActivity').disabled=true;$('activityError').textContent='';try{
   const result=await request('/api/lab/leads/'+encodeURIComponent(current.lead.id)+'/activity',{method:'POST',body:JSON.stringify({outcome:$('activityOutcome').value,channel:$('activityChannel').disabled?null:$('activityChannel').value,note:$('activityNote').value,next_at:$('activityNext').disabled||!$('activityNext').value?null:new Date($('activityNext').value).toISOString(),direction:$('activityInbound').checked&&!$('inboundField').hidden?'inbound':'outbound',signature:currentWorkflow.action.signature,idempotency_key:activityKey})});
   if(result.saved){if(version===leadDetailVersion)$('detail').close();notice('Outcome saved. Your follow-up and worklist are updated.');await refresh(false);}
-}catch(err){if(version===leadDetailVersion)$('activityError').textContent=err.message;else notice(err.message,true);}finally{activitySaving=false;$('saveActivity').disabled=false;}};
+}catch(err){if(version===leadDetailVersion){if(err.status===409)activityConflict(current.lead.id,version);else $('activityError').textContent=err.message;}else notice(err.message,true);}finally{activitySaving=false;$('saveActivity').disabled=false;}};
 $('startImport').onclick=()=>$('quickImport').click();
 document.querySelectorAll('[data-queue]').forEach(button=>button.onclick=()=>{$('workView').value=button.dataset.queue;$('workSearch').value='';workOffset=0;loadWorklist().catch(e=>notice(e.message,true));});
 $('quickImport').onclick=()=>location.assign('/prospect?import=1');

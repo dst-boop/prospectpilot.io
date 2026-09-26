@@ -111,6 +111,34 @@ test('the scoreboard omits a target it does not have rather than inventing one',
   assert.doesNotMatch(tiles[3],/0%/);
 });
 
+test('funnel failure clears old figures and retries without reloading the worklist',async()=>{
+  const c=client();c.element('scoreboard').innerHTML='Old totals';c.element('scoreboardBasis').textContent='Old basis';
+  const failed=c.run('loadScoreboard()');
+  assert.doesNotMatch(c.element('scoreboard').innerHTML,/Old totals/);
+  assert.equal(c.element('scoreboardBasis').textContent,'');
+  c.pending[0].respond({detail:'Temporarily unavailable'},503);await failed;
+  assert.match(c.element('scoreboard').innerHTML,/Retry funnel summary/);
+  assert.equal(c.element('scoreboard')['aria-busy'],'false');
+  const retry=c.element('retryScoreboard').onclick();
+  assert.equal(c.pending[1].url,'/api/lab/scoreboard?days=30');
+  c.pending[1].respond({measured:[],untouched:0,meetings:{note:''},basis:'Fresh totals'});await retry;
+  assert.equal(c.element('scoreboardBasis').textContent,'Fresh totals');
+  assert.doesNotMatch(c.element('scoreboard').innerHTML,/Retry funnel summary/);
+});
+
+test('late funnel responses cannot replace a newer summary or finish its loading state',async()=>{
+  const c=client(),old=c.run('loadScoreboard()'),fresh=c.run('loadScoreboard()');
+  c.pending[0].respond({detail:'Old failure'},503);await old;
+  assert.equal(c.element('scoreboard')['aria-busy'],'true');
+  assert.match(c.element('scoreboard').innerHTML,/Loading funnel/);
+  c.pending[1].respond({measured:[],untouched:0,meetings:{note:''},basis:'Current'});await fresh;
+  const late=c.run('loadScoreboard()'),newer=c.run('loadScoreboard()');
+  c.pending[3].respond({measured:[],untouched:0,meetings:{note:''},basis:'Newest'});await newer;
+  c.pending[2].respond({measured:[],untouched:0,meetings:{note:''},basis:'Outdated'});await late;
+  assert.equal(c.element('scoreboardBasis').textContent,'Newest');
+  assert.equal(c.element('scoreboard')['aria-busy'],'false');
+});
+
 test('an inbound row is labelled by the channel it arrived on',()=>{
   // The record stores the channel, so the history must not say they called when
   // they sent an email.
@@ -223,6 +251,26 @@ test('startup failure offers full initialization retry without enabling unready 
 test('primary contact import routes to the enhanced directory importer',()=>{
  const c=client();c.run("location.assign=value=>location.href=value");c.element('quickImport').onclick();
  assert.equal(c.run('location.href'),'/prospect?import=1');
+});
+
+test('outcome conflict refresh keeps the note and uses the latest signature on retry',async()=>{
+ const c=client({activity:true});c.run("current={lead:{id:'A'}};currentWorkflow={action:{signature:'old'}};activityKey='same-attempt';leadDetailVersion=1;renderConversation=()=>{}");
+ c.element('activityOutcome').value='connected';c.element('activityNote').value='Unsaved conversation note';c.element('activityNext').value='';
+ const save=c.element('activityForm').onsubmit({preventDefault(){}});c.pending[0].respond({detail:'This prospect changed.'},409);await save;
+ assert.match(c.element('activityError').innerHTML,/Refresh prospect and keep note/);
+ const recover=c.element('reloadActivity').onclick();assert.equal(c.pending[1].url,'/api/lab/leads/A');
+ c.pending[1].respond(lead('A'));await settle();assert.equal(c.pending[2].url,'/api/lab/leads/A/activity');
+ c.pending[2].respond({action:{signature:'fresh'},activities:[]});await recover;
+ assert.equal(c.element('activityNote').value,'Unsaved conversation note');assert.equal(c.element('activityOutcome').value,'connected');
+ assert.equal(c.run('currentWorkflow.action.signature'),'fresh');
+ const retry=c.element('activityForm').onsubmit({preventDefault(){}});
+ const body=JSON.parse(c.pending[3].options.body);assert.equal(body.signature,'fresh');assert.equal(body.note,'Unsaved conversation note');assert.equal(body.idempotency_key,'same-attempt');
+ c.pending[3].respond({saved:true});await retry;
+});
+test('conflict refresh cannot replace a different prospect opened while waiting',async()=>{
+ const c=client();c.run("leadDetailVersion=1;current={lead:{id:'A'}};activityConflict('A',1)");
+ const pending=c.element('reloadActivity').onclick();c.run("leadDetailVersion=2;current={lead:{id:'B'}}");
+ c.pending[0].respond(lead('A'));await pending;assert.equal(c.run('current.lead.id'),'B');assert.equal(c.pending.length,1);
 });
 
 test('delete this person takes a second click, then deletes the lead and closes',async()=>{
