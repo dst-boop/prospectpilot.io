@@ -14,3 +14,8 @@
 }
 @media(max-width:700px){.toolbar .inline{flex-basis:100%}aside form{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}aside label{min-width:0}}
 #contactDialog .dialog-title{position:sticky;top:-28px;background:white;z-index:1;padding-block:12px;margin-top:-12px}#contactBody>details{margin:20px 0;padding:14px;border:1px solid var(--line);border-radius:8px}#contactBody>details>summary{cursor:pointer;font-weight:650}#contactHistoryBody{margin-top:16px}.contact-actions{margin:14px 0}.conflict-table{max-width:100%;overflow:auto}.conflict-table table{table-layout:fixed}.conflict-table th,.conflict-table td{overflow-wrap:anywhere;white-space:normal;padding:10px}.preparation-draft{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-size:14px}@media(max-width:700px){#contactDialog .dialog-title{top:-18px}.contact-actions button{width:100%}}
+
+/* Keep long import forms usable on narrow phones. */
+#importDialog .dialog-title{position:sticky;top:-28px;background:white;z-index:1;padding-block:12px;margin-top:-12px}
+@media(max-width:700px){dialog{max-width:calc(100vw - 24px)}#importDialog .dialog-title{top:-18px}}
+@media(max-width:480px){dialog .pair{grid-template-columns:minmax(0,1fr)}dialog .pair>label{min-width:0}}
