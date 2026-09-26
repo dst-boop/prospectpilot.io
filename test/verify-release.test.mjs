@@ -19,7 +19,8 @@ function service(overrides = {}) {
     'GET /healthz': res => res.writeHead(200).end('ok'),
     'GET /version': res => res.writeHead(200, {'content-type': 'application/json', 'cache-control': 'no-store'}).end(version()),
     'GET /login': res => res.writeHead(200, {'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store'}).end('<form>'),
-    'GET /': res => res.writeHead(303, {location: '/login', 'cache-control': 'no-store'}).end(),
+    'GET /': res => res.writeHead(200, {'content-type': 'text/html', 'cache-control': 'private, no-store'}).end('Your contacts. <a href="/login">Sign in</a>'),
+    'GET /lab': res => res.writeHead(303, {location: '/login', 'cache-control': 'no-store'}).end(),
     'GET /prospect': res => res.writeHead(303, {location: '/login', 'cache-control': 'no-store'}).end(),
     'POST /logout': (res, req) => req.headers.origin && req.headers.origin !== 'ORIGIN'
       ? res.writeHead(403, {'content-type': 'application/json'}).end(JSON.stringify({detail: 'Please submit changes from this website.'}))
@@ -83,9 +84,14 @@ test('an API answering without a session fails, however ordinary the response lo
 });
 
 test('a page rendered instead of sending an unauthenticated visitor to sign in fails',async()=>{
-  const report = await run(service({'GET /': res =>
+  const report = await run(service({'GET /lab': res =>
     res.writeHead(200, {'content-type': 'text/html'}).end('<h1>Your prospecting day.</h1>')}));
-  assert.deepEqual(failed(report), ['redirect /']);
+  assert.deepEqual(failed(report), ['redirect /lab']);
+});
+
+test('the public homepage must render the product and sign-in path', async()=>{
+  const report = await run(service({'GET /': res => res.writeHead(303, {location:'/login'}).end()}));
+  assert.deepEqual(failed(report), ['public_home']);
 });
 
 test('a cacheable version endpoint or sign-in page fails',async()=>{

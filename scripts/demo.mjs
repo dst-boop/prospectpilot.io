@@ -61,6 +61,8 @@ const handle=async request=>{
     if(url.pathname==='/api/me'||url.pathname==='/api/prospect/me')return Response.json(user,{headers});
     if(url.pathname.startsWith('/api/prospect/')){const result=await prospect.route(request,user);return result instanceof Response?result:Response.json(result,{headers});}
     if(url.pathname.startsWith('/api/lab/')){const result=await lab.route(request,user);return result instanceof Response?result:Response.json(result,{headers});}
+    if(url.pathname==='/about')return new Response(read('home.html'),{headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
+    if(url.pathname==='/site.css')return new Response(read('site.css'),{headers:{...headers,'Content-Type':'text/css; charset=utf-8'}});
     if(assets.has(url.pathname)){const [type,body]=assets.get(url.pathname);return new Response(body,{headers:{...headers,'Content-Type':type}});}
     if(url.pathname==='/prospect')return new Response(prospectPage,{headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
     if(['/', '/lab'].includes(url.pathname))return new Response(page,{headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
