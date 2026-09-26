@@ -20,8 +20,8 @@ function service(overrides = {}) {
     'GET /version': res => res.writeHead(200, {'content-type': 'application/json', 'cache-control': 'no-store'}).end(version()),
     'GET /login': res => res.writeHead(200, {'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store'}).end('<form>'),
     'GET /': res => res.writeHead(200, {'content-type': 'text/html', 'cache-control': 'private, no-store'}).end('Your contacts. <a href="/login">Sign in</a>'),
-    'GET /lab': res => res.writeHead(303, {location: '/login', 'cache-control': 'no-store'}).end(),
-    'GET /prospect': res => res.writeHead(303, {location: '/login', 'cache-control': 'no-store'}).end(),
+    'GET /lab': res => res.writeHead(303, {location: '/login?next=%2Flab', 'cache-control': 'no-store'}).end(),
+    'GET /prospect': res => res.writeHead(303, {location: '/login?next=%2Fprospect', 'cache-control': 'no-store'}).end(),
     'POST /logout': (res, req) => req.headers.origin && req.headers.origin !== 'ORIGIN'
       ? res.writeHead(403, {'content-type': 'application/json'}).end(JSON.stringify({detail: 'Please submit changes from this website.'}))
       : res.writeHead(303, {location: '/login'}).end(),
