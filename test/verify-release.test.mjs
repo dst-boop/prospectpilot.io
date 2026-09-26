@@ -16,10 +16,11 @@ const version = extra => JSON.stringify({application: 'ProspectPilot', ...EXPECT
 // A service that behaves. Individual routes are overridden per case.
 function service(overrides = {}) {
   const routes = {
-    'GET /healthz': res => res.writeHead(200).end('ok'),
+    'GET /health': res => res.writeHead(200).end('ok'),
     'GET /version': res => res.writeHead(200, {'content-type': 'application/json', 'cache-control': 'no-store'}).end(version()),
     'GET /login': res => res.writeHead(200, {'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store'}).end('<form>'),
-    'GET /': res => res.writeHead(303, {location: '/login', 'cache-control': 'no-store'}).end(),
+    'GET /': res => res.writeHead(200, {'content-type': 'text/html', 'cache-control': 'private, no-store'}).end('Your contacts. <a href="/login">Sign in</a>'),
+    'GET /lab': res => res.writeHead(303, {location: '/login', 'cache-control': 'no-store'}).end(),
     'GET /prospect': res => res.writeHead(303, {location: '/login', 'cache-control': 'no-store'}).end(),
     'POST /logout': (res, req) => req.headers.origin && req.headers.origin !== 'ORIGIN'
       ? res.writeHead(403, {'content-type': 'application/json'}).end(JSON.stringify({detail: 'Please submit changes from this website.'}))
@@ -78,14 +79,19 @@ test('a build serving the wrong rules fails on the fields, not the identifier',a
 test('an API answering without a session fails, however ordinary the response looks',async()=>{
   const report = await run(service({api: res =>
     res.writeHead(200, {'content-type': 'application/json'}).end(JSON.stringify({items: [], counts: {}}))}));
-  assert.deepEqual(failed(report), ['unauthenticated /api/lab/worklist', 'unauthenticated /api/lab/scoreboard',
+  assert.deepEqual(failed(report), ['unauthenticated /api/lab/me', 'unauthenticated /api/lab/worklist', 'unauthenticated /api/lab/scoreboard',
     'unauthenticated /api/prospect/contacts', 'unauthenticated /api/prospect/me']);
 });
 
 test('a page rendered instead of sending an unauthenticated visitor to sign in fails',async()=>{
-  const report = await run(service({'GET /': res =>
+  const report = await run(service({'GET /lab': res =>
     res.writeHead(200, {'content-type': 'text/html'}).end('<h1>Your prospecting day.</h1>')}));
-  assert.deepEqual(failed(report), ['redirect /']);
+  assert.deepEqual(failed(report), ['redirect /lab']);
+});
+
+test('the public homepage must render the product and sign-in path', async()=>{
+  const report = await run(service({'GET /': res => res.writeHead(303, {location:'/login'}).end()}));
+  assert.deepEqual(failed(report), ['public_home']);
 });
 
 test('a cacheable version endpoint or sign-in page fails',async()=>{
@@ -125,10 +131,9 @@ test('a missing release identifier is not silently skipped, and a bad base URL i
   await assert.rejects(verifyRelease({}), /base URL/);
 });
 
-test('a 404 on the health path only counts as unexposed where the host is known not to route it',async()=>{
-  // What the live custom domain actually does: Firebase Hosting serves its own
-  // 404 for a path it was not configured to rewrite to the service.
-  const missing = {'GET /healthz': res =>
+test('a missing health route fails on every host unless explicitly marked unchecked',async()=>{
+  // A platform or routing 404 must never be accepted as process health.
+  const missing = {'GET /health': res =>
     res.writeHead(404, {'content-type': 'text/html'}).end('<!DOCTYPE html><html lang=en>')};
 
   // A loopback host is not a known front door, so the same 404 is a failure --
@@ -139,18 +144,16 @@ test('a 404 on the health path only counts as unexposed where the host is known 
   assert.equal(strict.ok, false);
   assert.match(strict.checks.find(c => c.id === 'health').detail, /should route it to the service/);
 
-  // Excused explicitly, or by the host being one of the front doors that is
-  // known not to rewrite the path.
+  // An explicit optional override reports unchecked, never healthy.
   const excused = await run(service(missing), {allowUnroutedHealth: true});
   assert.deepEqual(failed(excused), []);
   assert.equal(excused.ok, true, 'a routing gap on the front door is not a sick release');
   assert.equal(excused.checks.find(c => c.id === 'health').ok, null);
-  assert.match(excused.checks.find(c => c.id === 'health').detail, /not rewritten to the service/);
+  assert.match(excused.checks.find(c => c.id === 'health').detail, /explicitly permitted to be unrouted/);
 
-  // And the host list itself: the custom domain and Firebase Hosting are excused,
-  // the Cloud Run service URL and anything unrecognized are not.
+  // The custom domain, Firebase Hosting, Cloud Run and unknown hosts are strict.
   for (const host of ['prospectpilot.io', 'www.prospectpilot.io', 'lead-qualifier-505002.web.app', 'x.firebaseapp.com'])
-    assert.equal(healthOptionalFor(host), true, host);
+    assert.equal(healthOptionalFor(host), false, host);
   for (const host of ['prospectpilot-abc123-uc.a.run.app', 'staging.prospectpilot.io', '127.0.0.1', 'prospectpilot.io.example.com'])
     assert.equal(healthOptionalFor(host), false, host);
 
@@ -164,14 +167,14 @@ test('a health path that is routed but unwell still fails',async()=>{
     ['a failing service', res => res.writeHead(500).end('boom')],
     ['a path answered by something else', res => res.writeHead(200, {'content-type': 'text/html'}).end('<h1>hello</h1>')],
   ]) {
-    const report = await run(service({'GET /healthz': route}));
+    const report = await run(service({'GET /health': route}));
     assert.deepEqual(failed(report), ['health'], label);
     assert.equal(report.ok, false, label);
   }
 });
 
 test('the health host can be separated from the host whose public surface is verified',async()=>{
-  // The trap this exists to avoid. The service URL answers /healthz, because the
+  // The trap this exists to avoid. The service URL answers /health, because the
   // application handles it before the origin check -- but every other route is
   // behind that check, and the allowed origins are the custom domain and the
   // Firebase Hosting ones, so the service URL answers 403 for all of them.
@@ -192,7 +195,7 @@ test('the health host can be separated from the host whose public surface is ver
   await new Promise(resolve => health.listen(0, '127.0.0.1', resolve));
   const healthBase = `http://127.0.0.1:${health.address().port}`;
   try {
-    const front = service({'GET /healthz': res =>
+    const front = service({'GET /health': res =>
       res.writeHead(404, {'content-type': 'text/html'}).end('<!DOCTYPE html>')});
     const report = await run(front, {healthBase, allowUnroutedHealth: false});
     assert.deepEqual(failed(report), [], 'the front door serves the surface, the service serves health');

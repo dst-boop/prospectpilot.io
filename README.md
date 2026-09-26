@@ -2,9 +2,9 @@
 
 An advisor workspace for choosing the next prospect, reviewing evidence, and keeping follow-ups moving, alongside a professional contact directory and research tools. Built on the existing Firebase-authenticated Cloud Run and Cloud SQL application.
 
-The authenticated home page now opens the advisor worklist. `/prospect` continues to provide directory filters, CSV import with deduplication, lists, saved searches, contact details, source and verification history, suppression controls, and CSV export. People Data Labs search/enrichment and Hunter verification run through background jobs with progress, explicit cost ceilings and shared daily budget reservations. Phone numbers remain provider-reported and unverified; email verification expires after 30 days.
+Visitors see a public homepage explaining the workflow, data sources, and product limits. The authenticated home page opens the advisor worklist with a direct next-prospect action and shortcuts to imports, due follow-ups, and evidence reviews. `/prospect` continues to provide directory filters, CSV import with deduplication, lists, saved searches, contact details, source and verification history, suppression controls, and CSV export. People Data Labs search/enrichment and Hunter verification run through background jobs with progress, explicit cost ceilings and shared daily budget reservations. Phone numbers remain provider-reported and unverified; email verification expires after 30 days.
 
-**Selected source: ZoomInfo CSV exports, without API access.** Import an authorized export using the ZoomInfo preset, then manage and export the contact list. Automated API search/enrichment and independent email verification are optional separate integrations. See [provider setup](PROVIDER-SETUP.md) for credentials, provider entitlements, pricing and worker configuration. No provider subscription or proprietary contact database is bundled. The app supports public account creation with Google or email/password. Email addresses must be verified before accessing a workspace. Contacts, lists, jobs and exports are isolated by Firebase user ID. `OWNER_EMAIL` designates the administrator for older tools; it is not a signup allowlist. Deployment and Firebase Email/Password enablement remain pending.
+**Selected source: ZoomInfo CSV exports, without API access.** Import an authorized export using the ZoomInfo preset, then manage and export the contact list. Automated API search/enrichment and independent email verification are optional separate integrations. See [provider setup](PROVIDER-SETUP.md) for credentials, provider entitlements, pricing and worker configuration. No provider subscription or proprietary contact database is bundled. The app supports public account creation with Google or email/password. Email addresses must be verified before accessing a workspace. Contacts, lists, jobs and exports are isolated by Firebase user ID. `OWNER_EMAIL` designates the administrator for older tools; it is not a signup allowlist. Configure Firebase sign-in providers for each deployment.
 
 ## Advisor worklist and research
 
@@ -259,27 +259,21 @@ before reaching a handler, and no session cookie is ever sent. It therefore
 outcomes and dial counter still need a person with an account, and a passing run
 says so rather than implying otherwise.
 
-**The health path and the public surface live on different hosts, and cannot be
-checked from one address.** `/healthz` is answered before the origin check, so the
-Cloud Run service URL serves it — but every other route is behind that check, and
-`APP_ORIGINS` lists only the custom domain and the Firebase Hosting ones, so the
-service URL answers `403` for all of them. The front door is the reverse: it
-serves the surface and never rewrites `/healthz`. To cover both, give it both:
+The external process-health route is `/health`, which must return `200 ok`.
+Cloud Run reserves some paths ending in `z`; `/healthz` is retained only as a
+compatibility alias, not the external monitoring target. See [Google's reserved
+URL paths](https://docs.cloud.google.com/run/docs/known-issues#reserved_url_paths).
+This checks that the app can respond, not database or provider availability.
+
+Health is required by default on every host. A `404`, failed request, or wrong
+response body fails verification. `--health-optional` is an explicit exception
+that reports a missing route as unchecked, never as a passing health check.
+To check the service process separately from the public site:
 
 ```bash
 pnpm verify https://prospectpilot.io <release-id> \
   --health-base=https://<service>-<hash>-uc.a.run.app --health-required
 ```
-
-With one address, the check adapts to it. On the custom domain and the Firebase
-Hosting domains a 404 on `/healthz` reports **not exposed on this host** rather
-than failing. **Everywhere else a 404 there fails** — on the service URL or a
-staging environment the path should be answered, and a broken health route
-excused as `n/a` would be a health check that cannot fail. `--health-required`
-holds any host to it; `--health-optional` excuses one.
-
-Uptime monitoring has to point at the Cloud Run service URL, not the custom
-domain, for the same reason: on the domain that path never reaches the app.
 
 The advisor workflow adds migration **013** for activity history and contact links, and **014** for outreach pacing, drafted touches and the advisor profile. The contact workspace requires migrations **008** and **009** before starting the service and worker; these add contacts, lists, imports, saved searches, durable tasks and cost reservations. The migration runner applies all outstanding migrations in order.
 

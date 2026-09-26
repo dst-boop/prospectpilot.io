@@ -4,6 +4,19 @@ const origin='https://prospectpilot.io',email='dst@financialplannersofamerica.co
 const claims={uid:'verified-owner',email,email_verified:true,auth_time:Math.floor(Date.now()/1000),firebase:{sign_in_provider:'google.com'}};
 const setup=(overrides={})=>{let seen;const auth={verifyIdToken:async token=>{if(token!=='valid')throw Error();return {...claims,...overrides}},createSessionCookie:async()=> 'signed-session',verifySessionCookie:async cookie=>{if(cookie!=='signed-session')throw Error();return {...claims,...overrides}}};const handler=createHandler({auth,db:{},worker:{fetch:async request=>{seen=request;return Response.json({ok:true})}},loginHtml:'login',loginScript:'script',ownerEmail:email,origins:[origin]});return {handler,getSeen:()=>seen};};
 const req=(path,init={})=>new Request(origin+path,init);
+
+test('public homepage never exposes the workspace and a verified session keeps its worklist',async()=>{
+ const handler=createHandler({auth:{verifySessionCookie:async cookie=>{if(cookie!=='valid')throw Error();return claims;}},origins:[origin],homeHtml:'public introduction',siteStyle:'public style',lab:{},labPage:'private worklist'});
+ for(const cookie of ['', '__session=expired']){
+  const home=await handler(req('/',{headers:{cookie}}));assert.equal(home.status,200);assert.equal(await home.text(),'public introduction');assert.match(home.headers.get('cache-control'),/no-store/);
+  assert.equal((await handler(req('/lab',{headers:{cookie}}))).status,303);
+  assert.equal((await handler(req('/api/lab/worklist',{headers:{cookie}}))).status,401);
+ }
+ assert.equal(await (await handler(req('/',{headers:{cookie:'__session=valid'}}))).text(),'private worklist');
+ assert.equal(await (await handler(req('/about'))).text(),'public introduction');
+ assert.equal((await handler(req('/site.css'))).headers.get('content-type'),'text/css; charset=utf-8');
+ assert.equal((await handler(new Request('https://evil.example/about'))).status,403);
+});
 test('untrusted identity headers cannot authenticate',async()=>{const {handler}=setup();assert.equal((await handler(req('/api/me',{headers:{'oai-authenticated-user-id':'fake','oai-authenticated-user-email':email}}))).status,401);});
 test('unverified, unsupported and stale identities cannot create sessions',async()=>{for(const overrides of [{email_verified:false},{firebase:{sign_in_provider:'anonymous'}},{auth_time:0},{uid:''}]){const {handler}=setup(overrides);assert.ok((await handler(req('/auth/session',{method:'POST',headers:{origin},body:JSON.stringify({idToken:'valid'})}))).status>=400);}});
 test('valid session is secure and does not trust client identity',async()=>{const {handler,getSeen}=setup();const response=await handler(req('/auth/session',{method:'POST',headers:{origin},body:JSON.stringify({idToken:'valid'})}));assert.equal(response.status,200);assert.match(response.headers.get('set-cookie'),/HttpOnly; Secure; SameSite=Lax/);const result=await handler(req('/api/me',{headers:{cookie:'__session=signed-session','oai-authenticated-user-id':'fake'}}));assert.equal(result.status,200);assert.equal(getSeen().headers.get('oai-authenticated-user-id'),'verified-owner');assert.equal(result.headers.get('cache-control'),'private, no-store');});
@@ -14,3 +27,23 @@ test('any verified Google or password account can create a session without owner
  for(const provider of ['google.com','password']){const {handler}=setup({uid:'new-user',email:'new-user@example.net',firebase:{sign_in_provider:provider}});const response=await handler(req('/auth/session',{method:'POST',headers:{origin},body:JSON.stringify({idToken:'valid'})}));assert.equal(response.status,200);assert.match(response.headers.get('set-cookie'),/HttpOnly; Secure/);}
 });
 test('public accounts cannot reach legacy administrative tools',async()=>{const {handler,getSeen}=setup({uid:'new-user',email:'new-user@example.net'});assert.equal((await handler(req('/api/me',{headers:{cookie:'__session=signed-session'}}))).status,403);assert.equal(getSeen(),undefined);});
+
+test('a verified non-admin can initialize the advisor workspace without legacy admin access',async()=>{
+ const member={...claims,uid:'regular-member',email:'member@example.net',name:'Workspace Member'};
+ const handler=createHandler({auth:{verifySessionCookie:async token=>{if(token!=='member-session')throw Error();return member;}},origins:[origin],ownerEmail:email,lab:{},labPage:'member workspace'});
+ const headers={cookie:'__session=member-session'};
+ const identity=await handler(req('/api/lab/me',{headers}));assert.equal(identity.status,200);
+ assert.deepEqual(await identity.json(),{uid:member.uid,email:member.email,name:member.name});
+ assert.equal(identity.headers.get('cache-control'),'private, no-store');
+ assert.equal(await (await handler(req('/lab',{headers}))).text(),'member workspace');
+ assert.equal((await handler(req('/api/me',{headers}))).status,403);
+ for(const cookie of ['', '__session=expired'])assert.equal((await handler(req('/api/lab/me',{headers:{cookie}}))).status,401);
+});
+
+test('process health uses a non-reserved path, no session, and no cache',async()=>{
+ const {handler}=setup();
+ for(const host of [origin,'https://service.example.run.app'])for(const path of ['/health','/healthz']){
+  const result=await handler(new Request(host+path));assert.equal(result.status,200);assert.equal(await result.text(),'ok');assert.equal(result.headers.get('cache-control'),'no-store');
+ }
+ assert.equal((await handler(req('/health',{method:'POST'}))).status,403);
+});

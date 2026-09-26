@@ -6,7 +6,7 @@ import {readFileSync} from 'node:fs';
 function client(responses){
  const elements=new Map(),requests=[];
  const element=id=>{if(!elements.has(id))elements.set(id,{value:'',textContent:'',innerHTML:'',disabled:false,classList:{toggle(){}}});return elements.get(id);};
- const context=vm.createContext({URLSearchParams,FormData:class{constructor(){return [];}},
+ const context=vm.createContext({URLSearchParams,matchMedia:()=>({matches:false}),FormData:class{constructor(){return [];}},
   document:{getElementById:element,querySelectorAll:()=>[]}});
  const source=readFileSync(new URL('../prospect-client.js',import.meta.url),'utf8');
  vm.runInContext(source.slice(source.indexOf('const $='),source.indexOf('async function loadLists()')),context);
