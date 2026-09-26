@@ -5,7 +5,7 @@ import {PGlite} from '@electric-sql/pglite';
 import {createProspectWorkspace} from '../prospect-workspace.mjs';
 import {normalizeContact,parseContactCSV,phoneReadiness,preparationStep} from '../prospect-data-quality.mjs';
 const user={uid:'zoominfo-owner'},other={uid:'other'};
-async function fixture(fn){const db=new PGlite();try{await db.exec(readFileSync(new URL('../migrations/008-prospect-workspace.sql',import.meta.url),'utf8'));const app=createProspectWorkspace({pool:{query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})}});await fn(app,db);}finally{await db.close();}}
+async function fixture(fn){const db=new PGlite();try{await db.exec(readFileSync(new URL('../migrations/008-prospect-workspace.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/017-forget.sql',import.meta.url),'utf8'));const app=createProspectWorkspace({pool:{query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})}});await fn(app,db);}finally{await db.close();}}
 const header='First Name,Last Name,Company Name,ZoomInfo Contact ID,ZoomInfo Company ID,Contact Accuracy Score,Contact Accuracy Grade,Job Start Date,Valid Date,Last Updated Date,Direct Phone Number,Mobile phone,Direct Phone Do Not Call,Mobile Phone Do Not Call,Website,Previous Company Name';
 const line='Avery,Example,Example Co,-12345,67890,91,A+,"June 01, 2024",2026-01-01,2026-02-01,2125550100 ext 3,2125550199,false,true,https://example.com,Former Co';
 const input={csv:header+'\n'+line,format:'zoominfo'};

@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {createDomainChecker} from './prospect-domain-check.mjs';
 import {buildPreparation,preparationRevision} from './prospect-preparation.mjs';
 import {nameKey,hash,csvCell,publicURL} from './lead-quality.mjs';
+import {forgetPerson,forgottenKeys} from './forget.mjs';
 import {normalizeContact,parseContactCSV,normalizeCountry,normalizeState,countryAliases,stateAliases,sharedMailbox,SHARED_MAILBOX_PATTERN,contactQuality,sourceFreshnessCutoff,phoneReadiness} from './prospect-data-quality.mjs';
 export {normalizeContact} from './prospect-data-quality.mjs';
 const fail=(status,message)=>Object.assign(Error(message),{status});
@@ -83,6 +84,9 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
      return {row,contact,keys:identityLookupKeys(contact)};
     }catch(error){return {row,error:error.message};}
    });
+   // A person this user deleted stays deleted: their row is refused, and says why.
+   const forgotten=await forgottenKeys(c,user.uid,prepared.flatMap(record=>record.keys||[]));
+   for(const record of prepared)if(!record.error&&record.keys.some(key=>forgotten.has(key))){record.error='This person was deleted at your request, so they are not imported again.';delete record.keys;}
    const allKeys=[...new Set(prepared.flatMap(record=>record.keys||[]))];
    const existing=allKeys.length?(await c.query('SELECT id,payload,identity_keys FROM prospect_contacts WHERE user_id=$1 AND identity_keys ?| $2::text[] FOR UPDATE',[user.uid,allKeys])).rows:[];
    const byId=new Map(existing.map(row=>[row.id,row])),byKey=new Map();
@@ -168,6 +172,9 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
    const evidence={source:'User correction',kind:'manual_review',imported_at:new Date().toISOString(),observed_at:null,reason:input.reason.trim(),changes};
    next.field_sources={...(old.field_sources||{})};for(const key of Object.keys(changes))next.field_sources[key]=evidence;
    if(changes.email){next.email_status=next.email?'unverified':'missing';}
+   // A phone check answered for one number and name; after either changes it is someone else's answer.
+   if(changes.phone||changes.first_name||changes.last_name)delete next.phone_check;
+   if(['first_name','last_name','company','city','state'].some(k=>changes[k])){delete next.web_research;delete next.profile_image;}
    if(changes.phone){next.phone_status=next.phone?'unverified':'missing';}
    if(changes.phone||changes.mobile_phone){next.phone_import={...(old.phone_import||{})};if(changes.phone){next.phone_origin=normalized.phone_origin;if(next.phone_import.direct)next.phone_import.direct={...next.phone_import.direct,status:'reviewed'};}if(changes.mobile_phone&&next.phone_import.mobile)next.phone_import.mobile={...next.phone_import.mobile,status:'reviewed'};}
    if(changes.first_name||changes.last_name){next.email_status=next.email?'unverified':'missing';next.phone_status=next.phone?'unverified':'missing';}
@@ -207,6 +214,8 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
    const record={...c,contact_id:id,last_email_checked_at:c.email_verification?.checked_at,last_email_checked_address:c.email_verification?.email,last_email_verifier:c.email_verification?.provider,last_domain_checked_at:c.email_domain_check?.checked_at,last_domain_checked:c.email_domain_check?.domain,last_domain_status:c.email_domain_check?.status,data_review_issues:contactQuality(c,now).issues.map(issue=>issue.code).join(';')};
    for(const [key,value] of Object.entries(c.zoominfo||{}))record['zoominfo_'+key]=value;
    const phones=phoneReadiness(c);record.zoominfo_direct_do_not_call=phones.direct_do_not_call;record.zoominfo_mobile_do_not_call=phones.mobile_do_not_call;
+   // A number a phone check found listed under someone else, or dead, is not handed to a dialler.
+   if(['wrong_person','invalid'].includes(c.phone_status)&&c.phone_check?.phone===c.phone){if(record.mobile_phone===record.phone)record.mobile_phone='';record.phone='';}
    if(phones.primary_blocked){record.phone='';record.phone_status='do_not_call';}if(phones.mobile_blocked)record.mobile_phone='';
    record.next_review=contactQuality(c,now).next_review.label;
    return fields.map(key=>record[key]);
@@ -254,6 +263,8 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
   const contact=path.match(/^\/api\/prospect\/contacts\/([^/]+)$/);
   const prepare=path.match(/^\/api\/prospect\/contacts\/([^/]+)\/prepare$/);
   if(prepare&&method==='POST')return prepareContact(user,prepare[1],await body());
+  const image=path.match(/^\/api\/prospect\/contacts\/([^/]+)\/profile-image$/);
+  if(image&&method==='POST'){if(!jobs)throw fail(503,'Profile screenshots are not configured.');return jobs.profileImage(user,image[1],await body());}
   if(contact&&method==='GET'){
    await expireVerification(user);
    const row=(await pool.query('SELECT id,payload,created_at,updated_at FROM prospect_contacts WHERE id=$1 AND user_id=$2',[contact[1],user.uid])).rows[0];
@@ -261,6 +272,7 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
    const memberships=(await pool.query('SELECT l.id,l.name FROM prospect_lists l JOIN prospect_list_members m ON m.list_id=l.id WHERE m.contact_id=$1 AND l.user_id=$2 ORDER BY l.name',[row.id,user.uid])).rows;
    return {contact:{id:row.id,...row.payload,preparation_current:row.payload.preparation?.source_revision===preparationRevision(row.payload),created_at:row.created_at,updated_at:row.updated_at,quality:contactQuality({...row.payload,created_at:row.created_at}),edit_revision:hash(JSON.stringify(row.payload))},lists:memberships};
   }
+  if(contact&&method==='DELETE')return tx(pool,c=>forgetPerson(c,user,{contactId:contact[1]},{contactKeys:identityLookupKeys}));
   if(contact&&method==='PATCH'){
    const input=await body();if(!input||typeof input!=='object'||Array.isArray(input))throw fail(422,'Provide a contact update object.');if(input.suppressed===undefined)return correctContact(user,contact[1],input);if(typeof input.suppressed!=='boolean'||Object.keys(input).some(k=>k!=='suppressed'))throw fail(422,'Provide only a boolean suppression setting.');
    const result=await pool.query("UPDATE prospect_contacts SET payload=jsonb_set(payload,'{suppressed}',$1::jsonb),updated_at=now() WHERE id=$2 AND user_id=$3 RETURNING id",[JSON.stringify(input.suppressed),contact[1],user.uid]);
