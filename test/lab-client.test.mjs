@@ -139,6 +139,7 @@ test('queue loading clears old cards and failure provides a working retry',async
   const retry=c.element('retryWorklist').onclick();c.pending[1].respond(emptyQueue);await retry;
   assert.match(c.element('workList').innerHTML,/Your next actions/);
   assert.equal(c.element('startNext').disabled,false);
+  assert.equal(c.element('notice').textContent,'Worklist updated.');
 });
 test('stale queue failure cannot replace a newer successful search',async()=>{
   const c=client();c.element('workView').value='today';c.run('loadScoreboard=async()=>{}');
@@ -156,4 +157,11 @@ test('typing disables the old next prospect during search debounce',()=>{
   assert.equal(c.element('startNext').onclick,null);
   assert.match(c.element('workList').innerHTML,/Loading prospects/);
   c.run('clearTimeout(workSearchTimer)');
+});
+
+test('an empty search does not imply the workspace has no imported contacts',async()=>{
+  const c=client();c.element('workView').value='today';c.element('workSearch').value='no-match';c.run('loadScoreboard=async()=>{}');
+  const loading=c.run('loadWorklist()');c.pending[0].respond(emptyQueue);await loading;
+  assert.equal(c.element('dailyTitle').textContent,'You’re caught up in this view.');
+  assert.match(c.element('workList').innerHTML,/No matching prospects/);
 });

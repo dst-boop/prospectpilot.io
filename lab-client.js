@@ -132,8 +132,9 @@ async function loadWorklist(){
   workTotal=data.total;$('workDue').textContent=num(data.counts.due);$('workReady').textContent=num(data.counts.ready);$('workConversations').textContent=num(data.activity.conversations);$('workMeetings').textContent=num(data.activity.meetings);
   if(data.dials){$('workDials').textContent=num(data.dials.remaining);$('workDialsNote').textContent=data.dials.reason;}
   const first=data.items.find(item=>!terminal(item.action));
-  $('dailyTitle').textContent=data.counts.all===0?'Start with the contacts you have.':first?'Your next step is ready.':'You’re caught up in this view.';
-  $('dailyDescription').textContent=first?`${first.action.label}: ${first.lead.first_name||''} ${first.lead.last_name||''}. ${first.action.reason}`:data.counts.all===0?'Import an authorized CSV, or choose contacts from your directory. We’ll organize the next steps here.':'Choose another queue, search for a prospect, or bring in a new list.';
+  const emptyWorkspace=data.counts.all===0&&!$('workSearch').value;
+  $('dailyTitle').textContent=emptyWorkspace?'Start with the contacts you have.':first?'Your next step is ready.':'You’re caught up in this view.';
+  $('dailyDescription').textContent=first?`${first.action.label}: ${first.lead.first_name||''} ${first.lead.last_name||''}. ${first.action.reason}`:emptyWorkspace?'Import an authorized CSV, or choose contacts from your directory. We’ll organize the next steps here.':'Choose another queue, search for a prospect, or bring in a new list.';
   $('startNext').textContent=first?($('workView').value==='today'&&!$('workSearch').value?'Start next prospect →':'Open first result →'):'Import a contact list →';
   $('startNext').disabled=false;
   $('startNext').onclick=first?()=>openLead(first.lead.id):()=>$('quickImport').click();
@@ -142,7 +143,7 @@ async function loadWorklist(){
   document.querySelectorAll('[data-work-open]').forEach(e=>e.onclick=()=>openLead(e.dataset.workOpen));
   document.querySelectorAll('[data-work-select]').forEach(e=>e.onchange=()=>{e.checked?workSelected.add(e.dataset.workSelect):workSelected.delete(e.dataset.workSelect);selectionLabel();});
   $('workPageInfo').textContent=(data.total?`${num(workOffset+1)}–${num(Math.min(workOffset+24,data.total))} of ${num(data.total)}`:'0 prospects')+(data.truncated?` · Showing a working set of ${num(data.scanned)} / ${num(data.scope_total)}; search to narrow.`:'');
-  $('workPrevious').disabled=!workOffset;$('workNext').disabled=workOffset+24>=workTotal;selectionLabel();
+  $('workPrevious').disabled=!workOffset;$('workNext').disabled=workOffset+24>=workTotal;selectionLabel();return true;
   }catch(error){
     if(serial!==workRequest)return;
     workSelected.clear();
@@ -150,7 +151,7 @@ async function loadWorklist(){
     $('dailyDescription').textContent='Retry to load the current queue before opening your next prospect.';
     $('workList').innerHTML=`<div class="work-empty" role="alert"><h3>Could not load prospects.</h3><p>${esc(error.message)}</p><button id="retryWorklist" class="secondary">Retry</button></div>`;
     $('workPageInfo').textContent='Results unavailable';
-    $('retryWorklist').onclick=()=>loadWorklist().catch(e=>notice(e.message,true));
+    $('retryWorklist').onclick=async()=>{try{const loaded=await loadWorklist();if(loaded)notice('Worklist updated.');}catch(e){notice(e.message,true);}};
     throw error;
   }finally{
     if(serial===workRequest){workLoading=false;$('workList').setAttribute('aria-busy','false');selectionLabel();}
