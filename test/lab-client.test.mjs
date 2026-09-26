@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 
-function client(){
+function client({activity=false}={}){
   const elements=new Map(),pending=[];
   const element=id=>{
     if(!elements.has(id))elements.set(id,{value:'',textContent:'',innerHTML:'',disabled:false,open:false,
@@ -16,7 +16,7 @@ function client(){
     fetch:(url,options)=>new Promise(resolve=>pending.push({url,options,respond:(data,status=200)=>resolve({status,ok:status===200,headers:{get:()=> 'application/json'},json:async()=>data})}))});
   vm.runInContext(readFileSync(new URL('../lab-client.js',import.meta.url),'utf8').replace(/init\(\);\s*$/,''),context);
   // Isolate dialog interactions from the independent dashboard refresh.
-  vm.runInContext('refresh=async()=>{};loadActivity=async()=>{}',context);
+  vm.runInContext('refresh=async()=>{}'+(activity?'':';loadActivity=async()=>{}'),context);
   return {element,pending,run:code=>vm.runInContext(code,context)};
 }
 const lead=name=>({lead:{id:name,first_name:name,last_name:'Example',evidence:[]},quality:{gates:{},warnings:[],plans:[],identity_signature:name}});
@@ -164,4 +164,42 @@ test('an empty search does not imply the workspace has no imported contacts',asy
   const loading=c.run('loadWorklist()');c.pending[0].respond(emptyQueue);await loading;
   assert.equal(c.element('dailyTitle').textContent,'You’re caught up in this view.');
   assert.match(c.element('workList').innerHTML,/No matching prospects/);
+});
+
+test('opening a different prospect clears the previous draft even when evidence fails',async()=>{
+ const c=client();c.element('draftPanel').hidden=false;c.element('draftBody').value='Hello old prospect';
+ const open=c.run("openLead('new')");
+ assert.equal(c.element('draftPanel').hidden,true);assert.equal(c.element('draftBody').value,'');
+ c.pending[0].respond({detail:'Evidence unavailable'},503);await open;
+ assert.match(c.element('conversationBrief').innerHTML,/Retry evidence/);
+ const retry=c.element('retryEvidence').onclick();assert.equal(c.pending[1].url,'/api/lab/leads/new');
+ c.pending[1].respond(lead('new'));await retry;
+ assert.equal(c.element('personName').textContent,'new Example');
+});
+test('activity failure clears stale actions and retry stays bound to the prospect',async()=>{
+ const c=client({activity:true});c.run("leadDetailVersion=1;current={lead:{id:'A'}};prepareActivity=()=>{};currentWorkflow={draft:{body:'old'}}");
+ c.element('draftBody').value='old';c.element('draftPanel').hidden=false;
+ const loading=c.run("loadActivity('A',1)");
+ assert.equal(c.run('currentWorkflow'),null);assert.equal(c.element('draftPanel').hidden,true);
+ c.pending[0].respond({detail:'Temporary failure'},503);await loading;
+ assert.equal(c.element('activityForm').hidden,true);
+ assert.match(c.element('conversationBrief').innerHTML,/Retry conversation brief/);
+ const retry=c.element('retryActivity').onclick();c.pending[1].respond({action:{},draft:{body:'A draft'}});await retry;
+ assert.equal(c.element('activityForm').hidden,false);assert.equal(c.run('currentWorkflow.draft.body'),'A draft');
+ const oldRetry=c.element('retryActivity').onclick;c.run('leadDetailVersion=2');await oldRetry();
+ assert.equal(c.pending.length,2);
+});
+test('overlapping activity loads ignore the older failure',async()=>{
+ const c=client({activity:true});c.run('leadDetailVersion=1;prepareActivity=()=>{}');
+ const old=c.run("loadActivity('A',1)"),fresh=c.run("loadActivity('A',1)");
+ c.pending[1].respond({action:{},draft:{body:'fresh'}});await fresh;
+ c.pending[0].respond({detail:'old failure'},503);await old;
+ assert.equal(c.run('currentWorkflow.draft.body'),'fresh');assert.equal(c.element('activityForm').hidden,false);
+});
+test('source results can retry in place and closed dialogs stay closed',async()=>{
+ const c=client(),open=c.run("openRun('run-a')");c.pending[0].respond({detail:'Temporary failure'},503);await open;
+ assert.match(c.element('runDetails').innerHTML,/Retry source results/);
+ const retry=c.element('retryRun').onclick();c.pending[1].respond(run('completed'));await retry;
+ assert.match(c.element('runDetails').innerHTML,/Completed/);
+ c.element('runDialog').close();await c.element('retryRun').onclick();assert.equal(c.pending.length,2);
 });
