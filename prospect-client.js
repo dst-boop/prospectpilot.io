@@ -127,7 +127,7 @@ async function showContact(id,prepare=false){
   toggle.onclick=async()=>{if(toggle.disabled)return;toggle.disabled=true;try{await api('contacts/'+encodeURIComponent(id),{suppressed:!c.suppressed},'PATCH');await load();if(version===contactViewVersion)await showContact(id);notice(c.suppressed?'Suppression removed.':'Contact suppressed.');}catch(e){if(version===contactViewVersion){$('contactError').textContent=e.message;toggle.disabled=false;}}};
   if(!$('contactDialog').open)$('contactDialog').showModal();
   if(prepare&&version===contactViewVersion&&prepareButton)await prepareButton.onclick();
- }catch(e){if(version===contactViewVersion){$('contactTitle').textContent='Contact unavailable';$('contactError').textContent=e.message;}}
+ }catch(e){if(version===contactViewVersion){$('contactTitle').textContent='Contact unavailable';$('contactError').textContent=e.message;$('toggleSuppression').disabled=true;$('contactBody').innerHTML='<p>Reload this contact to review its latest details.</p><button id="retryContact" type="button" class="secondary">Retry contact details</button>';$('retryContact').onclick=()=>{if(version===contactViewVersion)return showContact(id);};}}
 }
 
 $('importFormat').onchange=()=>{$('source').value=$('importFormat').value==='zoominfo'?'ZoomInfo CSV export':'';};
