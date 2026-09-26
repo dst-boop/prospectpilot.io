@@ -344,9 +344,28 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       await client.query('SELECT pg_advisory_xact_lock(505006)');
       const contacts=(await client.query('SELECT id,payload,updated_at FROM prospect_contacts WHERE user_id=$1 AND id=ANY($2::text[]) ORDER BY id FOR SHARE',[user.uid,ids])).rows;
       if(contacts.length!==ids.length)throw fail(404,'One or more directory contacts are unavailable.');
+      // A suppressed selection must not create a prospect, but it may already
+      // exist from an earlier CSV import. Bind its restriction only to a unique,
+      // owned record with the same full name and a shared stable identifier.
+      const restricted=contacts.filter(c=>c.payload.suppressed===true);
+      const restrictionIds=new Set();
+      if(restricted.length){
+        const owned=(await client.query('SELECT id,payload FROM discovery_leads WHERE team=$1 AND (owner_user_id=$2 OR lower(owner_email)=lower($3))',[TEAM,user.uid,user.email])).rows.map(r=>({...r,lead:parse(r.payload)}));
+        for(const c of restricted){
+          const keys=new Set(candidateKeys(c.payload).filter(k=>k.startsWith('email:')||k.startsWith('linkedin:')));
+          if(!keys.size)continue;
+          const matches=owned.filter(r=>candidateKeys(r.lead).some(k=>keys.has(k)));
+          if(matches.length!==1)continue;
+          const match=matches[0];
+          if(!nameKey(c.payload.first_name)||!nameKey(c.payload.last_name)||nameKey(match.lead.first_name)!==nameKey(c.payload.first_name)||nameKey(match.lead.last_name)!==nameKey(c.payload.last_name))continue;
+          const linked=(await client.query('INSERT INTO advisor_contact_links(contact_id,lead_id,user_id) VALUES($1,$2,$3) ON CONFLICT(contact_id,user_id) DO NOTHING RETURNING lead_id',[c.id,match.id,user.uid])).rows;
+          if(linked.length)restrictionIds.add(match.id);
+        }
+      }
+      const restriction_links=restrictionIds.size;
       const key='directory:'+hash(JSON.stringify(contacts));
       const handoffIds=async()=>[...new Set((await client.query(`SELECT a.lead_id FROM advisor_contact_links a JOIN prospect_contacts p ON p.id=a.contact_id AND p.user_id=a.user_id WHERE a.user_id=$1 AND a.contact_id=ANY($2::text[]) AND COALESCE(p.payload->>'suppressed','false')!='true' ORDER BY a.contact_id`,[user.uid,ids])).rows.map(row=>row.lead_id))];
-      const prior=(await client.query('SELECT id FROM lab_runs WHERE user_id=$1 AND idempotency_key=$2',[user.uid,key])).rows[0];if(prior)return {replayed:true,run:prior,lead_ids:await handoffIds()};
+      const prior=(await client.query('SELECT id FROM lab_runs WHERE user_id=$1 AND idempotency_key=$2',[user.uid,key])).rows[0];if(prior)return {replayed:true,run:prior,restriction_links,lead_ids:await handoffIds()};
       const permitted=contacts.filter(c=>!c.payload.suppressed),run={id:randomUUID()};
       await client.query("INSERT INTO lab_runs(id,user_id,user_email,kind,idempotency_key,status) VALUES($1,$2,$3,'import',$4,'running')",[run.id,user.uid,user.email,key]);
       const candidates=permitted.map(c=>({...withDirectoryRestrictions(c.payload,[c.payload]),current_title:c.payload.title,source_names:['Contact directory: '+(c.payload.source||'reported identifiers')]}));
@@ -356,8 +375,8 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       for(const c of permitted){const keys=new Set(candidateKeys(c.payload));const matches=saved.filter(r=>candidateKeys(parse(r.payload)).some(k=>keys.has(k)));if(matches.length!==1)continue;
         await client.query('INSERT INTO advisor_contact_links(contact_id,lead_id,user_id) VALUES($1,$2,$3) ON CONFLICT(contact_id,user_id) DO UPDATE SET lead_id=EXCLUDED.lead_id',[c.id,matches[0].id,user.uid]);linked++;
       }
-      await client.query("UPDATE lab_runs SET status='completed',message=$1,completed_at=now() WHERE id=$2",[JSON.stringify({...result,linked,suppressed:contacts.length-permitted.length}),run.id]);
-      return {run,result,linked,suppressed:contacts.length-permitted.length,lead_ids:await handoffIds()};
+      await client.query("UPDATE lab_runs SET status='completed',message=$1,completed_at=now() WHERE id=$2",[JSON.stringify({...result,linked,restriction_links,suppressed:contacts.length-permitted.length}),run.id]);
+      return {run,result,linked,restriction_links,suppressed:contacts.length-permitted.length,lead_ids:await handoffIds()};
     });
   }
   const advisor=createAdvisorWorkflow({pool,accessible,evaluate,transaction,visibleSQL,now});

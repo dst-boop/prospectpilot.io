@@ -278,3 +278,34 @@ test('a client outranks the evidence buckets, keeps no contact shortcut, and sti
  // And a client with no problem at all says nothing extra.
  assert.doesNotMatch(plain.reason,/excluded|Conflicting/);
 });
+
+test('suppressed handoff restricts an existing owned exact match without creating or opening prospects',async()=>{
+ const {db,lab,user,id}=await fixture();try{
+  await reviewBasics(lab,user,id);
+  await db.query('INSERT INTO prospect_contacts(id,user_id,payload) VALUES($1,$2,$3::jsonb)',['suppressed',user.uid,JSON.stringify({...lead,suppressed:true})]);
+  const result=await lab.importContacts(user,{ids:['suppressed']});
+  assert.equal(result.result.added,0);assert.equal(result.suppressed,1);assert.equal(result.restriction_links,1);assert.deepEqual(result.lead_ids,[]);
+  const detail=await lab.advisor.detail(user,id);assert.equal(detail.action.bucket,'closed');assert.equal(detail.action.contact,null);assert.equal(detail.draft,null);
+  assert.equal((await lab.advisor.worklist(user,{view:'closed'})).total,1);
+  assert.doesNotMatch(await (await lab.advisor.exportEnrichment(user,{ids:[id]})).text(),/Jamie/);
+  const replay=await lab.importContacts(user,{ids:['suppressed']});assert.equal(replay.replayed,true);assert.equal(replay.restriction_links,0);assert.deepEqual(replay.lead_ids,[]);
+ }finally{await db.close();}
+});
+test('suppression linking refuses weak, conflicting, ambiguous and other-owner matches',async()=>{
+ const {db,lab,user,id}=await fixture();try{
+  for(const [contactId,payload] of [['weak',{...lead,email:''}],['wrong-name',{...lead,first_name:'Different'}],['new-person',{...lead,first_name:'New',email:'new@example.com'}]]){
+   await db.query('INSERT INTO prospect_contacts(id,user_id,payload) VALUES($1,$2,$3::jsonb)',[contactId,user.uid,JSON.stringify({...payload,suppressed:true})]);
+   const result=await lab.importContacts(user,{ids:[contactId]});assert.equal(result.restriction_links,0);assert.equal(result.result.added,0);
+  }
+  await db.query('INSERT INTO prospect_contacts(id,user_id,payload) VALUES($1,$2,$3::jsonb)',['exact',user.uid,JSON.stringify({...lead,suppressed:true})]);
+  await db.query("UPDATE discovery_leads SET owner_user_id='other',owner_email='other@example.com' WHERE id=$1",[id]);
+  assert.equal((await lab.importContacts(user,{ids:['exact']})).restriction_links,0);
+  await db.query('UPDATE discovery_leads SET owner_user_id=$1,owner_email=$2 WHERE id=$3',[user.uid,user.email,id]);
+  await db.query("INSERT INTO discovery_leads(id,team,owner_user_id,owner_email,payload) SELECT 'duplicate',team,owner_user_id,owner_email,payload FROM discovery_leads WHERE id=$1",[id]);
+  assert.equal((await lab.importContacts(user,{ids:['exact']})).restriction_links,0);
+  assert.equal((await db.query('SELECT * FROM advisor_contact_links')).rows.length,0);
+  // A repeat request can reconcile a now-unique existing record without rerunning import.
+  await db.query("DELETE FROM discovery_leads WHERE id='duplicate'");
+  const retry=await lab.importContacts(user,{ids:['exact']});assert.equal(retry.replayed,true);assert.equal(retry.restriction_links,1);
+ }finally{await db.close();}
+});
