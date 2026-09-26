@@ -111,6 +111,34 @@ test('the scoreboard omits a target it does not have rather than inventing one',
   assert.doesNotMatch(tiles[3],/0%/);
 });
 
+test('funnel failure clears old figures and retries without reloading the worklist',async()=>{
+  const c=client();c.element('scoreboard').innerHTML='Old totals';c.element('scoreboardBasis').textContent='Old basis';
+  const failed=c.run('loadScoreboard()');
+  assert.doesNotMatch(c.element('scoreboard').innerHTML,/Old totals/);
+  assert.equal(c.element('scoreboardBasis').textContent,'');
+  c.pending[0].respond({detail:'Temporarily unavailable'},503);await failed;
+  assert.match(c.element('scoreboard').innerHTML,/Retry funnel summary/);
+  assert.equal(c.element('scoreboard')['aria-busy'],'false');
+  const retry=c.element('retryScoreboard').onclick();
+  assert.equal(c.pending[1].url,'/api/lab/scoreboard?days=30');
+  c.pending[1].respond({measured:[],untouched:0,meetings:{note:''},basis:'Fresh totals'});await retry;
+  assert.equal(c.element('scoreboardBasis').textContent,'Fresh totals');
+  assert.doesNotMatch(c.element('scoreboard').innerHTML,/Retry funnel summary/);
+});
+
+test('late funnel responses cannot replace a newer summary or finish its loading state',async()=>{
+  const c=client(),old=c.run('loadScoreboard()'),fresh=c.run('loadScoreboard()');
+  c.pending[0].respond({detail:'Old failure'},503);await old;
+  assert.equal(c.element('scoreboard')['aria-busy'],'true');
+  assert.match(c.element('scoreboard').innerHTML,/Loading funnel/);
+  c.pending[1].respond({measured:[],untouched:0,meetings:{note:''},basis:'Current'});await fresh;
+  const late=c.run('loadScoreboard()'),newer=c.run('loadScoreboard()');
+  c.pending[3].respond({measured:[],untouched:0,meetings:{note:''},basis:'Newest'});await newer;
+  c.pending[2].respond({measured:[],untouched:0,meetings:{note:''},basis:'Outdated'});await late;
+  assert.equal(c.element('scoreboardBasis').textContent,'Newest');
+  assert.equal(c.element('scoreboard')['aria-busy'],'false');
+});
+
 test('an inbound row is labelled by the channel it arrived on',()=>{
   // The record stores the channel, so the history must not say they called when
   // they sent an email.

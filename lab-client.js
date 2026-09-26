@@ -212,8 +212,15 @@ function renderConversation(){
   if(c){const anchor=document.createElement('a');anchor.className='contact-link';anchor.textContent=c.channel==='phone'?`Call ${c.address}`:c.channel==='email'?`Email ${c.address}`:'Open reviewed LinkedIn profile';anchor.href=c.channel==='phone'?'tel:'+c.address:c.channel==='email'?'mailto:'+encodeURIComponent(c.address):safeURL(c.address);if(c.channel==='linkedin'){anchor.target='_blank';anchor.rel='noopener noreferrer';}$('contactActions').append(anchor);}else $('contactActions').textContent='No reviewed contact shortcut available. Review the contact evidence below.';
   $('activityHistory').innerHTML=(current.lead.notes?`<p class="existing-notes">${esc(current.lead.notes)}</p>`:'')+(currentWorkflow.activities.length?currentWorkflow.activities.map(a=>`<div class="activity-entry"><strong>${esc(outcomeLabel(a.outcome))}</strong>${a.direction==='inbound'?` <span class="inbound-tag">${esc(inboundLabel(a.channel))}</span>`:''}${a.logged_by?` <span class="by-tag">${esc(a.logged_by)}</span>`:''} · ${esc(when(a.created_at))}<p>${esc(a.note)}</p>${a.next_at?`<small>Next: ${esc(when(a.next_at))}</small>`:''}</div>`).join(''):'<p>No outcomes recorded yet.</p>');
 }
+let scoreboardRequest=0;
 async function loadScoreboard(){
+  const serial=++scoreboardRequest;
+  $('scoreboard').setAttribute('aria-busy','true');
+  $('scoreboard').innerHTML='<p role="status">Loading funnel summary…</p>';
+  $('scoreboardBasis').textContent='';
+  try{
   const b=await request('/api/lab/scoreboard?days=30');
+  if(serial!==scoreboardRequest)return;
   // A rate with nothing in its denominator is not zero, it is unmeasured. Say
   // so rather than printing a 0% nobody earned.
   $('scoreboard').innerHTML=b.measured.map(m=>{
@@ -229,6 +236,14 @@ async function loadScoreboard(){
   }).join('');
   const gaps=[b.untouched?`${num(b.untouched)} prospect${b.untouched===1?'':'s'} added and never touched`:'',b.meetings.note].filter(Boolean);
   $('scoreboardBasis').textContent=[b.basis,...gaps].join(' ');
+  }catch(error){
+    if(serial!==scoreboardRequest)return;
+    $('scoreboard').innerHTML='<div role="alert"><p>Funnel summary could not load. '+esc(error.message)+'</p><button id="retryScoreboard" class="secondary" type="button">Retry funnel summary</button></div>';
+    $('scoreboardBasis').textContent='Figures are unavailable until the summary reloads.';
+    $('retryScoreboard').onclick=()=>loadScoreboard();
+  }finally{
+    if(serial===scoreboardRequest)$('scoreboard').setAttribute('aria-busy','false');
+  }
 }
 function cadenceLine(c){
   if(!c)return '';
