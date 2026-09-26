@@ -33,7 +33,7 @@ export function createHandler({auth,db,worker,loginHtml,loginScript,homeHtml,sit
     let claims;if(cookie){try{claims=await auth.verifySessionCookie(cookie,true);}catch{}}
     if(url.pathname==='/'&&request.method==='GET'&&homeHtml&&(!claims||!authorized(claims)))return publicPage(homeHtml);
     if(!claims||!authorized(claims))return url.pathname.startsWith('/api/')?responseJSON('Sign in to ProspectPilot.',401):new Response(null,{status:303,headers:{Location:'/login','Cache-Control':'no-store'}});
-    if(prospect && url.pathname==='/api/prospect/me'&&request.method==='GET')return Response.json({uid:claims.uid,email:claims.email,name:claims.name||''},{headers:{'Cache-Control':'private, no-store'}});
+    if((prospect&&url.pathname==='/api/prospect/me'||lab&&url.pathname==='/api/lab/me')&&request.method==='GET')return Response.json({uid:claims.uid,email:claims.email,name:claims.name||''},{headers:{'Cache-Control':'private, no-store'}});
     if(prospect && url.pathname==='/prospect-jobs-client.js' && request.method==='GET')return new Response(prospectJobsScript,{headers:{'Content-Type':'text/javascript; charset=utf-8','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
     if(prospect && (['/prospect','/prospect-client.js','/prospect.css'].includes(url.pathname)||(!lab&&url.pathname==='/')) && request.method==='GET') {
       const script=url.pathname==='/prospect-client.js',style=url.pathname==='/prospect.css';
