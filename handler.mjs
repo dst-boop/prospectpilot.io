@@ -7,7 +7,7 @@ export function createHandler({auth,db,worker,loginHtml,loginScript,homeHtml,sit
   const authorized=claims=>typeof claims.uid==='string'&&claims.uid.length>0&&claims.email_verified===true&&typeof claims.email==='string'&&claims.email.includes('@')&&['google.com','password'].includes(claims.firebase?.sign_in_provider);
   return async request=>{
     const url=new URL(request.url);
-    if(url.pathname==='/healthz')return new Response('ok');
+    if(['/health','/healthz'].includes(url.pathname)&&['GET','HEAD'].includes(request.method))return new Response('ok',{headers:{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store'}});
     if(!allowed.has(url.origin))return responseJSON('Use the ProspectPilot website address.',403);
     if(url.pathname==='/version'&&request.method==='GET')return Response.json({application:'ProspectPilot',feature_set:lab?'research-lab-v1':'legacy',quality_version:lab?QUALITY_VERSION:null,advisor_workspace_version:lab?'advisor-workflow-1':null,cadence_version:lab?CADENCE_VERSION:null,contact_workspace_version:prospect?'professional-contacts-1':null,release_id:releaseId},{headers:{'Cache-Control':'no-store'}});
     const mutates=!['GET','HEAD','OPTIONS'].includes(request.method);

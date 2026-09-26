@@ -39,3 +39,11 @@ test('a verified non-admin can initialize the advisor workspace without legacy a
  assert.equal((await handler(req('/api/me',{headers}))).status,403);
  for(const cookie of ['', '__session=expired'])assert.equal((await handler(req('/api/lab/me',{headers:{cookie}}))).status,401);
 });
+
+test('process health uses a non-reserved path, no session, and no cache',async()=>{
+ const {handler}=setup();
+ for(const host of [origin,'https://service.example.run.app'])for(const path of ['/health','/healthz']){
+  const result=await handler(new Request(host+path));assert.equal(result.status,200);assert.equal(await result.text(),'ok');assert.equal(result.headers.get('cache-control'),'no-store');
+ }
+ assert.equal((await handler(req('/health',{method:'POST'}))).status,403);
+});

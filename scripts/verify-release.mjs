@@ -24,17 +24,10 @@ import {resolve} from 'node:path';
 const EXPECTED = {feature_set: 'research-lab-v1', quality_version: 'retirement-evidence-2',
   advisor_workspace_version: 'advisor-workflow-1', contact_workspace_version: 'professional-contacts-1'};
 
-/**
- * Hosts whose front door is known not to rewrite `/healthz` to the service, so a
- * 404 there says something about the hosting rather than about the application.
- * Everywhere else -- the Cloud Run service URL, a staging environment, a local
- * server -- that path should be answered, and a 404 is a failure. Getting this
- * wrong in the permissive direction is worse than the inconvenience of listing
- * hosts: a broken health route on the service itself would report as `n/a` and
- * the run would still pass.
- */
-const UNROUTED_HEALTH = [/^prospectpilot\.io$/, /^www\.prospectpilot\.io$/, /\.web\.app$/, /\.firebaseapp\.com$/];
-const healthOptionalFor = hostname => UNROUTED_HEALTH.some(pattern => pattern.test(hostname));
+// Health is required on every host unless explicitly overridden. Cloud Run
+// reserves some paths ending in z, so external checks use /health.
+// https://docs.cloud.google.com/run/docs/known-issues#reserved_url_paths
+const healthOptionalFor = () => false;
 
 export {EXPECTED, healthOptionalFor};
 
@@ -51,13 +44,8 @@ export async function verifyRelease({base, release = null, expect = EXPECTED, al
   if (!base || !/^https?:\/\//.test(base)) throw Error('Pass the base URL of the service to verify.');
   if (healthBase !== null && !/^https?:\/\//.test(healthBase)) throw Error('Pass a base URL for the health check, or omit it.');
   const {origin} = new URL(base);
-  // The two hosts cannot be one host, and this is why. `/healthz` is answered
-  // before the origin check, so the service URL can serve it -- but every other
-  // route is behind that check, and APP_ORIGINS lists only the custom domain and
-  // the Firebase Hosting ones, so the service URL answers 403 for all of them.
-  // The front door is the reverse: it serves the public surface and never
-  // rewrites `/healthz`. Verifying both therefore takes both addresses, and
-  // pointing this at one host alone cannot be made to cover the other.
+  // A separate service URL can check process health while the custom domain
+  // checks the public surface. Ordinary routes still enforce APP_ORIGINS.
   const healthOrigin = healthBase === null ? origin : new URL(healthBase).origin;
   // Decided from whichever host the health check actually goes to.
   const healthOptional = allowUnroutedHealth ?? healthOptionalFor(new URL(healthOrigin).hostname);
@@ -77,23 +65,15 @@ export async function verifyRelease({base, release = null, expect = EXPECTED, al
     catch (error) { checks.push(result(id, false, `request failed: ${error.message}`)); }
   };
 
-  // The application answers /healthz before it checks anything else, but the
-  // custom domain is fronted by Firebase Hosting and only rewrites the paths it
-  // is configured for -- /healthz is not one of them, so through prospectpilot.io
-  // it is the host's own 404 rather than the service's 'ok'. On those hosts only,
-  // a 404 is reported as not exposed rather than failed: it is a routing fact
-  // about the front door, not a sick service. Anywhere the path should be
-  // answered -- the Cloud Run service URL above all -- a 404 fails, because a
-  // broken health route reported as `n/a` is a health check that cannot fail.
-  // Uptime monitoring therefore has to point at the service URL, not the domain.
+  // Require an actual process response; a platform 404 is not a healthy app.
   await attempt('health', async () => {
-    const {status, text} = await call('/healthz', {host: healthOrigin});
+    const {status, text} = await call('/health', {host: healthOrigin});
     const where = healthOrigin === origin ? '' : ` at ${healthOrigin}`;
     if (status === 404) return healthOptional
-      ? result('health', null, `GET /healthz${where} -> 404; not rewritten to the service on this host, so unchecked here`)
-      : result('health', false, `GET /healthz${where} -> 404; this host should route it to the service`);
+      ? result('health', null, `GET /health${where} -> 404; explicitly permitted to be unrouted, so unchecked here`)
+      : result('health', false, `GET /health${where} -> 404; this host should route it to the service`);
     return result('health', status === 200 && text.trim() === 'ok',
-      `GET /healthz${where} -> ${status} ${JSON.stringify(text.slice(0, 40))}`);
+      `GET /health${where} -> ${status} ${JSON.stringify(text.slice(0, 40))}`);
   });
 
   // Reported as three checks rather than one, because a correct release
@@ -179,11 +159,10 @@ export async function verifyRelease({base, release = null, expect = EXPECTED, al
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const argv = process.argv.slice(2);
   // --health-required holds any host to the health check; --health-optional
-  // excuses one that is known not to route it. Without either, the host decides.
+  // explicitly marks a missing route unchecked. Without either, health is required.
   const flag = name => argv.includes('--' + name);
   const allowUnroutedHealth = flag('health-required') ? false : flag('health-optional') ? true : null;
-  // The front door cannot answer /healthz and the service URL cannot answer the
-  // rest, so covering both takes both addresses.
+  // Optionally check process health on a separate host.
   const healthBase = argv.find(a => a.startsWith('--health-base='))?.slice('--health-base='.length) ?? null;
   const [base = 'https://prospectpilot.io', release = null] = argv.filter(a => !a.startsWith('--'));
   const report = await verifyRelease({base, release, allowUnroutedHealth, healthBase});
