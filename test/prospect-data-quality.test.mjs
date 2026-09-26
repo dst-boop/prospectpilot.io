@@ -130,9 +130,19 @@ test('preview rechecks identities when committing instead of trusting old counts
 test('source history retains conflicts, field origin and original source observation date',()=>fixture(async(app,db)=>{
  const first=await app.importCSV(user,{csv:basic,source:'Older export',source_observed_at:'2020-01-01',source_url:'https://example.com/team'});
  await app.importCSV(user,{csv:basic.replace('Email,','Title,Email,').replace('Sample Co,avery','Sample Co,Director,avery'),source:'New export',source_observed_at:'2026-01-01'});
- await app.importCSV(user,{csv:basic.replace('Email,','Title,Email,').replace('Sample Co,avery','Sample Co,Manager,avery'),source:'Disagreeing export'});
+ const differingInput={csv:basic.replace('Email,','Title,Email,').replace('Sample Co,avery','Sample Co,Manager,avery'),source:'Disagreeing export'};
+ const preview=await app.importCSV(user,differingInput,{preview:true});
+ assert.equal(preview.field_reviews,1);assert.equal(preview.conflicts,0);assert.equal(preview.duplicates,1);
+ assert.deepEqual(preview.rows[0].review_fields,['title']);assert.equal(preview.rows[0].contact_id,undefined);
+ const differing=await app.importCSV(user,differingInput);
+ assert.equal(differing.field_reviews,1);assert.equal(differing.conflicts,0);assert.equal(differing.duplicates,1);
+ const replay=await app.importCSV(user,differingInput);assert.equal(replay.replayed,true);assert.equal(replay.field_reviews,1);
  const record=(await app.search(user)).contacts[0];assert.equal(record.title,'Director');assert.equal(record.source,'Older export');assert.equal(record.source_observed_at,'2020-01-01');assert.equal(record.source_history.length,3);assert.deepEqual(record.source_history[2].differing_fields,['title']);assert.equal(record.field_sources.title.source,'New export');assert.equal(record.field_sources.email.source,'Older export');
  const compact=(await app.search(user,{compact:'true'})).contacts[0];assert.equal(compact.source_history,undefined);assert.equal(compact.field_sources,undefined);assert.equal(compact.id,record.id);assert.deepEqual(compact.quality,record.quality);
+ assert.equal(differing.rows[0].contact_id,record.id);
+ const reportURL='https://example.com/api/prospect/imports/'+differing.id;
+ assert.equal((await app.route(new Request(reportURL),user)).result.field_reviews,1);
+ await assert.rejects(app.route(new Request(reportURL),other),{status:404});
  const summary=await app.qualitySummary(user);assert.equal(summary.sources.length,3);assert.equal(summary.summary.source_older_than_180_days,1);assert.equal(summary.summary.verified_emails,0);
  const url='https://example.com/api/prospect/imports/'+first.id;
  await assert.rejects(app.route(new Request(url),other),{status:404});assert.equal((await app.route(new Request(url),user)).result.added,1);
