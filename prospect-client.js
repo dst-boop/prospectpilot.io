@@ -150,7 +150,7 @@ async function showContact(id,prepare=false){
    remove.disabled=true;try{await api('contacts/'+encodeURIComponent(id),undefined,'DELETE');selected.delete(id);if(version===contactViewVersion)$('contactDialog').close();await load();notice('Deleted. Nothing about this person remains except a do-not-call block, if one existed.');}catch(e){if(version===contactViewVersion){$('contactError').textContent=e.message;remove.disabled=false;}}};
   if(!$('contactDialog').open)$('contactDialog').showModal();
   if(prepare&&version===contactViewVersion&&prepareButton)await prepareButton.onclick();
- }catch(e){if(version===contactViewVersion){$('contactTitle').textContent='Contact unavailable';$('contactError').textContent=e.message;}}
+ }catch(e){if(version===contactViewVersion){$('contactTitle').textContent='Contact unavailable';$('contactError').textContent=e.message;$('toggleSuppression').disabled=true;$('contactBody').innerHTML='<p>Reload this contact to review its latest details.</p><button id="retryContact" type="button" class="secondary">Retry contact details</button>';$('retryContact').onclick=()=>{if(version===contactViewVersion)return showContact(id);};}}
 }
 
 $('importFormat').onchange=()=>{$('source').value=$('importFormat').value==='zoominfo'?'ZoomInfo CSV export':'';};

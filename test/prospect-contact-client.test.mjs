@@ -7,7 +7,7 @@ function client(){
  const elements=new Map(),pending=[];
  const create=id=>{const value={textContent:'',innerHTML:'',disabled:false,open:false,value:'Reviewed source',dataset:{},
   insertAdjacentHTML(){},append(element){this.lastChild=element;},scrollIntoView(){this.scrolled=true;},focus(){this.focused=true;},querySelector(){return elements.get('firstField');},showModal(){this.open=true;},addEventListener(event,fn){this[event+'Handler']=fn;},close(){this.open=false;this.closeHandler?.();}};elements.set(id,value);return value;};
- for(const id of ['contactTitle','contactBody','contactError','toggleSuppression','deletePerson','closeContact','correctionForm','conflictReason0','contactHistory','contactHistoryBody','editContact','reviewContactConflicts','contactConflicts','correctionPanel','firstField'])create(id);
+ for(const id of ['contactTitle','contactBody','contactError','toggleSuppression','deletePerson','closeContact','correctionForm','conflictReason0','contactHistory','contactHistoryBody','editContact','reviewContactConflicts','contactConflicts','correctionPanel','firstField','retryContact'])create(id);
  const conflict=create('conflict');conflict.dataset={conflict:'0',decision:'keep'};
  const context=vm.createContext({selected:new Set(),$:id=>elements.get(id),esc:String,notice(){},load:async()=>{},
   FormData:class{constructor(){return [['first_name','A'],['last_name','Example'],['reason','Reviewed source']];}},
@@ -18,6 +18,31 @@ function client(){
  return {elements,pending,open:id=>vm.runInContext(`showContact(${JSON.stringify(id)})`,context)};
 }
 const record=name=>({contact:{first_name:name,last_name:'Example',edit_revision:name,source_history:[{source:'Fixture',proposed_values:{title:'Manager'}}]},lists:[]});
+
+test('failed contact details retry in place and restore current review actions',async()=>{
+ const c=client(),failed=c.open('A');c.pending[0].reject(Error('Temporary failure'));await failed;
+ assert.match(c.elements.get('contactBody').innerHTML,/Retry contact details/);
+ assert.equal(c.elements.get('toggleSuppression').disabled,true);
+ const retry=c.elements.get('retryContact').onclick();
+ assert.equal(c.pending[1].url,'contacts/A');assert.equal(c.pending[1].body,undefined);
+ c.pending[1].resolve(record('A'));await retry;
+ assert.equal(c.elements.get('contactTitle').textContent,'A Example');
+ assert.equal(c.elements.get('contactError').textContent,'');
+ assert.equal(c.elements.get('toggleSuppression').disabled,false);
+});
+
+test('contact retry cannot affect a newer contact or reopen a closed dialog',async()=>{
+ const c=client(),failed=c.open('A');c.pending[0].reject(Error('Temporary failure'));await failed;
+ const oldRetry=c.elements.get('retryContact').onclick;
+ const retry=oldRetry();c.elements.get('contactDialog').close();
+ const newer=c.open('B');c.pending[2].resolve(record('B'));await newer;
+ c.pending[1].resolve(record('A'));await retry;
+ assert.equal(c.elements.get('contactTitle').textContent,'B Example');
+ await oldRetry();assert.equal(c.pending.length,3);
+ const failedAgain=c.open('C');c.pending[3].reject(Error('Temporary failure'));await failedAgain;
+ const closedRetry=c.elements.get('retryContact').onclick;c.elements.get('contactDialog').close();
+ await closedRetry();assert.equal(c.pending.length,4);assert.equal(c.elements.get('contactDialog').open,false);
+});
 
 test('contact actions open and focus the relevant review while history follows the workflow',async()=>{
  const c=client(),a=c.open('A');c.pending[0].resolve(record('A'));await a;
