@@ -56,7 +56,12 @@ These are recorded so they are not reopened by accident.
    the deletion record cannot be read back into a person, and one user's
    deletion does not block another user's independent copy. When an admin
    deletes someone else's Research Lab lead, the lead's owner gets the
-   tombstone too.
+   tombstone too. Set `FORGET_TOMBSTONE_KEY` (a Secret Manager value) on the service and
+   the worker so they are HMACs a database snapshot cannot test guesses
+   against; without it they fall back to salted hashes, and lookups accept
+   both forms, so adding the key later keeps older tombstones working. Each
+   deletion writes both the directory's and the Research Lab's identity keys,
+   and provider searches honour them too.
 
 ## Open items
 

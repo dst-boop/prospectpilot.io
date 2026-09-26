@@ -107,3 +107,70 @@ test('deleting needs a person, and an unknown lead is a 404',async()=>{
     await assert.rejects(call(lab,owner,'DELETE','/api/lab/leads/nope'),{status:404});
   }finally{await db.close();}
 });
+
+// Review round 1 (Codex on dst-boop/prospectpilot.io#19).
+const bare='First Name,Last Name,Company,City,State,Country\nRiley,Stone,Harbor Freight Lines,Albany,NY,US';
+
+test('an unlinked directory contact with no email or LinkedIn blocks the same person in the Research Lab',async()=>{
+  const {db,lab,ws,call}=await fixture();try{
+    await ws.importCSV(owner,{csv:bare});const id=(await ws.search(owner)).contacts[0].id;
+    await call(ws,owner,'DELETE','/api/prospect/contacts/'+id);
+    await lab.importCSV(owner,{csv:'First Name,Last Name,Company,City,State,Country,Estimated Age Range\nRiley,Stone,Harbor Freight Lines,Albany,NY,US,62'});
+    assert.equal((await lab.list(owner)).leads.length,0);
+  }finally{await db.close();}
+});
+
+test('an unlinked Research Lab lead blocks the same person in the directory',async()=>{
+  const {db,lab,ws,call}=await fixture();try{
+    await lab.importCSV(owner,{csv:'First Name,Last Name,Company,City,State,Country,Estimated Age Range\nRiley,Stone,Harbor Freight Lines,Albany,NY,US,62'});
+    const leadId=(await lab.list(owner)).leads[0].lead.id;
+    await call(lab,owner,'DELETE','/api/lab/leads/'+encodeURIComponent(leadId));
+    const again=await ws.importCSV(owner,{csv:bare});
+    assert.equal(again.added,0);assert.match(again.errors[0].message,/deleted at your request/);
+  }finally{await db.close();}
+});
+
+test('a paid provider search does not bring a deleted person back',async()=>{
+  const {db,ws,call}=await fixture();try{
+    const {createProspectJobs}=await import('../prospect-jobs.mjs');
+    await ws.importCSV(owner,{csv});const id=(await ws.search(owner)).contacts[0].id;
+    await call(ws,owner,'DELETE','/api/prospect/contacts/'+id);
+    const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
+    const jobs=createProspectJobs({pool,config:{dailyBudgetMicros:100000,prices:{search:100}},pacingMs:{pdl:0},providers:{readiness:{search:true},
+      search:async()=>({contacts:[{first_name:'Jamie',last_name:'Rivera',company:'Example Manufacturing',email:'jamie@example.com',country:'US'}],retrieved:1,total:1})}});
+    const job=await jobs.enqueue(owner,{action:'search',filters:{company:'Example'},size:1,max_cost_micros:100,idempotency_key:'search-after-forget'});
+    await jobs.tick();
+    assert.equal((await jobs.jobs(owner,job.id)).tasks[0].result.rejected,1);
+    assert.equal(await count(db,'SELECT count(*)::int AS n FROM prospect_contacts WHERE user_id=$1',['owner']),0);
+  }finally{await db.close();}
+});
+
+test('import reports are scrubbed by provenance: a corrected name goes, a namesake elsewhere stays',async()=>{
+  const {db,ws,call}=await fixture();try{
+    await ws.importCSV(owner,{csv});const id=(await ws.search(owner)).contacts[0].id;
+    // A different Jamie Rivera, in a separate import.
+    await ws.importCSV(owner,{csv:'First Name,Last Name,Company,Email\nJamie,Rivera,Other Co,jr@other.example'});
+    const detail=(await ws.route(new Request('https://prospectpilot.io/api/prospect/contacts/'+id),owner)).contact;
+    await ws.route(new Request('https://prospectpilot.io/api/prospect/contacts/'+id,{method:'PATCH',body:JSON.stringify({fields:{...Object.fromEntries(['first_name','last_name','company','title','email','phone','country'].map(k=>[k,detail[k]])),first_name:'Jamison'},reason:'Legal first name confirmed.',revision:detail.edit_revision})}),owner);
+    await call(ws,owner,'DELETE','/api/prospect/contacts/'+id);
+    const reports=(await db.query("SELECT result FROM prospect_imports WHERE user_id='owner' ORDER BY created_at")).rows.map(r=>JSON.stringify(r.result.rows));
+    assert.ok(!reports[0].includes('Jamie Rivera'),'the original name is gone after a correction');
+    assert.ok(reports[1].includes('Jamie Rivera'),'the namesake in another import keeps their row');
+  }finally{await db.close();}
+});
+
+test('with a server key tombstones are HMACs, and tombstones written before the key still hold',async()=>{
+  const {tombstone}=await import('../forget.mjs');
+  const {db,ws,call}=await fixture();const was=process.env.FORGET_TOMBSTONE_KEY;try{
+    delete process.env.FORGET_TOMBSTONE_KEY;
+    await ws.importCSV(owner,{csv});await call(ws,owner,'DELETE','/api/prospect/contacts/'+(await ws.search(owner)).contacts[0].id);
+    process.env.FORGET_TOMBSTONE_KEY='k'.repeat(32);
+    assert.notEqual(tombstone('owner','email:jamie@example.com'),(delete process.env.FORGET_TOMBSTONE_KEY,tombstone('owner','email:jamie@example.com')));
+    process.env.FORGET_TOMBSTONE_KEY='k'.repeat(32);
+    assert.equal((await ws.importCSV(owner,{csv,source:'After the key'})).added,0,'an older salted tombstone still blocks');
+    await ws.importCSV(other,{csv});await call(ws,other,'DELETE','/api/prospect/contacts/'+(await ws.search(other)).contacts[0].id);
+    const stored=(await db.query("SELECT key_hash FROM prospect_forgotten WHERE user_id='other'")).rows.map(r=>r.key_hash);
+    assert.ok(stored.includes(tombstone('other','email:jamie@example.com')),'new tombstones are keyed');
+    assert.equal((await ws.importCSV(other,{csv,source:'Again'})).added,0);
+  }finally{if(was===undefined)delete process.env.FORGET_TOMBSTONE_KEY;else process.env.FORGET_TOMBSTONE_KEY=was;await db.close();}
+});

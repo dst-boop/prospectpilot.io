@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {hash,nameKey,linkedinURL} from './lead-quality.mjs';
 import {normalizeContact,contactIdentities,identityLookupKeys,searchFilters} from './prospect-workspace.mjs';
 import {CONTACT_ALIASES,contactEmail} from './prospect-data-quality.mjs';
+import {forgottenKeys} from './forget.mjs';
 import {DOMAIN_CHECK_STATUSES,DOMAIN_CHECK_LABELS,recentDomainFailure,isNonPublicMailDomain} from './prospect-domain-check.mjs';
 const fail=(status,message)=>Object.assign(Error(message),{status});
 const sig=contact=>hash(JSON.stringify(['first_name','last_name','company','email','linkedin_url'].map(k=>contact[k]||'')));
@@ -101,6 +102,8 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   // A list deleted while the request ran cannot make paid results disappear.
   const listId=task.payload.list_id&&(await c.query('SELECT id FROM prospect_lists WHERE id=$1 AND user_id=$2',[task.payload.list_id,task.user_id])).rows[0]?.id;
   for(const raw of result.contacts){let contact;try{contact=normalizeContact(raw,'People Data Labs');}catch{rejected++;continue;}const keys=contactIdentities(contact);if(!keys.length){rejected++;continue;}
+   // Someone this user deleted is not brought back by a paid search.
+   if((await forgottenKeys(c,task.user_id,identityLookupKeys(contact))).size){rejected++;continue;}
    const matches=(await c.query('SELECT id,payload FROM prospect_contacts WHERE user_id=$1 AND identity_keys ?| $2::text[] FOR UPDATE',[task.user_id,identityLookupKeys(contact)])).rows;
    if(matches.length>1||matches.some(r=>['first_name','last_name'].some(k=>nameKey(r.payload[k])!==nameKey(contact[k]))||['email','linkedin_url'].some(k=>r.payload[k]&&contact[k]&&r.payload[k]!==contact[k]))){conflicts++;continue;}
    if(matches.length){
