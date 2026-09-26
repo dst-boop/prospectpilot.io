@@ -219,3 +219,8 @@ test('startup failure offers full initialization retry without enabling unready 
  assert.equal(c.element('input[name="source"][value="web_search"]').disabled,true);
  await c.element('refresh').onclick();assert.equal(c.pending.length,6);
 });
+
+test('primary contact import routes to the enhanced directory importer',()=>{
+ const c=client();c.run("location.assign=value=>location.href=value");c.element('quickImport').onclick();
+ assert.equal(c.run('location.href'),'/prospect?import=1');
+});

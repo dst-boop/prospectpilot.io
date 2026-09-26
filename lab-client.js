@@ -293,7 +293,7 @@ $('activityForm').onsubmit=async e=>{e.preventDefault();if(!current||!currentWor
 }catch(err){if(version===leadDetailVersion)$('activityError').textContent=err.message;else notice(err.message,true);}finally{activitySaving=false;$('saveActivity').disabled=false;}};
 $('startImport').onclick=()=>$('quickImport').click();
 document.querySelectorAll('[data-queue]').forEach(button=>button.onclick=()=>{$('workView').value=button.dataset.queue;$('workSearch').value='';workOffset=0;loadWorklist().catch(e=>notice(e.message,true));});
-$('quickImport').onclick=()=>$('importOpen').click();
+$('quickImport').onclick=()=>location.assign('/prospect?import=1');
 $('findProspects').onclick=()=>{$('researchTools').open=true;$('runForm').scrollIntoView({behavior:'smooth',block:'start'});$('employers').focus({preventScroll:true});};
 $('workView').onchange=()=>{workOffset=0;loadWorklist().catch(e=>notice(e.message,true));};let workSearchTimer;
 $('workSearch').oninput=()=>{workRequest++;loadingWorklist();clearTimeout(workSearchTimer);workSearchTimer=setTimeout(()=>{workOffset=0;loadWorklist().catch(e=>notice(e.message,true));},250);};

@@ -4,6 +4,7 @@ export function loginDestination(value){
  try{
   const url=new URL(value,'https://workspace.invalid');
   if(url.origin!=='https://workspace.invalid'||!['/lab','/prospect','/warn'].includes(url.pathname))return '/lab';
+  if(url.pathname==='/prospect'&&url.searchParams.get('import')==='1')return '/prospect?import=1';
   const lead=url.searchParams.get('lead');
   return url.pathname+(url.pathname==='/lab'&&/^[A-Za-z0-9_-]{1,100}$/.test(lead||'')?'?lead='+encodeURIComponent(lead):'');
  }catch{return '/lab';}
