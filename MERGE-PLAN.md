@@ -66,15 +66,27 @@ These are recorded so they are not reopened by accident.
   who is in an old batch needs the batch deleted too.
 - **DNC scrub**: deferred at the operator's request. Calling-restriction flags
   and the do-not-call block still apply.
-- **Lead Qualifier's Firestore data** is exported by the operator and imported
-  in PR B. Nothing lead-bearing is committed to either repository.
+- **Moving the leads (PR B).** In Lead Qualifier, open All leads and choose
+  More → Move to ProspectPilot. Upload the file, or each part (5,000 rows a
+  file), in ProspectPilot's contact import, then delete the file. Several
+  things carry across:
+  - identity and contact routes;
+  - the ZoomInfo id, accuracy and job start date;
+  - both do-not-call flags;
+  - Not Interested, which arrives as suppressed.
+
+  Verification badges do not carry, because ProspectPilot re-checks. Grades,
+  outcomes and activity stay in Lead Qualifier's Life Data export, the archive
+  copy. Carrying outcome history into the worklist is left for later, because
+  it would mean writing advisor activities nobody logged here. Nothing
+  lead-bearing is committed to either repository.
 
 ## Order
 
 | PR | Contents | Status |
 |---|---|---|
-| A | This plan, `CLAUDE.md`, Delete this person | This PR |
-| B | Lead Qualifier export plus the ProspectPilot importer | Next |
+| A | This plan, `CLAUDE.md`, Delete this person | Done |
+| B | Lead Qualifier's "Move to ProspectPilot" export, in the columns the contact import already reads; `test/lead-qualifier-import.test.mjs` pins the contract | Done |
 | C | WhitePages/Trestle on the provider budget | |
 | D | Claude research sources, AI QC, SEC proxy ages | |
 | E | Email and `.ics`, ZoomInfo sourcing, Autopilot, sharing; redirect leads.financialplannersofamerica.com and retire Lead Qualifier | |
