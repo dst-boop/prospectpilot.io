@@ -3,20 +3,21 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 
-function client(){
+function client({activity=false}={}){
   const elements=new Map(),pending=[];
   const element=id=>{
     if(!elements.has(id))elements.set(id,{value:'',textContent:'',innerHTML:'',disabled:false,open:false,dataset:{},
-      classList:{toggle(){}},reset(){},replaceChildren(){},showModal(){this.open=true;},
+      setAttribute(name,value){this[name]=value;},classList:{toggle(){}},reset(){},replaceChildren(){},showModal(){this.open=true;},
       addEventListener(event,handler){this[event+'Handler']=handler;},close(){this.open=false;this.closeHandler?.();}});
     return elements.get(id);
   };
   const context=vm.createContext({URL,URLSearchParams,console,setTimeout,clearTimeout,
-    document:{getElementById:element,querySelectorAll:()=>[],addEventListener(){}},
+    location:{href:'https://example.com/lab',pathname:'/lab',search:''},
+    document:{getElementById:element,querySelector:selector=>element(selector),querySelectorAll:()=>[],addEventListener(){}},
     fetch:(url,options)=>new Promise(resolve=>pending.push({url,options,respond:(data,status=200)=>resolve({status,ok:status===200,headers:{get:()=> 'application/json'},json:async()=>data})}))});
   vm.runInContext(readFileSync(new URL('../lab-client.js',import.meta.url),'utf8').replace(/init\(\);\s*$/,''),context);
   // Isolate dialog interactions from the independent dashboard refresh.
-  vm.runInContext('refresh=async()=>{};loadActivity=async()=>{}',context);
+  vm.runInContext('refresh=async()=>{}'+(activity?'':';loadActivity=async()=>{}'),context);
   return {element,pending,run:code=>vm.runInContext(code,context)};
 }
 const lead=name=>({lead:{id:name,first_name:name,last_name:'Example',evidence:[]},quality:{gates:{},warnings:[],plans:[],identity_signature:name}});
@@ -120,6 +121,108 @@ test('an inbound row is labelled by the channel it arrived on',()=>{
   // A row written before the channel was recorded claims nothing about how.
   assert.equal(c.run("inboundLabel(null)"),'they contacted me');
   assert.equal(c.run("inboundLabel('carrier pigeon')"),'they contacted me');
+});
+
+const emptyQueue={total:0,items:[],counts:{all:0,due:0,ready:0},activity:{conversations:0,meetings:0}};
+test('queue loading clears old cards and failure provides a working retry',async()=>{
+  const c=client();c.element('workView').value='today';
+  c.element('workList').innerHTML='Old prospect';c.run("workSelected.add('old');loadScoreboard=async()=>{}");
+  const loading=c.run('loadWorklist()');
+  assert.match(c.element('workList').innerHTML,/Loading prospects/);
+  assert.equal(c.element('startNext').disabled,true);
+  assert.equal(c.element('enrichExport').disabled,true);
+  assert.equal(c.element('workNext').disabled,true);
+  c.pending[0].respond({detail:'Queue temporarily unavailable'},503);
+  await assert.rejects(loading,/Queue temporarily unavailable/);
+  assert.match(c.element('workList').innerHTML,/Retry/);
+  assert.equal(c.run('workSelected.size'),0);
+  assert.equal(c.element('workList')['aria-busy'],'false');
+  const retry=c.element('retryWorklist').onclick();c.pending[1].respond(emptyQueue);await retry;
+  assert.match(c.element('workList').innerHTML,/Your next actions/);
+  assert.equal(c.element('startNext').disabled,false);
+  assert.equal(c.element('notice').textContent,'Worklist updated.');
+});
+test('stale queue failure cannot replace a newer successful search',async()=>{
+  const c=client();c.element('workView').value='today';c.run('loadScoreboard=async()=>{}');
+  const old=c.run('loadWorklist()'),fresh=c.run('loadWorklist()');
+  c.pending[1].respond(emptyQueue);await fresh;
+  const shown=c.element('workList').innerHTML;
+  c.pending[0].respond({detail:'Old failure'},503);await old;
+  assert.equal(c.element('workList').innerHTML,shown);
+  assert.equal(c.element('startNext').disabled,false);
+});
+test('typing disables the old next prospect during search debounce',()=>{
+  const c=client();c.element('startNext').onclick=()=>{};
+  c.element('workSearch').oninput();
+  assert.equal(c.element('startNext').disabled,true);
+  assert.equal(c.element('startNext').onclick,null);
+  assert.match(c.element('workList').innerHTML,/Loading prospects/);
+  c.run('clearTimeout(workSearchTimer)');
+});
+
+test('an empty search does not imply the workspace has no imported contacts',async()=>{
+  const c=client();c.element('workView').value='today';c.element('workSearch').value='no-match';c.run('loadScoreboard=async()=>{}');
+  const loading=c.run('loadWorklist()');c.pending[0].respond(emptyQueue);await loading;
+  assert.equal(c.element('dailyTitle').textContent,'You’re caught up in this view.');
+  assert.match(c.element('workList').innerHTML,/No matching prospects/);
+});
+
+test('opening a different prospect clears the previous draft even when evidence fails',async()=>{
+ const c=client();c.element('draftPanel').hidden=false;c.element('draftBody').value='Hello old prospect';
+ const open=c.run("openLead('new')");
+ assert.equal(c.element('draftPanel').hidden,true);assert.equal(c.element('draftBody').value,'');
+ c.pending[0].respond({detail:'Evidence unavailable'},503);await open;
+ assert.match(c.element('conversationBrief').innerHTML,/Retry evidence/);
+ const retry=c.element('retryEvidence').onclick();assert.equal(c.pending[1].url,'/api/lab/leads/new');
+ c.pending[1].respond(lead('new'));await retry;
+ assert.equal(c.element('personName').textContent,'new Example');
+});
+test('activity failure clears stale actions and retry stays bound to the prospect',async()=>{
+ const c=client({activity:true});c.run("leadDetailVersion=1;current={lead:{id:'A'}};prepareActivity=()=>{};currentWorkflow={draft:{body:'old'}}");
+ c.element('draftBody').value='old';c.element('draftPanel').hidden=false;
+ const loading=c.run("loadActivity('A',1)");
+ assert.equal(c.run('currentWorkflow'),null);assert.equal(c.element('draftPanel').hidden,true);
+ c.pending[0].respond({detail:'Temporary failure'},503);await loading;
+ assert.equal(c.element('activityForm').hidden,true);
+ assert.match(c.element('conversationBrief').innerHTML,/Retry conversation brief/);
+ const retry=c.element('retryActivity').onclick();c.pending[1].respond({action:{},draft:{body:'A draft'}});await retry;
+ assert.equal(c.element('activityForm').hidden,false);assert.equal(c.run('currentWorkflow.draft.body'),'A draft');
+ const oldRetry=c.element('retryActivity').onclick;c.run('leadDetailVersion=2');await oldRetry();
+ assert.equal(c.pending.length,2);
+});
+test('overlapping activity loads ignore the older failure',async()=>{
+ const c=client({activity:true});c.run('leadDetailVersion=1;prepareActivity=()=>{}');
+ const old=c.run("loadActivity('A',1)"),fresh=c.run("loadActivity('A',1)");
+ c.pending[1].respond({action:{},draft:{body:'fresh'}});await fresh;
+ c.pending[0].respond({detail:'old failure'},503);await old;
+ assert.equal(c.run('currentWorkflow.draft.body'),'fresh');assert.equal(c.element('activityForm').hidden,false);
+});
+test('source results can retry in place and closed dialogs stay closed',async()=>{
+ const c=client(),open=c.run("openRun('run-a')");c.pending[0].respond({detail:'Temporary failure'},503);await open;
+ assert.match(c.element('runDetails').innerHTML,/Retry source results/);
+ const retry=c.element('retryRun').onclick();c.pending[1].respond(run('completed'));await retry;
+ assert.match(c.element('runDetails').innerHTML,/Completed/);
+ c.element('runDialog').close();await c.element('retryRun').onclick();assert.equal(c.pending.length,2);
+});
+
+test('startup failure offers full initialization retry without enabling unready research controls',async()=>{
+ const c=client();c.run('syncTimeZone=async()=>{}');
+ const first=c.run('init()');await c.run('init()');assert.equal(c.pending.length,3);
+ assert.equal(c.element('runButton').disabled,true);assert.equal(c.element('saveSettings').disabled,true);
+ c.pending[0].respond({name:'Synthetic user'});c.pending[1].respond({detail:'Settings temporarily unavailable'},503);c.pending[2].respond({readiness:{},sources:[]});await first;
+ assert.equal(c.element('refresh').textContent,'Retry workspace');assert.equal(c.element('refresh').disabled,false);
+ assert.match(c.element('notice').textContent,/Settings temporarily unavailable/);assert.equal(c.run('workspaceReady'),false);
+ const retry=c.element('refresh').onclick();assert.equal(c.pending.length,6);
+ c.pending[3].respond({name:'Synthetic user'});c.pending[4].respond({configuration:{employers:['Saved employer']}});c.pending[5].respond({readiness:{web_search:false},sources:[]});await retry;
+ assert.equal(c.run('workspaceReady'),true);assert.equal(c.element('employers').value,'Saved employer');
+ assert.equal(c.element('refresh').textContent,'Refresh workspace');assert.equal(c.element('runButton').disabled,false);assert.equal(c.element('saveSettings').disabled,false);
+ assert.equal(c.element('input[name="source"][value="web_search"]').disabled,true);
+ await c.element('refresh').onclick();assert.equal(c.pending.length,6);
+});
+
+test('primary contact import routes to the enhanced directory importer',()=>{
+ const c=client();c.run("location.assign=value=>location.href=value");c.element('quickImport').onclick();
+ assert.equal(c.run('location.href'),'/prospect?import=1');
 });
 
 test('delete this person takes a second click, then deletes the lead and closes',async()=>{

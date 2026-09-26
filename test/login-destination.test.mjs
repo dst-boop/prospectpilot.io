@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {loginDestination} from '../login-destination.mjs';
 test('sign-in retains only supported workspace destinations and a valid lead reference',()=>{
  assert.equal(loginDestination('/prospect'),'/prospect');
+ assert.equal(loginDestination('/prospect?import=1&token=discard'),'/prospect?import=1');
+ assert.equal(loginDestination('/prospect?import=other'),'/prospect');
  assert.equal(loginDestination('/warn?unknown=discard'),'/warn');
  assert.equal(loginDestination('/lab?lead=abc-123&token=discard#private'),'/lab?lead=abc-123');
  assert.equal(loginDestination('/lab?lead='+('a'.repeat(101))),'/lab');

@@ -1,7 +1,7 @@
 import {initProviderUI} from './prospect-jobs-client.js';
 const $=id=>document.getElementById(id),esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 if(matchMedia('(max-width:700px)').matches)$('filterPanel').open=false;
-let offset=0,contacts=[],lists=[],searches=[],loadVersion=0,loadingContacts=false,directoryError='';const selected=new Set();
+let importIntentHandled=false,offset=0,contacts=[],lists=[],searches=[],loadVersion=0,loadingContacts=false,directoryError='';const selected=new Set();
 const notice=(message,error=false)=>{if(directoryError&&!error){message+=' Contacts could not refresh: '+directoryError+' Use Retry contacts below.';error=true;}$('notice').textContent=message;$('notice').classList.toggle('error',error);};
 async function api(path,body,method=body?'POST':'GET'){const r=await fetch('/api/prospect/'+path,{method,headers:{'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});if(r.status===401){location.href='/login?next='+encodeURIComponent(location.pathname+location.search);throw Error('Sign in to continue.');}if(!r.ok){let data;try{data=await r.json();}catch{}throw Error(data?.detail||'Request failed.');}return r.headers.get('Content-Type')?.includes('text/csv')?r.blob():r.json();}
 const filters=()=>({...Object.fromEntries(new FormData($('filters'))),list_id:$('listFilter').value});
@@ -65,7 +65,15 @@ function downloadReport(report){downloadCSV('prospectpilot-import-report.csv',[[
 $('continueImport').onclick=()=>{$('importDialog').close();$('filters').reset();$('listFilter').value=$('importList').value;offset=0;selected.clear();load();$('resultTitle').scrollIntoView({behavior:'smooth',block:'start'});notice('Select the contacts you want to work, then choose Add & open advisor worklist.');};
 $('downloadImportReport').onclick=()=>{if(lastImportReport)downloadReport(lastImportReport);};
 $('export').onclick=async()=>{try{const blob=await api('export',{ids:[...selected]});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='prospectpilot-contacts.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notice('Export ready. Suppressed contacts were omitted.');}catch(e){notice(e.message,true);}};
-async function initializeDirectory(){try{await Promise.all([loadLists(),loadSearches()]);if(await load())notice('Your contact workspace is ready.');}catch(e){failedDirectory(e.message,initializeDirectory);}}
+async function initializeDirectory(){try{
+ await Promise.all([loadLists(),loadSearches()]);
+ if(await load()){
+  notice('Your contact workspace is ready.');
+  if(!importIntentHandled&&new URL(location.href).searchParams.get('import')==='1'){
+   importIntentHandled=true;$('importDialog').showModal();
+  }
+ }else $('retryContacts').onclick=initializeDirectory;
+}catch(e){failedDirectory(e.message,initializeDirectory);}}
 await initializeDirectory();
 
 initProviderUI({api,selected,filters,getLists:()=>lists,refresh:async()=>{await loadLists();await load();},notice}).catch(e=>notice(e.message,true));
@@ -171,6 +179,6 @@ $('qualityOpen').onclick=async()=>{
 $('sendToWorklist').onclick=async()=>{
  if(!selected.size)return;if(selected.size>100)return notice('Select up to 100 contacts at a time for advisor review.',true);
  const button=$('sendToWorklist');button.disabled=true;
- try{const response=await fetch('/api/lab/contact-import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:[...selected]})});const result=await response.json();if(!response.ok)throw Error(result.detail||'Could not add contacts to the worklist.');notice(result.replayed?'These contacts are already in the advisor worklist.':`${result.linked} contacts linked to the advisor worklist; ${result.suppressed} suppressed contacts omitted; ${result.result?.rejected||0} rejected; ${result.result?.ambiguous||0} ambiguous matches. Imported details still need evidence review.`);if(result.lead_ids?.length)location.assign('/lab?lead='+encodeURIComponent(result.lead_ids[0]));}
+ try{const response=await fetch('/api/lab/contact-import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:[...selected]})});const result=await response.json();if(!response.ok)throw Error(result.detail||'Could not add contacts to the worklist.');notice((result.replayed?'This contact selection was already processed.':`${result.linked} contacts linked to the advisor worklist; ${result.suppressed} suppressed contacts omitted; ${result.result?.rejected||0} rejected; ${result.result?.ambiguous||0} ambiguous matches. Imported details still need evidence review.`)+(result.restriction_links?` Restrictions also applied to ${result.restriction_links} existing worklist record${result.restriction_links===1?'':'s'}.`:''));if(result.lead_ids?.length)location.assign('/lab?lead='+encodeURIComponent(result.lead_ids[0]));}
  catch(e){notice(e.message,true);}finally{selection();}
 };

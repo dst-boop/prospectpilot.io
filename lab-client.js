@@ -63,14 +63,14 @@ async function refresh(showNotice=true){
   }
 }
 async function openLead(id){
-  const version=++leadDetailVersion;current=null;currentWorkflow=null;$('saveReview').disabled=true;$('activityForm').hidden=true;$('conversationBrief').textContent='Loading the conversation brief…';$('contactActions').replaceChildren();$('activityHistory').replaceChildren();
+  const version=++leadDetailVersion;current=null;clearConversation();$('saveReview').disabled=true;$('activityForm').hidden=true;$('conversationBrief').textContent='Loading the conversation brief…';$('contactActions').replaceChildren();$('activityHistory').replaceChildren();
   $('personName').textContent='Loading evidence…';$('personRole').textContent='';
   for(const name of ['personGates','personSources','personPlans','reviewError','forgetError'])$(name).textContent='';
   $('forgetLead').dataset.armed='';$('forgetLead').textContent='Delete this person';
   $('reviewForm').reset();$('observedAt').value=new Date().toISOString().slice(0,10);$('observedAt').max=$('observedAt').value;reviewFields();
   if(!$('detail').open)$('detail').showModal();
   try{const data=await request('/api/lab/leads/'+encodeURIComponent(id));if(version!==leadDetailVersion)return;current=data;renderPerson();$('saveReview').disabled=false;await loadActivity(id,version);}
-  catch(e){if(version===leadDetailVersion){$('personName').textContent='Evidence unavailable';$('reviewError').textContent=e.message;}}
+  catch(e){if(version===leadDetailVersion){$('personName').textContent='Evidence unavailable';$('conversationBrief').innerHTML=`<p role="alert">${esc(e.message)}</p><button id="retryEvidence" class="secondary">Retry evidence</button>`;$('retryEvidence').onclick=()=>{if(version===leadDetailVersion)return openLead(id);};}}
 }
 function renderPerson(){const {lead:l,quality:q}=current;$('personName').textContent=[l.first_name,l.last_name].join(' ');$('personRole').textContent=[l.current_title,l.company].filter(Boolean).join(' · ');$('personGates').innerHTML=Object.entries(q.gates).map(([f,g])=>`<div class="gate-card"><strong>${esc(labels[f])}</strong> ${badge(g.state)}<p>${esc(g.reason)}</p>${g.evidence?`<small>${esc(g.evidence.source)} · ${esc(g.evidence.observed_at.slice(0,10))}</small><p>${esc(g.evidence.note)}</p>${link(g.evidence.url,'Review original source')}`:''}</div>`).join('');
   const evidence=(l.evidence||[]).filter(e=>e.source_url).slice(-8);$('personSources').innerHTML=(q.warnings.length?`<p>${esc(q.warnings.join(' '))}</p>`:'')+'<h3>Available source material</h3>'+[l.linkedin_url?`<p>${link(l.linkedin_url,'LinkedIn profile')}</p>`:'',...evidence.map(e=>`<p>${link(e.source_url,e.source||'Source')} · ${esc(e.field)}: ${esc(e.value)} <small>${esc(e.source_date||'Publication date not supplied')} · reported, not independently verified</small></p>`)].join('');
@@ -89,20 +89,20 @@ $('reviewForm').onsubmit=async e=>{e.preventDefault();if(!current||$('saveReview
 $('runForm').onsubmit=async e=>{e.preventDefault();$('runButton').disabled=true;try{const result=await request('/api/lab/runs',{method:'POST',body:JSON.stringify({...config(),kind:'discovery',idempotency_key:crypto.randomUUID()})});notice(result.message||'Experiment queued.');await refresh(false);}catch(err){notice(err.message,true);}finally{$('runButton').disabled=false;}};
 $('saveSettings').onclick=async()=>{try{await request('/api/lab/settings',{method:'PUT',body:JSON.stringify({configuration:config(),daily_enabled:$('dailyEnabled').checked,daily_hour:Number($('dailyHour').value)})});notice($('dailyEnabled').checked?'Daily experiment saved. The background recovery schedule must be running.':'Settings saved; automatic daily runs are paused.');}catch(e){notice(e.message,true);}};
 $('assess').onclick=async()=>{if($('assess').disabled)return;$('assess').disabled=true;try{const result=await request('/api/lab/runs',{method:'POST',body:JSON.stringify({kind:'inventory',idempotency_key:crypto.randomUUID()})});notice(result.message);await refresh(false);}catch(e){notice(e.message,true);}finally{$('assess').disabled=false;}};
-$('refresh').onclick=()=>refresh();$('qualityFilter').onchange=()=>{offset=0;loadLeads().catch(e=>notice(e.message,true));};let searchTimer;$('search').oninput=()=>{offset=0;leadLoadVersion++;clearTimeout(searchTimer);searchTimer=setTimeout(()=>{offset=0;loadLeads().catch(e=>notice(e.message,true));},300);};$('previous').onclick=()=>{offset=Math.max(0,offset-50);loadLeads().catch(e=>notice(e.message,true));};$('next').onclick=()=>{offset+=50;loadLeads().catch(e=>notice(e.message,true));};
+$('refresh').onclick=()=>workspaceReady?refresh():init();$('qualityFilter').onchange=()=>{offset=0;loadLeads().catch(e=>notice(e.message,true));};let searchTimer;$('search').oninput=()=>{offset=0;leadLoadVersion++;clearTimeout(searchTimer);searchTimer=setTimeout(()=>{offset=0;loadLeads().catch(e=>notice(e.message,true));},300);};$('previous').onclick=()=>{offset=Math.max(0,offset-50);loadLeads().catch(e=>notice(e.message,true));};$('next').onclick=()=>{offset+=50;loadLeads().catch(e=>notice(e.message,true));};
 $('export').onclick=async()=>{if(!selected.size)return notice('Select one or more research records to export.',true);try{const blob=await request('/api/lab/export',{method:'POST',body:JSON.stringify({ids:[...selected]})});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='prospectpilot-research.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notice('Research export prepared. Excluded records were omitted.');}catch(e){notice(e.message,true);}};
 $('importOpen').onclick=()=>{$('importError').textContent='';$('importDialog').showModal();};$('importForm').onsubmit=async e=>{e.preventDefault();const button=e.submitter;button.disabled=true;try{const file=$('csvFile').files[0];if(!file||file.size>4000000)throw Error('Choose a CSV smaller than 4 MB.');const result=await request('/api/lab/import',{method:'POST',body:JSON.stringify({csv:await file.text(),source:$('importSource').value})});$('importDialog').close();notice(result.replayed?'This exact file was already imported.':`Imported ${result.result.added} new people; ${result.result.duplicates} duplicates, ${result.result.rejected} rejected, ${result.result.ambiguous} ambiguous matches. Claims remain unverified.`);await refresh(false);}catch(err){$('importError').textContent=err.message;}finally{button.disabled=false;}};
 $('costOpen').onclick=()=>{if(!runs.length)return notice('Create an experiment or import first, then record its costs.',true);$('costRun').innerHTML=runs.map(r=>`<option value="${esc(r.id)}">${esc(title(r.kind)+' · '+new Date(r.created_at).toLocaleString())}</option>`).join('');$('costError').textContent='';$('costDialog').showModal();};$('costForm').onsubmit=async e=>{e.preventDefault();e.submitter.disabled=true;try{await request('/api/lab/costs',{method:'POST',body:JSON.stringify({run_id:$('costRun').value,category:$('costCategory').value,amount_micros:Math.round(Number($('costAmount').value)*1000000),note:$('costNote').value,idempotency_key:crypto.randomUUID()})});$('costDialog').close();await refresh();}catch(err){$('costError').textContent=err.message;}finally{e.submitter.disabled=false;}};
-async function openRun(id){const version=++runDetailVersion;$('runDetails').textContent='Loading source results…';if(!$('runDialog').open)$('runDialog').showModal();try{const d=await request('/api/lab/runs/'+encodeURIComponent(id));if(version!==runDetailVersion)return;$('runDetails').innerHTML=`<p>${badge(d.run.status)} · ${esc(new Date(d.run.created_at).toLocaleString())}</p>`+d.tasks.map(t=>`<div class="source-card"><h3>${esc(title(t.source))} · ${esc(t.payload.company||'Saved lead assessment')}</h3>${badge(t.status)}<p>${t.source==='inventory'?(Number.isInteger(t.result?.assessed)?`${num(t.result.assessed)} assessed · ${num(t.result.failed)} failed · ${num(t.result.skipped)} skipped · ${num(t.result.remaining)} not attempted`:'Assessment counts were not recorded for this run.'):`${num(t.result?.added)} new · ${num(t.result?.duplicates)} existing · ${num(t.result?.rejected)} rejected · ${num(t.result?.ambiguous)} ambiguous`}</p><p>${esc((t.result?.errors||[]).join(' '))}</p>${(t.result?.documents||[]).slice(0,8).map(doc=>`<p>${link(doc.url||doc.source_url,'Original source')} <small>${esc(doc.scope||'')} · ${esc(doc.source_date||'date unknown')}</small></p>`).join('')}</div>`).join('')+`<h3>Recorded costs</h3>`+(d.costs.length?d.costs.map(c=>`<p>${esc(title(c.category))}: ${dollars(Number(c.amount_micros)/1000000)} · ${esc(c.basis)}<small>${esc(c.note)}</small></p>`).join(''):'<p>No costs recorded. This does not mean total operating cost is zero.</p>');}catch(e){if(version!==runDetailVersion)return;$('runDetails').innerHTML='<p role="alert">'+esc(e.message)+'</p>'+sourceIssues(runs.find(r=>r.id===id)||{})+'<p>Close this window and select Details to retry.</p>';}}
+async function openRun(id){const version=++runDetailVersion;$('runDetails').textContent='Loading source results…';if(!$('runDialog').open)$('runDialog').showModal();try{const d=await request('/api/lab/runs/'+encodeURIComponent(id));if(version!==runDetailVersion)return;$('runDetails').innerHTML=`<p>${badge(d.run.status)} · ${esc(new Date(d.run.created_at).toLocaleString())}</p>`+d.tasks.map(t=>`<div class="source-card"><h3>${esc(title(t.source))} · ${esc(t.payload.company||'Saved lead assessment')}</h3>${badge(t.status)}<p>${t.source==='inventory'?(Number.isInteger(t.result?.assessed)?`${num(t.result.assessed)} assessed · ${num(t.result.failed)} failed · ${num(t.result.skipped)} skipped · ${num(t.result.remaining)} not attempted`:'Assessment counts were not recorded for this run.'):`${num(t.result?.added)} new · ${num(t.result?.duplicates)} existing · ${num(t.result?.rejected)} rejected · ${num(t.result?.ambiguous)} ambiguous`}</p><p>${esc((t.result?.errors||[]).join(' '))}</p>${(t.result?.documents||[]).slice(0,8).map(doc=>`<p>${link(doc.url||doc.source_url,'Original source')} <small>${esc(doc.scope||'')} · ${esc(doc.source_date||'date unknown')}</small></p>`).join('')}</div>`).join('')+`<h3>Recorded costs</h3>`+(d.costs.length?d.costs.map(c=>`<p>${esc(title(c.category))}: ${dollars(Number(c.amount_micros)/1000000)} · ${esc(c.basis)}<small>${esc(c.note)}</small></p>`).join(''):'<p>No costs recorded. This does not mean total operating cost is zero.</p>');}catch(e){if(version!==runDetailVersion)return;$('runDetails').innerHTML='<p role="alert">'+esc(e.message)+'</p>'+sourceIssues(runs.find(r=>r.id===id)||{})+'<button id="retryRun" class="secondary">Retry source results</button>';$('retryRun').onclick=()=>{if(version===runDetailVersion)return openRun(id);};}}
 // Deleting is permanent, so it takes a second click.
 $('forgetLead').onclick=async()=>{const button=$('forgetLead');if(!current||button.disabled)return;const version=leadDetailVersion,id=current.lead.id;
   if(!button.dataset.armed){button.dataset.armed='1';button.textContent='Click again to delete permanently';return;}
   button.disabled=true;$('forgetError').textContent='';try{await request('/api/lab/leads/'+encodeURIComponent(id),{method:'DELETE'});selected.delete(id);if(version===leadDetailVersion)$('detail').close();notice('Deleted. Nothing about this person remains except a do-not-call block, if one existed.');await refresh(false);}
   catch(err){if(version===leadDetailVersion)$('forgetError').textContent=err.message;else notice(err.message,true);}finally{button.disabled=false;}};
-$('detail').addEventListener('close',()=>{leadDetailVersion++;current=null;$('saveReview').disabled=true;});
+$('detail').addEventListener('close',()=>{leadDetailVersion++;current=null;clearConversation();$('saveReview').disabled=true;});
 $('runDialog').addEventListener('close',()=>{runDetailVersion++;});
 document.querySelectorAll('[data-close]').forEach(e=>e.onclick=()=>$(e.dataset.close).close());
-document.addEventListener('visibilitychange',()=>{if(document.hidden){clearTimeout(pollTimer);}else refresh(false);});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){clearTimeout(pollTimer);}else if(workspaceReady)refresh(false);else init();});
 // The daily dial limit rolls over in the advisor's own day, and the browser is
 // the only thing here that knows which day that is. Reconciled on every load so
 // an advisor who moves is corrected without being asked, and without having to
@@ -114,24 +114,70 @@ async function syncTimeZone(){
   const stored=(await request('/api/lab/advisor-profile')).time_zone;
   if(stored!==detected)await request('/api/lab/advisor-profile',{method:'POST',body:JSON.stringify({time_zone:detected})});
 }
-async function init(){try{const [me,settings,sources]=await Promise.all([request('/api/lab/me'),request('/api/lab/settings'),request('/api/lab/sources')]);$('account').textContent=me.name||me.email;document.querySelectorAll('[data-legacy-tool]').forEach(link=>link.hidden=me.capabilities?.legacy_tools!==true);readSettings(settings);sourceReadiness=sources.readiness;const searchOption=document.querySelector('input[name="source"][value="web_search"]');searchOption.disabled=!sourceReadiness.web_search;if(searchOption.disabled)searchOption.checked=false;$('searchReadiness').textContent=sources.readiness.web_search?'Licensed search: '+(Number(sources.readiness.web_search_query_cost_micros)/1000000).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:6})+' per query, at most one query per employer. The daily budget is enforced before each request.':'Licensed web search is unavailable and has been deselected. Free company research and authorized CSV imports remain available.';$('sourceCatalog').innerHTML=sources.sources.map(s=>`<div class="source-card"><h3>${esc(s.name)} ${badge(s.mode)}</h3><p>${esc(s.supports)}</p><p>${esc(s.limit)}</p>${s.url?link(s.url,'Source information'):''}</div>`).join('');await syncTimeZone().catch(()=>{});await refresh();const requestedLead=new URL(location.href).searchParams.get('lead');if(requestedLead&&requestedLead.length<=100)await openLead(requestedLead);}catch(e){notice(e.message,true);}}
-async function loadActivity(id,version,reset=true){try{const data=await request('/api/lab/leads/'+encodeURIComponent(id)+'/activity');if(version!==leadDetailVersion)return;currentWorkflow=data;$('activityForm').hidden=false;if(reset){if(labels[data.action.field]){$('reviewField').value=data.action.field;reviewFields();}prepareActivity();}else renderConversation();}catch(e){if(version===leadDetailVersion){$('activityForm').hidden=true;$('conversationBrief').textContent='The activity record could not load. Close and reopen to retry. '+e.message;}}}
-let workOffset=0,workTotal=0,workRequest=0,currentWorkflow=null,activityKey='',activitySaving=false;
+let workspaceReady=false,initializing=false;
+async function init(){
+ if(initializing)return;
+ initializing=true;$('refresh').disabled=true;$('refresh').textContent='Loading workspace…';
+ $('runButton').disabled=true;$('saveSettings').disabled=true;
+ notice('Loading your workspace…');
+ try{const [me,settings,sources]=await Promise.all([request('/api/lab/me'),request('/api/lab/settings'),request('/api/lab/sources')]);$('account').textContent=me.name||me.email;document.querySelectorAll('[data-legacy-tool]').forEach(link=>link.hidden=me.capabilities?.legacy_tools!==true);readSettings(settings);sourceReadiness=sources.readiness;const searchOption=document.querySelector('input[name="source"][value="web_search"]');searchOption.disabled=!sourceReadiness.web_search;if(searchOption.disabled)searchOption.checked=false;$('searchReadiness').textContent=sources.readiness.web_search?'Licensed search: '+(Number(sources.readiness.web_search_query_cost_micros)/1000000).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:6})+' per query, at most one query per employer. The daily budget is enforced before each request.':'Licensed web search is unavailable and has been deselected. Free company research and authorized CSV imports remain available.';$('sourceCatalog').innerHTML=sources.sources.map(s=>`<div class="source-card"><h3>${esc(s.name)} ${badge(s.mode)}</h3><p>${esc(s.supports)}</p><p>${esc(s.limit)}</p>${s.url?link(s.url,'Source information'):''}</div>`).join('');workspaceReady=true;$('runButton').disabled=false;$('saveSettings').disabled=false;await syncTimeZone().catch(()=>{});await refresh();const requestedLead=new URL(location.href).searchParams.get('lead');if(requestedLead&&requestedLead.length<=100)await openLead(requestedLead);
+ }catch(e){
+  notice('Workspace setup could not load. Use Retry workspace to reconnect. '+e.message,true);
+  $('dailyTitle').textContent='Your workspace could not load.';
+  $('dailyDescription').textContent='Retry workspace to load your saved settings and next actions.';
+  $('workList').innerHTML='<div class="work-empty">Workspace unavailable. Use Retry workspace above.</div>';
+ }finally{
+  initializing=false;$('refresh').disabled=false;$('refresh').textContent=workspaceReady?'Refresh workspace':'Retry workspace';
+ }
+}
+let activityLoadVersion=0;
+function clearConversation(){
+  currentWorkflow=null;$('activityForm').hidden=true;
+  $('draftPanel').hidden=true;$('draftSubject').value='';$('draftBody').value='';$('draftCopied').textContent='';
+  $('contactActions').replaceChildren();
+}
+async function loadActivity(id,version,reset=true){
+  if(version!==leadDetailVersion)return;
+  const serial=++activityLoadVersion;clearConversation();
+  $('conversationBrief').textContent='Loading the conversation brief…';
+  try{
+    const data=await request('/api/lab/leads/'+encodeURIComponent(id)+'/activity');
+    if(version!==leadDetailVersion||serial!==activityLoadVersion)return;
+    currentWorkflow=data;$('activityForm').hidden=false;
+    if(reset){if(labels[data.action.field]){$('reviewField').value=data.action.field;reviewFields();}prepareActivity();}
+    else renderConversation();
+  }catch(e){
+    if(version!==leadDetailVersion||serial!==activityLoadVersion)return;
+    clearConversation();
+    $('conversationBrief').innerHTML=`<p role="alert">The conversation brief could not load. ${esc(e.message)}</p><button id="retryActivity" class="secondary">Retry conversation brief</button>`;
+    $('retryActivity').onclick=()=>{if(version===leadDetailVersion)return loadActivity(id,version,reset);};
+  }
+}
+let workLoading=false,workOffset=0,workTotal=0,workRequest=0,currentWorkflow=null,activityKey='',activitySaving=false;
 const workSelected=new Set();
 const when=value=>value?new Date(value).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'';
 const emptyMessages={resting:['Nobody is resting right now.','A prospect rests after six touches in 45 days, or after a sequence ends without a reply. They return automatically when the rest period is over.'],today:['Your next actions will appear here.','Import an existing provider CSV or discover people at named employers. Each prospect will have a specific evidence task.'],due:['You’re caught up on due follow-ups.','Scheduled follow-ups return here when their saved time arrives.'],ready:['No prospects are ready for an initial conversation yet.','Review age, US residence, and contact ownership first. Missing retirement and financial evidence remains a conversation topic, not a verified claim.'],review:['No evidence reviews in this view.','Try another worklist or import research candidates.'],enrich:['No missing-contact records in this view.','Contact details that are present but unverified appear under Evidence to review.'],scheduled:['No follow-ups scheduled.','Open a prospect, record the outcome, and choose a next follow-up time.'],meetings:['No meetings saved yet.','Choose Meeting booked on a prospect and record the agreed time.'],clients:['No clients recorded yet.','Choose Became a client on a prospect you have spoken with. They leave the worklist and are counted on the scoreboard.'],closed:['No closed or excluded records.','Contact restrictions and reviewed disqualifications remove records from active work. Clients are listed separately.'],all:['No prospects found.','Import a CSV or change your search.']};
-function selectionLabel(){$('workSelection').textContent=`${workSelected.size} selected`;$('enrichExport').disabled=!workSelected.size;}
+function selectionLabel(){$('workSelection').textContent=`${workSelected.size} selected`;$('enrichExport').disabled=workLoading||!workSelected.size;}
+function loadingWorklist(){
+  workLoading=true;
+  $('startNext').disabled=true;$('startNext').onclick=null;
+  $('workPrevious').disabled=true;$('workNext').disabled=true;
+  $('workList').setAttribute('aria-busy','true');
+  $('workList').innerHTML='<div class="work-empty" role="status">Loading prospects…</div>';
+  $('workPageInfo').textContent='Loading…';selectionLabel();
+}
 async function loadWorklist(){
-  $('startNext').disabled=true;
-  $('startNext').onclick=null;
-  const serial=++workRequest;const data=await request('/api/lab/worklist?'+new URLSearchParams({view:$('workView').value,search:$('workSearch').value,offset:workOffset,limit:24}));if(serial!==workRequest)return;
+  const serial=++workRequest;loadingWorklist();
+  try{
+  const data=await request('/api/lab/worklist?'+new URLSearchParams({view:$('workView').value,search:$('workSearch').value,offset:workOffset,limit:24}));if(serial!==workRequest)return;
   if(workOffset>0&&workOffset>=data.total){workOffset=0;return loadWorklist();}
   loadScoreboard().catch(()=>{});
   workTotal=data.total;$('workDue').textContent=num(data.counts.due);$('workReady').textContent=num(data.counts.ready);$('workConversations').textContent=num(data.activity.conversations);$('workMeetings').textContent=num(data.activity.meetings);
   if(data.dials){$('workDials').textContent=num(data.dials.remaining);$('workDialsNote').textContent=data.dials.reason;}
   const first=data.items.find(item=>!terminal(item.action));
-  $('dailyTitle').textContent=data.counts.all===0?'Start with the contacts you have.':first?'Your next step is ready.':'You’re caught up in this view.';
-  $('dailyDescription').textContent=first?`${first.action.label}: ${first.lead.first_name||''} ${first.lead.last_name||''}. ${first.action.reason}`:data.counts.all===0?'Import an authorized CSV, or choose contacts from your directory. We’ll organize the next steps here.':'Choose another queue, search for a prospect, or bring in a new list.';
+  const emptyWorkspace=data.counts.all===0&&!$('workSearch').value;
+  $('dailyTitle').textContent=emptyWorkspace?'Start with the contacts you have.':first?'Your next step is ready.':'You’re caught up in this view.';
+  $('dailyDescription').textContent=first?`${first.action.label}: ${first.lead.first_name||''} ${first.lead.last_name||''}. ${first.action.reason}`:emptyWorkspace?'Import an authorized CSV, or choose contacts from your directory. We’ll organize the next steps here.':'Choose another queue, search for a prospect, or bring in a new list.';
   $('startNext').textContent=first?($('workView').value==='today'&&!$('workSearch').value?'Start next prospect →':'Open first result →'):'Import a contact list →';
   $('startNext').disabled=false;
   $('startNext').onclick=first?()=>openLead(first.lead.id):()=>$('quickImport').click();
@@ -140,7 +186,19 @@ async function loadWorklist(){
   document.querySelectorAll('[data-work-open]').forEach(e=>e.onclick=()=>openLead(e.dataset.workOpen));
   document.querySelectorAll('[data-work-select]').forEach(e=>e.onchange=()=>{e.checked?workSelected.add(e.dataset.workSelect):workSelected.delete(e.dataset.workSelect);selectionLabel();});
   $('workPageInfo').textContent=(data.total?`${num(workOffset+1)}–${num(Math.min(workOffset+24,data.total))} of ${num(data.total)}`:'0 prospects')+(data.truncated?` · Showing a working set of ${num(data.scanned)} / ${num(data.scope_total)}; search to narrow.`:'');
-  $('workPrevious').disabled=!workOffset;$('workNext').disabled=workOffset+24>=workTotal;selectionLabel();
+  $('workPrevious').disabled=!workOffset;$('workNext').disabled=workOffset+24>=workTotal;selectionLabel();return true;
+  }catch(error){
+    if(serial!==workRequest)return;
+    workSelected.clear();
+    $('dailyTitle').textContent='Your worklist could not load.';
+    $('dailyDescription').textContent='Retry to load the current queue before opening your next prospect.';
+    $('workList').innerHTML=`<div class="work-empty" role="alert"><h3>Could not load prospects.</h3><p>${esc(error.message)}</p><button id="retryWorklist" class="secondary">Retry</button></div>`;
+    $('workPageInfo').textContent='Results unavailable';
+    $('retryWorklist').onclick=async()=>{try{const loaded=await loadWorklist();if(loaded)notice('Worklist updated.');}catch(e){notice(e.message,true);}};
+    throw error;
+  }finally{
+    if(serial===workRequest){workLoading=false;$('workList').setAttribute('aria-busy','false');selectionLabel();}
+  }
 }
 // What the prospect actually did. The record stores the channel, so the history
 // should not say they called when they sent an email.
@@ -241,12 +299,12 @@ $('activityForm').onsubmit=async e=>{e.preventDefault();if(!current||!currentWor
 }catch(err){if(version===leadDetailVersion)$('activityError').textContent=err.message;else notice(err.message,true);}finally{activitySaving=false;$('saveActivity').disabled=false;}};
 $('startImport').onclick=()=>$('quickImport').click();
 document.querySelectorAll('[data-queue]').forEach(button=>button.onclick=()=>{$('workView').value=button.dataset.queue;$('workSearch').value='';workOffset=0;loadWorklist().catch(e=>notice(e.message,true));});
-$('quickImport').onclick=()=>$('importOpen').click();
+$('quickImport').onclick=()=>location.assign('/prospect?import=1');
 $('findProspects').onclick=()=>{$('researchTools').open=true;$('runForm').scrollIntoView({behavior:'smooth',block:'start'});$('employers').focus({preventScroll:true});};
 $('workView').onchange=()=>{workOffset=0;loadWorklist().catch(e=>notice(e.message,true));};let workSearchTimer;
-$('workSearch').oninput=()=>{workRequest++;clearTimeout(workSearchTimer);workSearchTimer=setTimeout(()=>{workOffset=0;loadWorklist().catch(e=>notice(e.message,true));},250);};
+$('workSearch').oninput=()=>{workRequest++;loadingWorklist();clearTimeout(workSearchTimer);workSearchTimer=setTimeout(()=>{workOffset=0;loadWorklist().catch(e=>notice(e.message,true));},250);};
 $('workPrevious').onclick=()=>{workOffset=Math.max(0,workOffset-24);loadWorklist().catch(e=>notice(e.message,true));};$('workNext').onclick=()=>{workOffset+=24;loadWorklist().catch(e=>notice(e.message,true));};
-$('enrichExport').onclick=async()=>{if(!workSelected.size)return;try{const blob=await request('/api/lab/enrichment-export',{method:'POST',body:JSON.stringify({ids:[...workSelected]})});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='prospectpilot-enrichment.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notice('Provider matching CSV prepared. Import the enriched results to merge them into your existing prospects.');}catch(e){notice(e.message,true);}};
+$('enrichExport').onclick=async()=>{if(workLoading||!workSelected.size)return;try{const blob=await request('/api/lab/enrichment-export',{method:'POST',body:JSON.stringify({ids:[...workSelected]})});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='prospectpilot-enrichment.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notice('Provider matching CSV prepared. Import the enriched results to merge them into your existing prospects.');}catch(e){notice(e.message,true);}};
 $('profileOpen').onclick=async()=>{
   $('profileError').textContent='';
   try{const p=await request('/api/lab/advisor-profile');
