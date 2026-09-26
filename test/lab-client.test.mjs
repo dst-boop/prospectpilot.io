@@ -224,3 +224,23 @@ test('primary contact import routes to the enhanced directory importer',()=>{
  const c=client();c.run("location.assign=value=>location.href=value");c.element('quickImport').onclick();
  assert.equal(c.run('location.href'),'/prospect?import=1');
 });
+
+test('outcome conflict refresh keeps the note and uses the latest signature on retry',async()=>{
+ const c=client({activity:true});c.run("current={lead:{id:'A'}};currentWorkflow={action:{signature:'old'}};activityKey='same-attempt';leadDetailVersion=1;renderConversation=()=>{}");
+ c.element('activityOutcome').value='connected';c.element('activityNote').value='Unsaved conversation note';c.element('activityNext').value='';
+ const save=c.element('activityForm').onsubmit({preventDefault(){}});c.pending[0].respond({detail:'This prospect changed.'},409);await save;
+ assert.match(c.element('activityError').innerHTML,/Refresh prospect and keep note/);
+ const recover=c.element('reloadActivity').onclick();assert.equal(c.pending[1].url,'/api/lab/leads/A');
+ c.pending[1].respond(lead('A'));await settle();assert.equal(c.pending[2].url,'/api/lab/leads/A/activity');
+ c.pending[2].respond({action:{signature:'fresh'},activities:[]});await recover;
+ assert.equal(c.element('activityNote').value,'Unsaved conversation note');assert.equal(c.element('activityOutcome').value,'connected');
+ assert.equal(c.run('currentWorkflow.action.signature'),'fresh');
+ const retry=c.element('activityForm').onsubmit({preventDefault(){}});
+ const body=JSON.parse(c.pending[3].options.body);assert.equal(body.signature,'fresh');assert.equal(body.note,'Unsaved conversation note');assert.equal(body.idempotency_key,'same-attempt');
+ c.pending[3].respond({saved:true});await retry;
+});
+test('conflict refresh cannot replace a different prospect opened while waiting',async()=>{
+ const c=client();c.run("leadDetailVersion=1;current={lead:{id:'A'}};activityConflict('A',1)");
+ const pending=c.element('reloadActivity').onclick();c.run("leadDetailVersion=2;current={lead:{id:'B'}}");
+ c.pending[0].respond(lead('A'));await pending;assert.equal(c.run('current.lead.id'),'B');assert.equal(c.pending.length,1);
+});
