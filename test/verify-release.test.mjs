@@ -79,7 +79,7 @@ test('a build serving the wrong rules fails on the fields, not the identifier',a
 test('an API answering without a session fails, however ordinary the response looks',async()=>{
   const report = await run(service({api: res =>
     res.writeHead(200, {'content-type': 'application/json'}).end(JSON.stringify({items: [], counts: {}}))}));
-  assert.deepEqual(failed(report), ['unauthenticated /api/lab/worklist', 'unauthenticated /api/lab/scoreboard',
+  assert.deepEqual(failed(report), ['unauthenticated /api/lab/me', 'unauthenticated /api/lab/worklist', 'unauthenticated /api/lab/scoreboard',
     'unauthenticated /api/prospect/contacts', 'unauthenticated /api/prospect/me']);
 });
 

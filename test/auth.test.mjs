@@ -27,3 +27,15 @@ test('any verified Google or password account can create a session without owner
  for(const provider of ['google.com','password']){const {handler}=setup({uid:'new-user',email:'new-user@example.net',firebase:{sign_in_provider:provider}});const response=await handler(req('/auth/session',{method:'POST',headers:{origin},body:JSON.stringify({idToken:'valid'})}));assert.equal(response.status,200);assert.match(response.headers.get('set-cookie'),/HttpOnly; Secure/);}
 });
 test('public accounts cannot reach legacy administrative tools',async()=>{const {handler,getSeen}=setup({uid:'new-user',email:'new-user@example.net'});assert.equal((await handler(req('/api/me',{headers:{cookie:'__session=signed-session'}}))).status,403);assert.equal(getSeen(),undefined);});
+
+test('a verified non-admin can initialize the advisor workspace without legacy admin access',async()=>{
+ const member={...claims,uid:'regular-member',email:'member@example.net',name:'Workspace Member'};
+ const handler=createHandler({auth:{verifySessionCookie:async token=>{if(token!=='member-session')throw Error();return member;}},origins:[origin],ownerEmail:email,lab:{},labPage:'member workspace'});
+ const headers={cookie:'__session=member-session'};
+ const identity=await handler(req('/api/lab/me',{headers}));assert.equal(identity.status,200);
+ assert.deepEqual(await identity.json(),{uid:member.uid,email:member.email,name:member.name});
+ assert.equal(identity.headers.get('cache-control'),'private, no-store');
+ assert.equal(await (await handler(req('/lab',{headers}))).text(),'member workspace');
+ assert.equal((await handler(req('/api/me',{headers}))).status,403);
+ for(const cookie of ['', '__session=expired'])assert.equal((await handler(req('/api/lab/me',{headers:{cookie}}))).status,401);
+});

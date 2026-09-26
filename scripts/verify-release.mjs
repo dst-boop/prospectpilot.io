@@ -154,7 +154,7 @@ export async function verifyRelease({base, release = null, expect = EXPECTED, al
   }
 
   // The regression that matters most: an API answering without a session.
-  for (const path of ['/api/lab/worklist', '/api/lab/scoreboard', '/api/prospect/contacts', '/api/prospect/me']) {
+  for (const path of ['/api/lab/me', '/api/lab/worklist', '/api/lab/scoreboard', '/api/prospect/contacts', '/api/prospect/me']) {
     await attempt('unauthenticated ' + path, async () => {
       const {status, headers, text} = await call(path);
       let detail = null;
