@@ -13,20 +13,23 @@ async function tx(pool,fn){const c=await pool.connect();let broken;try{await c.q
 // Whose phone check this is: the number and the name it was matched against.
 export const phoneCheckFor=contact=>hash(JSON.stringify([String(contact.phone||''),nameKey(contact.first_name),nameKey(contact.last_name)]));
 export const phoneCheckCurrent=contact=>!!contact.phone_check&&contact.phone_check.for===phoneCheckFor(contact);
+// Web research answered for this name at this employer; a new identity is a new question.
+export const webResearchFor=contact=>hash(JSON.stringify(['first_name','last_name','company','city','state'].map(k=>nameKey(contact[k]))));
+export const webResearchCurrent=contact=>!!contact.web_research&&contact.web_research.for===webResearchFor(contact);
 export const PHONE_STATUS_LABELS={owner_matched:'the number is listed under this contact’s name',wrong_person:'the number is listed under someone else — do not dial it for this contact',invalid:'the number is not a working line',checked:'the line is real but no owner name was returned'};
 export function providerJobConfig(env=process.env){
  const read=(key,fallback=null)=>{const value=env[key];if(value===undefined||value==='')return fallback;const n=Number(value);if(!Number.isSafeInteger(n)||n<0||n>1000000000)throw Error('Invalid '+key);return n;};
- return {dailyBudgetMicros:read('PROSPECT_DAILY_BUDGET_MICROS',0),prices:{search:read('PDL_SEARCH_RECORD_COST_MICROS'),enrich:read('PDL_ENRICH_COST_MICROS'),verify:read('HUNTER_VERIFY_COST_MICROS'),check_phone:read('TRESTLE_PHONE_COST_MICROS')}};
+ return {dailyBudgetMicros:read('PROSPECT_DAILY_BUDGET_MICROS',0),prices:{search:read('PDL_SEARCH_RECORD_COST_MICROS'),enrich:read('PDL_ENRICH_COST_MICROS'),verify:read('HUNTER_VERIFY_COST_MICROS'),check_phone:read('TRESTLE_PHONE_COST_MICROS'),web_research:read('WEB_RESEARCH_COST_MICROS')}};
 }
-export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,prices:{}},dispatch=async()=>false,pacingMs={pdl:6100,hunter:250,dns:100,trestle:250}}){
- const capabilities={search:'search',enrich:'enrichment',verify:'email_verification',check_domain:'domain_check',check_phone:'phone_check'};
- const providerFor=action=>({check_domain:'dns',verify:'hunter',check_phone:'trestle'})[action]||'pdl';
+export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,prices:{}},dispatch=async()=>false,pacingMs={pdl:6100,hunter:250,dns:100,trestle:250,anthropic:1000}}){
+ const capabilities={search:'search',enrich:'enrichment',verify:'email_verification',check_domain:'domain_check',check_phone:'phone_check',web_research:'web_research'};
+ const providerFor=action=>({check_domain:'dns',verify:'hunter',check_phone:'trestle',web_research:'anthropic'})[action]||'pdl';
  const quote=(action,size=1)=>{if(action==='check_domain')return 0;const price=config.prices[action];if(!Number.isSafeInteger(price)||price<0)throw fail(503,'Configure a per-request or per-record price before using this provider.');return price*size;};
  const ready=action=>providers.readiness[capabilities[action]]===true&&(action==='check_domain'||Number.isSafeInteger(config.prices[action])&&config.prices[action]>=0);
  async function summary(user){const charges=(await pool.query(`SELECT COALESCE(sum(reserved_micros),0) AS reserved FROM prospect_charges WHERE user_id=$1 AND reserved_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,[user.uid])).rows[0];return {providers:providers.readiness,prices:{...config.prices,check_domain:0},daily_budget_micros:config.dailyBudgetMicros,reserved_today_micros:Number(charges.reserved),actions:Object.fromEntries(Object.keys(capabilities).map(a=>[a,ready(a)])),cost_basis:'Reserved maximum at configured prices, not actual provider billing. The daily cap is shared by this deployment.'};}
  async function enqueue(user,input){
   if(!input||typeof input!=='object'||Array.isArray(input))throw fail(422,'Provide a provider job object.');
-  const action=input.action;if(!Object.hasOwn(capabilities,action))throw fail(422,'Choose search, enrich, verify, check_domain or check_phone.');
+  const action=input.action;if(!Object.hasOwn(capabilities,action))throw fail(422,'Choose search, enrich, verify, check_domain, check_phone or web_research.');
   const key=String(input.idempotency_key||'');if(!/^[a-zA-Z0-9_-]{8,100}$/.test(key))throw fail(422,'A stable request key is required.');
   let payloads=[];
   if(action==='search'){
@@ -39,7 +42,7 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
    payloads=[{filters:{...filters,scroll_token,size},list_id:input.list_id||null,quote:ready(action)?quote(action,size):0}];
   }else{
    if(!Array.isArray(input.ids)||!input.ids.length||input.ids.length>500||input.ids.some(x=>typeof x!=='string'||x.length>100))throw fail(422,'Select 1–500 contacts.');
-   if(input.recheck!==undefined&&(action!=='check_phone'||typeof input.recheck!=='boolean'))throw fail(422,'Re-check applies only to phone checks.');
+   if(input.recheck!==undefined&&(!['check_phone','web_research'].includes(action)||typeof input.recheck!=='boolean'))throw fail(422,'Re-check applies only to phone checks and web research.');
    // A recorded phone check is an answer, and is only bought again when the
    // operator asks for exactly that.
    payloads=[...new Set(input.ids)].sort().map(contact_id=>({contact_id,quote:ready(action)?quote(action):0,...(input.recheck?{recheck:true}:{})}));
@@ -77,6 +80,8 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   if(task.action==='check_phone'&&!contact.phone){await finish(c,task,'skipped',{message:'This contact has no phone number to check.'});return {skipped:true};}
   if(task.action==='check_phone'&&!/^[2-9]\d{2}[2-9]\d{6}$/.test(String(contact.phone).replace(/\D/g,'').replace(/^1(?=\d{10}$)/,''))){await finish(c,task,'skipped',{message:'This is not a US phone number, so it was not sent for a check. No cost was reserved.'});return {skipped:true};}
   if(task.action==='check_phone'&&!task.payload.recheck&&phoneCheckCurrent(contact)){await finish(c,task,'skipped',{message:'This number already has a recorded phone check. It was not bought again; choose re-check to pay for a new one.'});return {skipped:true};}
+  if(task.action==='web_research'&&!(contact.company&&contact.first_name&&contact.last_name)){await finish(c,task,'skipped',{message:'A name and employer are needed to research someone on the web. No cost was reserved.'});return {skipped:true};}
+  if(task.action==='web_research'&&!task.payload.recheck&&webResearchCurrent(contact)){await finish(c,task,'skipped',{message:'This contact already has a recorded web search. It was not run again; choose re-check to pay for a new one.'});return {skipped:true};}
   if(task.action==='check_domain'&&!contact.email){await finish(c,task,'skipped',{message:'This contact has no email domain to check.'});return {skipped:true};}
   if((task.action==='verify'||task.action==='enrich'&&!linkedinURL(contact.linkedin_url))&&isNonPublicMailDomain(String(contact.email||'').split('@')[1])){
    await finish(c,task,'skipped',{message:'This email uses a non-public domain. No new paid provider request or cost reservation was made.'});return {skipped:true};
@@ -132,6 +137,14 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   if(!row||row.payload.suppressed||sig(row.payload)!==task.payload.signature){await finish(c,task,'skipped',{message:'Contact changed or was suppressed while the provider was working. Results were not applied.'});return;}
   const contact={...row.payload};
   if(result.suppressed){contact.suppressed=true;await c.query('UPDATE prospect_contacts SET payload=$1::jsonb,updated_at=now() WHERE id=$2',[JSON.stringify(contact),task.contact_id]);await finish(c,task,'skipped',{message:'Provider reported a suppression; the contact is now suppressed.'});return;}
+  if(task.action==='web_research'){
+   if(!validObservationTime(result.checked_at)||!Array.isArray(result.findings))throw fail(502,'Invalid web research result.');
+   // Unreviewed by design: stored beside the contact, changing no field. A
+   // search that found nothing is recorded too, so it is not bought twice.
+   contact.web_research={for:webResearchFor(contact),found:result.findings.length>0,summary:result.summary,findings:result.findings,model:result.model,provider:'anthropic',checked_at:result.checked_at,reviewed:false};
+   await c.query('UPDATE prospect_contacts SET payload=$1::jsonb,updated_at=now() WHERE id=$2',[JSON.stringify(contact),task.contact_id]);
+   await finish(c,task,'completed',{message:result.findings.length?`Web research: ${result.findings.length} sourced finding${result.findings.length===1?'':'s'} to review. Nothing was changed on the contact.`:'Web research found nothing that clearly matches this person. The answer is recorded, so it is not bought again.'});return;
+  }
   if(task.action==='check_phone'){
    const at=result.checked_at||new Date().toISOString();
    if(result.phone!==undefined&&result.phone!==contact.phone||!validObservationTime(at))throw fail(502,'Invalid phone-check result.');
@@ -169,7 +182,7 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   await c.query('UPDATE prospect_contacts SET payload=$1::jsonb,identity_keys=$2::jsonb,updated_at=now() WHERE id=$3',[JSON.stringify(contact),JSON.stringify(contactIdentities(contact)),task.contact_id]);
   await finish(c,task,'completed',{message:task.action==='check_domain'?`Domain check: ${DOMAIN_CHECK_LABELS[result.status]}. This does not verify the individual mailbox.`:task.action==='verify'?(contact.email_status!==result.status?'Verification saved as historical evidence; a newer domain check found no mail route. Email remains unverified.':`Email verification: ${result.status}.`):'Provider enrichment saved; imported phone information remains unverified.'});
  });}
- async function tick(){const task=await claim();if(!task)return false;if(task.skipped)return true;try{const result=await(task.action==='search'?providers.search(task.payload.filters):task.action==='enrich'?providers.enrich(task.contact):task.action==='check_domain'?providers.checkDomain(task.contact):task.action==='check_phone'?providers.checkPhone(task.contact):providers.verifyEmail(task.contact));await apply(task,result);}catch{await tx(pool,c=>finish(c,task,'needs_attention',{message:'Provider request or result processing failed. Reserved cost retained; automatic retry disabled. Review provider billing before launching another job.'}));}return true;}
+ async function tick(){const task=await claim();if(!task)return false;if(task.skipped)return true;try{const result=await(task.action==='search'?providers.search(task.payload.filters):task.action==='enrich'?providers.enrich(task.contact):task.action==='check_domain'?providers.checkDomain(task.contact):task.action==='check_phone'?providers.checkPhone(task.contact):task.action==='web_research'?providers.webResearch(task.contact):providers.verifyEmail(task.contact));await apply(task,result);}catch{await tx(pool,c=>finish(c,task,'needs_attention',{message:'Provider request or result processing failed. Reserved cost retained; automatic retry disabled. Review provider billing before launching another job.'}));}return true;}
  async function jobs(user,id){const rows=(await pool.query(`SELECT j.*,count(t.id)::int AS total,count(t.id) FILTER(WHERE t.status=ANY($2::text[]))::int AS finished,COALESCE(sum(c.reserved_micros),0) AS reserved_micros FROM prospect_jobs j LEFT JOIN prospect_tasks t ON t.job_id=j.id LEFT JOIN prospect_charges c ON c.task_id=t.id WHERE j.user_id=$1 AND ($3::text IS NULL OR j.id=$3) GROUP BY j.id ORDER BY j.created_at DESC LIMIT 30`,[user.uid,terminal,id||null])).rows;
   if(id&&!rows.length)throw fail(404,'Job not found.');if(id)return {job:rows[0],tasks:(await pool.query('SELECT id,contact_id,action,status,attempts,result,completed_at FROM prospect_tasks WHERE job_id=$1 ORDER BY created_at,id',[id])).rows};return {jobs:rows};
  }

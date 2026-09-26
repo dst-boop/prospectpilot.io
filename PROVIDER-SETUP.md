@@ -28,6 +28,8 @@ Configure the same values on **both** the authenticated `prospectpilot` Cloud Ru
 | `HUNTER_VERIFY_COST_MICROS` | Configured maximum cost per verification request |
 | `TRESTLE_API_KEY` | Trestle (WhitePages) Phone Intel key, sent as the `x-api-key` header |
 | `TRESTLE_PHONE_COST_MICROS` | Configured maximum cost per phone check |
+| `ANTHROPIC_API_KEY` | Claude API key for **Research on the web** (Messages API with the server-side web search tool) |
+| `WEB_RESEARCH_COST_MICROS` | Configured maximum cost per contact researched (tokens plus up to 5 searches) |
 | `PROSPECT_DAILY_BUDGET_MICROS` | Shared maximum new reservations per UTC day; defaults to 0 |
 
 Prices intentionally have no defaults. Set them from your own provider contract. A value of zero means an explicitly configured zero-cost allowance, not missing configuration. This is local budget accounting and does not replace provider credit balance checks or invoices. Match pricing and budget on every web and worker instance.
@@ -40,7 +42,8 @@ Use the existing release process after configuration. Migrations 008 and 009 mus
 2. Select contacts and choose **Enrich selected**. An existing email or LinkedIn profile is required for precise identity matching. Missing fields can be added; existing identifiers and suppressions are preserved. Phone results remain provider-reported and unverified.
 3. Select contacts and choose **Verify emails**. Hunter's valid, invalid, catch-all and unknown outcomes remain distinct. A verification badge expires after 30 days and is refreshed before filtering or exporting. A current valid check for the same address is reused without sending another provider request. Verification is not a guarantee of delivery or authorization to contact.
 4. Select contacts and choose **Check phone owners** (Trestle Phone Intel, one lookup per number). Each contact's primary phone gets a recorded answer: whether it is a working line, its type (mobile numbers carry stricter TCPA rules), carrier and prepaid flag, and whether the number is listed under this contact's name. A number listed under someone else is marked **wrong person**; the other person's name is compared and discarded, never stored. A miss is recorded too. A recorded check is not bought again unless you tick **Re-check numbers already checked**, which prices the repeat. Editing the phone or name retires the old answer. Numbers that cannot be US lines are refused before any request (Trestle rejects them unbilled anyway). Trestle may require requests from an allowlisted IP: if the key is IP-restricted, route the service and worker egress through Cloud NAT with a static address, as Lead Qualifier does.
-5. Review progress in the jobs panel, then export or organize the contacts into lists. The page can close while the durable worker processes tasks.
+5. Select contacts and choose **Research on the web**. Claude searches the public web for each name at their employer and returns only findings it can quote, each with the page it came from; a finding citing a page the search did not return is discarded. Donation records (FEC, OpenSecrets, FollowTheMoney) and LinkedIn are blocked, and nothing about wealth, income or age is inferred. Findings are saved **unreviewed** in the contact's details and change no field — read the source, then use Correct contact details if it holds. A search that finds nothing is recorded too; neither is repeated unless you choose to research again. Changing the contact's name, employer or location retires the old findings.
+6. Review progress in the jobs panel, then export or organize the contacts into lists. The page can close while the durable worker processes tasks.
 
 ## Costs, recovery and limits
 

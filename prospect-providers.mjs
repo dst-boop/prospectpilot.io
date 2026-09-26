@@ -1,6 +1,7 @@
 import {emailAddress,linkedinURL,nameKey} from './lead-quality.mjs';
 import {normalizeContact,stateName,contactEmail,contactPhone} from './prospect-data-quality.mjs';
 import {createDomainChecker,isNonPublicMailDomain} from './prospect-domain-check.mjs';
+import {createWebResearch} from './web-research.mjs';
 const fail=(status,message)=>Object.assign(Error(message),{status});
 const fields='id,first_name,last_name,job_title,job_company_name,job_company_website,job_company_industry,job_title_levels,location_country,location_region,location_locality,linkedin_url,work_email,phone_numbers';
 const normalizeProfile=value=>linkedinURL(value&&!/^https?:/.test(value)?'https://'+value:value);
@@ -46,7 +47,7 @@ export function phoneCheckRecord(response,digits,contact){
  const surname=names.some(n=>last&&n.split(' ').includes(last)),full=surname&&names.some(n=>first&&n.split(' ').includes(first)&&n.split(' ').includes(last));
  return {...line,name_match:names.length?surname:null,first_name_match:names.length?full:null};
 }
-export function createProspectProviders({pdlKey='',hunterKey='',trestleKey='',trestleBase='https://api.trestleiq.com',fetcher=fetch,now=()=>new Date(),domainChecker=createDomainChecker()}={}){
+export function createProspectProviders({pdlKey='',hunterKey='',trestleKey='',anthropicKey='',webResearch=createWebResearch({apiKey:anthropicKey}),trestleBase='https://api.trestleiq.com',fetcher=fetch,now=()=>new Date(),domainChecker=createDomainChecker()}={}){
  async function request(url,options={}){
   let response;try{response=await fetcher(url,{...options,redirect:'error',signal:AbortSignal.timeout(30000)});}catch{throw fail(502,'Provider request could not be completed; billing outcome may be unknown.');}
   if(response.status===202){await response.body?.cancel();return {pending:true};}
@@ -119,5 +120,5 @@ export function createProspectProviders({pdlKey='',hunterKey='',trestleKey='',tr
   const record=phoneCheckRecord(response,digits,contact);if(record.not_found)return record;
   return {...record,phone:contact.phone,provider:'trestle',checked_at:now().toISOString()};
  }
- return {readiness:{search:!!pdlKey,enrichment:!!pdlKey,email_verification:!!hunterKey,domain_check:true,phone_check:!!trestleKey},search,enrich,verifyEmail,checkDomain:domainChecker,checkPhone};
+ return {readiness:{search:!!pdlKey,enrichment:!!pdlKey,email_verification:!!hunterKey,domain_check:true,phone_check:!!trestleKey,web_research:webResearch.ready},search,enrich,verifyEmail,checkDomain:domainChecker,checkPhone,webResearch:webResearch.research};
 }

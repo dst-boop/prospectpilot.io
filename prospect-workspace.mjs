@@ -173,6 +173,7 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
    if(changes.email){next.email_status=next.email?'unverified':'missing';}
    // A phone check answered for one number and name; after either changes it is someone else's answer.
    if(changes.phone||changes.first_name||changes.last_name)delete next.phone_check;
+   if(['first_name','last_name','company','city','state'].some(k=>changes[k]))delete next.web_research;
    if(changes.phone){next.phone_status=next.phone?'unverified':'missing';}
    if(changes.phone||changes.mobile_phone){next.phone_import={...(old.phone_import||{})};if(changes.phone){next.phone_origin=normalized.phone_origin;if(next.phone_import.direct)next.phone_import.direct={...next.phone_import.direct,status:'reviewed'};}if(changes.mobile_phone&&next.phone_import.mobile)next.phone_import.mobile={...next.phone_import.mobile,status:'reviewed'};}
    if(changes.first_name||changes.last_name){next.email_status=next.email?'unverified':'missing';next.phone_status=next.phone?'unverified':'missing';}
