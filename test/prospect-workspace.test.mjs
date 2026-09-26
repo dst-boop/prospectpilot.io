@@ -97,7 +97,7 @@ test('list rename and deletion preserve contacts and remove stale saved-search s
  const filters=(await call('saved-searches','GET')).searches[0].filters;assert.equal(filters.list_id,undefined);assert.equal(filters.title,'Director');
  await assert.rejects(call('saved-searches/'+saved.id,'DELETE',other),{status:404});await call('saved-searches/'+saved.id,'DELETE');assert.equal((await call('saved-searches','GET')).searches.length,0);
 }));
-async function fixture(fn){const db=new PGlite();try{await db.exec(readFileSync(new URL('../migrations/008-prospect-workspace.sql',import.meta.url),'utf8'));const app=createProspectWorkspace({pool:{query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})}});await fn(app,db);}finally{await db.close();}}
+async function fixture(fn){const db=new PGlite();try{await db.exec(readFileSync(new URL('../migrations/008-prospect-workspace.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/017-forget.sql',import.meta.url),'utf8'));const app=createProspectWorkspace({pool:{query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})}});await fn(app,db);}finally{await db.close();}}
 test('contact import, search, pagination, lists and export are owner-scoped',()=>fixture(async app=>{
  const list=await app.createList(user,{name:'Operations'});assert.equal((await app.importCSV(user,{csv,source:'Authorized CSV',list_id:list.id})).added,1);
  const result=await app.search(user,{title:'director',industry:'manufacturing',has_phone:'true',list_id:list.id});assert.equal(result.total,1);const id=result.contacts[0].id;assert.equal(result.contacts[0].email_status,'unverified');

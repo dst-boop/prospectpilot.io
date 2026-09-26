@@ -69,8 +69,8 @@ $('deleteList').onclick=async()=>{const button=$('deleteList');button.disabled=t
 let contactViewVersion=0;
 async function showContact(id,prepare=false){
  const version=++contactViewVersion;
-  if(!$('contactDialog')){document.body.insertAdjacentHTML('beforeend','<dialog id="contactDialog"><div class="dialog-title"><h2 id="contactTitle">Contact details</h2><button class="secondary" id="closeContact">Close</button></div><div id="contactBody"></div><p id="contactError" role="alert"></p><button id="toggleSuppression"></button></dialog>');$('closeContact').onclick=()=>$('contactDialog').close();$('contactDialog').addEventListener('close',()=>{contactViewVersion++;});}
- $('contactTitle').textContent='Loading contact…';$('contactBody').textContent='';$('contactError').textContent='';$('toggleSuppression').disabled=true;
+  if(!$('contactDialog')){document.body.insertAdjacentHTML('beforeend','<dialog id="contactDialog"><div class="dialog-title"><h2 id="contactTitle">Contact details</h2><button class="secondary" id="closeContact">Close</button></div><div id="contactBody"></div><p id="contactError" role="alert"></p><button id="toggleSuppression"></button> <button id="deletePerson" class="secondary">Delete this person</button></dialog>');$('closeContact').onclick=()=>$('contactDialog').close();$('contactDialog').addEventListener('close',()=>{contactViewVersion++;});}
+ $('contactTitle').textContent='Loading contact…';$('contactBody').textContent='';$('contactError').textContent='';$('toggleSuppression').disabled=true;$('deletePerson').disabled=true;$('deletePerson').dataset.armed='';$('deletePerson').textContent='Delete this person';
  if(!$('contactDialog').open)$('contactDialog').showModal();
  try{
   const data=await api('contacts/'+encodeURIComponent(id));if(version!==contactViewVersion)return;
@@ -98,6 +98,10 @@ async function showContact(id,prepare=false){
   }
   $('contactError').textContent='';const toggle=$('toggleSuppression');toggle.disabled=false;toggle.textContent=c.suppressed?'Remove suppression':'Suppress contact';
   toggle.onclick=async()=>{if(toggle.disabled)return;toggle.disabled=true;try{await api('contacts/'+encodeURIComponent(id),{suppressed:!c.suppressed},'PATCH');await load();if(version===contactViewVersion)await showContact(id);notice(c.suppressed?'Suppression removed.':'Contact suppressed.');}catch(e){if(version===contactViewVersion){$('contactError').textContent=e.message;toggle.disabled=false;}}};
+  // Deleting is permanent, so it takes a second click that says what goes.
+  const remove=$('deletePerson');remove.disabled=false;
+  remove.onclick=async()=>{if(remove.disabled)return;if(!remove.dataset.armed){remove.dataset.armed='1';remove.textContent='Click again to delete permanently';$('contactError').textContent='This removes the contact, the Research Lab lead linked to them, their evidence, activity and call records, from every list. A do-not-call block keeps the number. They will not be imported again.';return;}
+   remove.disabled=true;try{await api('contacts/'+encodeURIComponent(id),undefined,'DELETE');selected.delete(id);if(version===contactViewVersion)$('contactDialog').close();await load();notice('Deleted. Nothing about this person remains except a do-not-call block, if one existed.');}catch(e){if(version===contactViewVersion){$('contactError').textContent=e.message;remove.disabled=false;}}};
   if(!$('contactDialog').open)$('contactDialog').showModal();
   if(prepare&&version===contactViewVersion&&prepareButton)await prepareButton.onclick();
  }catch(e){if(version===contactViewVersion){$('contactTitle').textContent='Contact unavailable';$('contactError').textContent=e.message;}}

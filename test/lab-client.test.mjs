@@ -6,7 +6,7 @@ import vm from 'node:vm';
 function client(){
   const elements=new Map(),pending=[];
   const element=id=>{
-    if(!elements.has(id))elements.set(id,{value:'',textContent:'',innerHTML:'',disabled:false,open:false,
+    if(!elements.has(id))elements.set(id,{value:'',textContent:'',innerHTML:'',disabled:false,open:false,dataset:{},
       classList:{toggle(){}},reset(){},replaceChildren(){},showModal(){this.open=true;},
       addEventListener(event,handler){this[event+'Handler']=handler;},close(){this.open=false;this.closeHandler?.();}});
     return elements.get(id);
@@ -120,4 +120,21 @@ test('an inbound row is labelled by the channel it arrived on',()=>{
   // A row written before the channel was recorded claims nothing about how.
   assert.equal(c.run("inboundLabel(null)"),'they contacted me');
   assert.equal(c.run("inboundLabel('carrier pigeon')"),'they contacted me');
+});
+
+test('delete this person takes a second click, then deletes the lead and closes',async()=>{
+  const c=client(),a=c.run("openLead('A')");c.pending[0].respond(lead('A'));await a;
+  const first=c.run("$('forgetLead').onclick()");await first;
+  assert.equal(c.pending.length,1,'the first click only arms the button');
+  const done=c.run("$('forgetLead').onclick()");
+  assert.equal(c.pending[1].url,'/api/lab/leads/A');assert.equal(c.pending[1].options.method,'DELETE');
+  c.pending[1].respond({deleted:true,contacts:0,leads:1});await done;
+  assert.equal(c.element('detail').open,false);
+});
+
+test('opening another lead disarms delete',async()=>{
+  const c=client(),a=c.run("openLead('A')");c.pending[0].respond(lead('A'));await a;
+  await c.run("$('forgetLead').onclick()");
+  const b=c.run("openLead('B')");c.pending[1].respond(lead('B'));await b;
+  assert.equal(c.element('forgetLead').dataset.armed,'');
 });

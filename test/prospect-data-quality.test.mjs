@@ -6,7 +6,7 @@ import {normalizeContact,parseContactCSV,contactQuality,sharedMailbox} from '../
 import {createProspectWorkspace,contactIdentities} from '../prospect-workspace.mjs';
 const user={uid:'quality-owner'},other={uid:'other'};
 const basic='First Name,Last Name,Company,Email,Country,State\nAvery,Example,Sample Co,avery@example.com,United States,New York';
-async function fixture(fn){const db=new PGlite();try{await db.exec(readFileSync(new URL('../migrations/008-prospect-workspace.sql',import.meta.url),'utf8'));const app=createProspectWorkspace({pool:{query:(...args)=>db.query(...args),connect:async()=>({query:(...args)=>db.query(...args),release(){}})}});await fn(app,db);}finally{await db.close();}}
+async function fixture(fn){const db=new PGlite();try{await db.exec(readFileSync(new URL('../migrations/008-prospect-workspace.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/017-forget.sql',import.meta.url),'utf8'));const app=createProspectWorkspace({pool:{query:(...args)=>db.query(...args),connect:async()=>({query:(...args)=>db.query(...args),release(){}})}});await fn(app,db);}finally{await db.close();}}
 const raw={first_name:'Avery',last_name:'Example',company:'Sample Co'};
 test('ZoomInfo person locations and mobile numbers survive alongside direct phones',()=>{
  const headers='First Name,Last Name,Company Name,Direct Phone Number,Mobile phone,Person City,Person State';

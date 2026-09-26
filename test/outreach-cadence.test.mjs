@@ -28,7 +28,7 @@ async function fixture(clock = () => now) {
   const db = new PGlite();
   for (const file of ['generated/schema.sql', 'migrations/006-research-lab.sql', 'migrations/007-quality-v2.sql',
     'migrations/008-prospect-workspace.sql', 'migrations/012-plan-catalog-summary.sql',
-    'migrations/013-advisor-workflow.sql', 'migrations/014-outreach-cadence.sql', 'migrations/015-dial-budget.sql', 'migrations/016-inbound-contact.sql'])
+    'migrations/013-advisor-workflow.sql', 'migrations/014-outreach-cadence.sql', 'migrations/015-dial-budget.sql', 'migrations/016-inbound-contact.sql','migrations/017-forget.sql'])
     await db.exec(readFileSync(new URL('../' + file, import.meta.url), 'utf8'));
   const pool = {query: (...a) => db.query(...a), connect: async () => ({query: (...a) => db.query(...a), release() {}})};
   const user = {uid: 'owner', email: 'owner@example.com'};

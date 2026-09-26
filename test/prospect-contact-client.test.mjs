@@ -7,9 +7,9 @@ function client(){
  const elements=new Map(),pending=[];
  const create=id=>{const value={textContent:'',innerHTML:'',disabled:false,open:false,value:'Reviewed source',dataset:{},
   insertAdjacentHTML(){},showModal(){this.open=true;},addEventListener(event,fn){this[event+'Handler']=fn;},close(){this.open=false;this.closeHandler?.();}};elements.set(id,value);return value;};
- for(const id of ['contactTitle','contactBody','contactError','toggleSuppression','closeContact','correctionForm','conflictReason0'])create(id);
+ for(const id of ['contactTitle','contactBody','contactError','toggleSuppression','deletePerson','closeContact','correctionForm','conflictReason0'])create(id);
  const conflict=create('conflict');conflict.dataset={conflict:'0',decision:'keep'};
- const context=vm.createContext({$:id=>elements.get(id),esc:String,notice(){},load:async()=>{},
+ const context=vm.createContext({selected:new Set(),$:id=>elements.get(id),esc:String,notice(){},load:async()=>{},
   FormData:class{constructor(){return [['first_name','A'],['last_name','Example'],['reason','Reviewed source']];}},
   document:{body:{insertAdjacentHTML(){create('contactDialog');}},querySelectorAll:()=>[conflict]},
   api:(url,body,method)=>new Promise((resolve,reject)=>pending.push({url,body,method,resolve,reject}))});
@@ -42,4 +42,25 @@ test('an earlier suppression failure cannot alter the newly opened contact',asyn
  const save=c.elements.get('toggleSuppression').onclick();c.elements.get('contactDialog').close();const b=c.open('B');
  c.pending[2].resolve(record('B'));await b;c.pending[1].reject(Error('Old failure'));await save;
  assert.equal(c.elements.get('contactError').textContent,'');assert.equal(c.elements.get('contactTitle').textContent,'B Example');
+});
+
+test('delete this person takes a second click, then deletes and closes the dialog',async()=>{
+ const c=client(),a=c.open('A');c.pending[0].resolve(record('A'));await a;
+ const remove=c.elements.get('deletePerson');
+ await remove.onclick();
+ assert.equal(c.pending.length,1,'the first click only arms the button');
+ assert.match(c.elements.get('contactError').textContent,/do-not-call block keeps the number/);
+ const done=remove.onclick();
+ assert.equal(c.pending[1].url,'contacts/A');assert.equal(c.pending[1].method,'DELETE');
+ c.pending[1].resolve({deleted:true,contacts:1,leads:1});await done;
+ assert.equal(c.elements.get('contactDialog').open,false);
+});
+
+test('reopening a contact disarms the delete button',async()=>{
+ const c=client(),a=c.open('A');c.pending[0].resolve(record('A'));await a;
+ await c.elements.get('deletePerson').onclick();
+ const b=c.open('B');c.pending[1].resolve(record('B'));await b;
+ assert.equal(c.elements.get('deletePerson').dataset.armed,'');
+ await c.elements.get('deletePerson').onclick();
+ assert.equal(c.pending.length,2);
 });
