@@ -31,6 +31,15 @@ Rules:
 - Never infer or state wealth, income, assets, age, health, family, religion, politics or donations, even if a page mentions them.
 - The summary is one or two plain sentences about what was and was not found.`;
 
+export const IMAGE_FIELDS=['title','employer','tenure','location','education','certification','career_history','other'];
+const IMAGE_SCHEMA={type:'object',additionalProperties:false,required:['matches_contact','summary','findings'],properties:{
+  matches_contact:{type:'boolean'},summary:{type:'string'},
+  findings:{type:'array',items:{type:'object',additionalProperties:false,required:['field','value','quote'],properties:{
+    field:{type:'string',enum:IMAGE_FIELDS},value:{type:'string'},quote:{type:'string'}}}}}};
+const IMAGE_SYSTEM=`The operator uploaded a screenshot of a public professional profile (a company bio, conference page, personal site or similar) and names who they believe it shows.
+First decide whether the page is about that person: matches_contact is true only if the name on the page is theirs. If it is not, or you cannot tell, return matches_contact=false and no findings.
+Otherwise report the professional facts visible on the page: title, employer, how long in the role, location, education, certifications, and earlier positions. Each finding needs the exact words visible in the image as its quote.
+Never report or infer age, graduation-year arithmetic, wealth, income, health, family, religion or politics, even if visible.`;
 export function createWebResearch({apiKey='',client=null,now=()=>new Date(),maxSearches=5}={}){
   const anthropic=client||(apiKey?new Anthropic({apiKey,maxRetries:1,timeout:120000}):null);
   async function research(contact){
@@ -67,5 +76,27 @@ export function createWebResearch({apiKey='',client=null,now=()=>new Date(),maxS
     return {found:findings.length>0,summary:text(parsed?.summary,600),findings,dropped:(Array.isArray(parsed?.findings)?parsed.findings.length:0)-findings.length,
       searches:response.usage?.server_tool_use?.web_search_requests??null,model:response.model||WEB_RESEARCH_MODEL,provider:'anthropic',checked_at:now().toISOString()};
   }
-  return {ready:!!anthropic,research};
+  // A screenshot of a public profile the operator is looking at — manual,
+  // one at a time, never fetched or crawled. The image goes to Claude and is
+  // dropped; only the quoted lines come back, and only if the page is about
+  // this person.
+  async function readProfileImage(contact,{data,media_type}){
+    if(!anthropic)throw fail(503,'Profile screenshots are not configured.');
+    if(contact.suppressed)throw fail(422,'Suppressed contacts cannot be researched.');
+    const name=[contact.first_name,contact.last_name].map(v=>text(v,100)).filter(Boolean).join(' ');
+    const response=await anthropic.beta.messages.create({model:WEB_RESEARCH_MODEL,max_tokens:16000,system:IMAGE_SYSTEM,
+      betas:['server-side-fallback-2026-07-01'],fallbacks:'default',
+      output_config:{format:{type:'json_schema',schema:IMAGE_SCHEMA}},
+      messages:[{role:'user',content:[{type:'image',source:{type:'base64',media_type,data}},
+        {type:'text',text:`The operator believes this is: ${name}${contact.company?', at '+text(contact.company,200):''}.`}]}]});
+    if(response.stop_reason==='refusal')throw fail(502,'The screenshot could not be read.');
+    const answer=response.content.filter(block=>block.type==='text').map(block=>block.text).join('').trim();
+    let parsed;try{parsed=JSON.parse(answer);}catch{throw fail(502,'The screenshot reading was unreadable.');}
+    const matches=parsed?.matches_contact===true;
+    const findings=matches?(Array.isArray(parsed.findings)?parsed.findings:[])
+      .map(f=>({field:IMAGE_FIELDS.includes(f?.field)?f.field:'other',value:text(f?.value,300),quote:text(f?.quote,500)}))
+      .filter(f=>f.value&&f.quote).slice(0,12):[];
+    return {matches_contact:matches,summary:text(parsed?.summary,600),findings,model:response.model||WEB_RESEARCH_MODEL,provider:'anthropic',checked_at:now().toISOString()};
+  }
+  return {ready:!!anthropic,research,readProfileImage};
 }

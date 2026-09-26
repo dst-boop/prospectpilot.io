@@ -120,5 +120,5 @@ export function createProspectProviders({pdlKey='',hunterKey='',trestleKey='',an
   const record=phoneCheckRecord(response,digits,contact);if(record.not_found)return record;
   return {...record,phone:contact.phone,provider:'trestle',checked_at:now().toISOString()};
  }
- return {readiness:{search:!!pdlKey,enrichment:!!pdlKey,email_verification:!!hunterKey,domain_check:true,phone_check:!!trestleKey,web_research:webResearch.ready},search,enrich,verifyEmail,checkDomain:domainChecker,checkPhone,webResearch:webResearch.research};
+ return {readiness:{search:!!pdlKey,enrichment:!!pdlKey,email_verification:!!hunterKey,domain_check:true,phone_check:!!trestleKey,web_research:webResearch.ready,profile_image:webResearch.ready},search,enrich,verifyEmail,checkDomain:domainChecker,checkPhone,webResearch:webResearch.research,readProfileImage:webResearch.readProfileImage};
 }

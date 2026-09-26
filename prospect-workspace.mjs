@@ -173,7 +173,7 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
    if(changes.email){next.email_status=next.email?'unverified':'missing';}
    // A phone check answered for one number and name; after either changes it is someone else's answer.
    if(changes.phone||changes.first_name||changes.last_name)delete next.phone_check;
-   if(['first_name','last_name','company','city','state'].some(k=>changes[k]))delete next.web_research;
+   if(['first_name','last_name','company','city','state'].some(k=>changes[k])){delete next.web_research;delete next.profile_image;}
    if(changes.phone){next.phone_status=next.phone?'unverified':'missing';}
    if(changes.phone||changes.mobile_phone){next.phone_import={...(old.phone_import||{})};if(changes.phone){next.phone_origin=normalized.phone_origin;if(next.phone_import.direct)next.phone_import.direct={...next.phone_import.direct,status:'reviewed'};}if(changes.mobile_phone&&next.phone_import.mobile)next.phone_import.mobile={...next.phone_import.mobile,status:'reviewed'};}
    if(changes.first_name||changes.last_name){next.email_status=next.email?'unverified':'missing';next.phone_status=next.phone?'unverified':'missing';}
@@ -262,6 +262,8 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
   const contact=path.match(/^\/api\/prospect\/contacts\/([^/]+)$/);
   const prepare=path.match(/^\/api\/prospect\/contacts\/([^/]+)\/prepare$/);
   if(prepare&&method==='POST')return prepareContact(user,prepare[1],await body());
+  const image=path.match(/^\/api\/prospect\/contacts\/([^/]+)\/profile-image$/);
+  if(image&&method==='POST'){if(!jobs)throw fail(503,'Profile screenshots are not configured.');return jobs.profileImage(user,image[1],await body());}
   if(contact&&method==='GET'){
    await expireVerification(user);
    const row=(await pool.query('SELECT id,payload,created_at,updated_at FROM prospect_contacts WHERE id=$1 AND user_id=$2',[contact[1],user.uid])).rows[0];

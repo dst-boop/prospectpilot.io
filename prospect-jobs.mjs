@@ -19,7 +19,7 @@ export const webResearchCurrent=contact=>!!contact.web_research&&contact.web_res
 export const PHONE_STATUS_LABELS={owner_matched:'the number is listed under this contact’s name',wrong_person:'the number is listed under someone else — do not dial it for this contact',invalid:'the number is not a working line',checked:'the line is real but no owner name was returned'};
 export function providerJobConfig(env=process.env){
  const read=(key,fallback=null)=>{const value=env[key];if(value===undefined||value==='')return fallback;const n=Number(value);if(!Number.isSafeInteger(n)||n<0||n>1000000000)throw Error('Invalid '+key);return n;};
- return {dailyBudgetMicros:read('PROSPECT_DAILY_BUDGET_MICROS',0),prices:{search:read('PDL_SEARCH_RECORD_COST_MICROS'),enrich:read('PDL_ENRICH_COST_MICROS'),verify:read('HUNTER_VERIFY_COST_MICROS'),check_phone:read('TRESTLE_PHONE_COST_MICROS'),web_research:read('WEB_RESEARCH_COST_MICROS')}};
+ return {dailyBudgetMicros:read('PROSPECT_DAILY_BUDGET_MICROS',0),prices:{search:read('PDL_SEARCH_RECORD_COST_MICROS'),enrich:read('PDL_ENRICH_COST_MICROS'),verify:read('HUNTER_VERIFY_COST_MICROS'),check_phone:read('TRESTLE_PHONE_COST_MICROS'),web_research:read('WEB_RESEARCH_COST_MICROS'),profile_image:read('PROFILE_IMAGE_COST_MICROS')}};
 }
 export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,prices:{}},dispatch=async()=>false,pacingMs={pdl:6100,hunter:250,dns:100,trestle:250,anthropic:1000}}){
  const capabilities={search:'search',enrich:'enrichment',verify:'email_verification',check_domain:'domain_check',check_phone:'phone_check',web_research:'web_research'};
@@ -183,9 +183,44 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   await finish(c,task,'completed',{message:task.action==='check_domain'?`Domain check: ${DOMAIN_CHECK_LABELS[result.status]}. This does not verify the individual mailbox.`:task.action==='verify'?(contact.email_status!==result.status?'Verification saved as historical evidence; a newer domain check found no mail route. Email remains unverified.':`Email verification: ${result.status}.`):'Provider enrichment saved; imported phone information remains unverified.'});
  });}
  async function tick(){const task=await claim();if(!task)return false;if(task.skipped)return true;try{const result=await(task.action==='search'?providers.search(task.payload.filters):task.action==='enrich'?providers.enrich(task.contact):task.action==='check_domain'?providers.checkDomain(task.contact):task.action==='check_phone'?providers.checkPhone(task.contact):task.action==='web_research'?providers.webResearch(task.contact):providers.verifyEmail(task.contact));await apply(task,result);}catch{await tx(pool,c=>finish(c,task,'needs_attention',{message:'Provider request or result processing failed. Reserved cost retained; automatic retry disabled. Review provider billing before launching another job.'}));}return true;}
+ // A profile screenshot is read once, while the operator waits, and the image
+ // is never stored: not in the task, not in the contact, not in a log. The
+ // cost is reserved against the same ledger before Claude sees it, and the
+ // reading lands beside the contact unreviewed.
+ const IMAGE_TYPES=['image/png','image/jpeg','image/webp','image/gif'];
+ async function profileImage(user,contactId,input){
+  if(!input||typeof input!=='object'||!IMAGE_TYPES.includes(input.media_type)||typeof input.data!=='string'||input.data.length<100||input.data.length>4800000||!/^[A-Za-z0-9+/]+=*$/.test(input.data))throw fail(422,'Upload a PNG, JPEG, WebP or GIF screenshot under 3.5 MB.');
+  if(!providers.readiness.profile_image||!Number.isSafeInteger(config.prices.profile_image))throw fail(503,'Profile screenshots need the Claude key and a configured price.');
+  const price=config.prices.profile_image,taskId=randomUUID(),jobId=randomUUID();
+  const contact=await tx(pool,async c=>{
+   await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`prospect-jobs:${user.uid}`]);
+   const row=(await c.query('SELECT payload FROM prospect_contacts WHERE id=$1 AND user_id=$2',[contactId,user.uid])).rows[0];
+   if(!row)throw fail(404,'Contact not found.');if(row.payload.suppressed)throw fail(422,'Suppressed contacts cannot be researched.');
+   const spent=Number((await c.query("SELECT COALESCE(sum(reserved_micros),0) AS n FROM prospect_charges WHERE reserved_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'")).rows[0].n);
+   if(price>0&&spent+price>config.dailyBudgetMicros)throw fail(422,'The shared daily provider budget is exhausted. The screenshot was not read.');
+   await c.query('INSERT INTO prospect_jobs(id,user_id,action,idempotency_key,input_hash,max_cost_micros) VALUES($1,$2,$3,$4,$5,$6)',[jobId,user.uid,'profile_image','image-'+jobId,hash(jobId),price]);
+   await c.query("INSERT INTO prospect_tasks(id,job_id,user_id,action,provider,contact_id,payload,status,lease_token,lease_until) VALUES($1,$2,$3,'profile_image','anthropic',$4,$5::jsonb,'running',$6,now()+interval '2 minutes')",[taskId,jobId,user.uid,contactId,JSON.stringify({contact_id:contactId,quote:price,signature:sig(row.payload)}),taskId]);
+   await c.query('INSERT INTO prospect_charges(task_id,user_id,provider,reserved_micros) VALUES($1,$2,$3,$4)',[taskId,user.uid,'anthropic',price]);
+   return row.payload;
+  });
+  const task={id:taskId,lease_token:taskId};
+  let result;
+  try{result=await providers.readProfileImage(contact,{data:input.data,media_type:input.media_type});}
+  catch(e){await tx(pool,c=>finish(c,task,'needs_attention',{message:'The screenshot could not be read. Reserved cost retained.'}));throw fail(e.status===422?422:502,e.status===422?e.message:'The screenshot could not be read. Try again later.');}
+  return tx(pool,async c=>{
+   await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`prospect:${user.uid}`]);
+   const row=(await c.query('SELECT payload FROM prospect_contacts WHERE id=$1 AND user_id=$2 FOR UPDATE',[contactId,user.uid])).rows[0];
+   if(!row||row.payload.suppressed||sig(row.payload)!==sig(contact)){await finish(c,task,'skipped',{message:'The contact changed while the screenshot was read. Nothing was saved.'});throw fail(409,'The contact changed while the screenshot was read. Nothing was saved.');}
+   if(!validObservationTime(result.checked_at))throw fail(502,'Invalid screenshot reading.');
+   const next={...row.payload,profile_image:{matches_contact:result.matches_contact,summary:result.summary,findings:result.findings,model:result.model,provider:'anthropic',checked_at:result.checked_at,reviewed:false}};
+   await c.query('UPDATE prospect_contacts SET payload=$1::jsonb,updated_at=now() WHERE id=$2',[JSON.stringify(next),contactId]);
+   await finish(c,task,'completed',{message:result.matches_contact?`Screenshot read: ${result.findings.length} finding${result.findings.length===1?'':'s'} to review. The image was not stored.`:'The screenshot does not appear to show this contact. Nothing was taken from it; the image was not stored.'});
+   return {saved:true,matches_contact:result.matches_contact,findings:result.findings,reserved_micros:price};
+  });
+ }
  async function jobs(user,id){const rows=(await pool.query(`SELECT j.*,count(t.id)::int AS total,count(t.id) FILTER(WHERE t.status=ANY($2::text[]))::int AS finished,COALESCE(sum(c.reserved_micros),0) AS reserved_micros FROM prospect_jobs j LEFT JOIN prospect_tasks t ON t.job_id=j.id LEFT JOIN prospect_charges c ON c.task_id=t.id WHERE j.user_id=$1 AND ($3::text IS NULL OR j.id=$3) GROUP BY j.id ORDER BY j.created_at DESC LIMIT 30`,[user.uid,terminal,id||null])).rows;
   if(id&&!rows.length)throw fail(404,'Job not found.');if(id)return {job:rows[0],tasks:(await pool.query('SELECT id,contact_id,action,status,attempts,result,completed_at FROM prospect_tasks WHERE job_id=$1 ORDER BY created_at,id',[id])).rows};return {jobs:rows};
  }
  async function route(request,user){const url=new URL(request.url),path=url.pathname,method=request.method;if(!user?.uid)throw fail(401,'Sign in.');if(path==='/api/prospect/providers'&&method==='GET')return summary(user);if(path==='/api/prospect/jobs'&&method==='GET')return jobs(user);if(path==='/api/prospect/jobs'&&method==='POST'){let input;try{input=await request.json();}catch{throw fail(422,'Invalid JSON.');}return enqueue(user,input);}const match=path.match(/^\/api\/prospect\/jobs\/([^/]+)$/);if(match&&method==='GET')return jobs(user,match[1]);throw fail(404,'Job endpoint not found.');}
- return {route,enqueue,tick,summary,jobs};
+ return {route,enqueue,tick,summary,jobs,profileImage};
 }
