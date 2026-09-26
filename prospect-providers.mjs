@@ -13,7 +13,40 @@ export function professionalRecord(raw){
 }
 // Retain only professional fields. Financial, household, birth and demographic
 // fields are neither requested nor persisted, even if a provider sends extras.
-export function createProspectProviders({pdlKey='',hunterKey='',fetcher=fetch,now=()=>new Date(),domainChecker=createDomainChecker()}={}){
+// A reverse-phone answer, reduced to what the phone check is for: is the line
+// real, what kind is it (mobile carries stricter TCPA rules), and does it
+// belong to this contact. The owner's name is compared and dropped — when it
+// does not match, it is a stranger's name, and it is not stored. Age, address,
+// household and email fields are never read. Accepts Trestle 3.1 Phone Intel
+// ({is_valid,line_type,carrier,is_prepaid,belongs_to:[…]}) and the WhitePages
+// person-record envelope ({results:[{name,aliases,phones:[…]}]}).
+export function phoneCheckRecord(response,digits,contact){
+ const str=v=>typeof v==='string'?v.trim().slice(0,200):'';
+ const bool=v=>v===true||v===false?v:null;
+ const onlyDigits=v=>String(v??'').replace(/\D/g,'').replace(/^1(?=\d{10}$)/,'');
+ let line=null,owners=[];
+ if(response&&typeof response==='object'&&('line_type' in response||'is_valid' in response||'belongs_to' in response)){
+  if(response.phone_number&&onlyDigits(response.phone_number)!==digits)throw fail(502,'Phone check answered for a different number.');
+  line={valid:bool(response.is_valid),line_type:str(response.line_type),carrier:str(response.carrier),prepaid:bool(response.is_prepaid)};
+  const belongs=Array.isArray(response.belongs_to)?response.belongs_to:response.belongs_to&&typeof response.belongs_to==='object'?[response.belongs_to]:[];
+  owners=belongs.filter(o=>o&&typeof o==='object').map(o=>[str(o.name)||[str(o.firstname),str(o.lastname)].filter(Boolean).join(' '),...(Array.isArray(o.aliases)?o.aliases.map(str):[])]);
+ }else{
+  const people=Array.isArray(response?.results)?response.results:[];let best=-1;
+  for(const person of people)for(const phone of (person&&Array.isArray(person.phones)?person.phones:[])){
+   if(!phone||onlyDigits(phone.number||phone.phone_number)!==digits)continue;
+   const score=typeof phone.score==='number'?phone.score:0;if(score<=best)continue;best=score;
+   line={valid:bool(phone.is_valid??phone.valid)??true,line_type:str(phone.type||phone.line_type),carrier:str(phone.carrier),prepaid:bool(phone.is_prepaid??phone.prepaid)};
+   owners=[[str(person.name),...(Array.isArray(person.aliases)?person.aliases.map(v=>str(typeof v==='string'?v:v?.name)):[])]];
+  }
+ }
+ if(!line)return {not_found:true};
+ // A married or maiden name is still the same person: any listed name counts.
+ const last=nameKey(contact.last_name),first=nameKey(contact.first_name);
+ const names=owners.flat().filter(Boolean).map(nameKey);
+ const surname=names.some(n=>last&&n.split(' ').includes(last)),full=surname&&names.some(n=>first&&n.split(' ').includes(first)&&n.split(' ').includes(last));
+ return {...line,name_match:names.length?surname:null,first_name_match:names.length?full:null};
+}
+export function createProspectProviders({pdlKey='',hunterKey='',trestleKey='',trestleBase='https://api.trestleiq.com',fetcher=fetch,now=()=>new Date(),domainChecker=createDomainChecker()}={}){
  async function request(url,options={}){
   let response;try{response=await fetcher(url,{...options,redirect:'error',signal:AbortSignal.timeout(30000)});}catch{throw fail(502,'Provider request could not be completed; billing outcome may be unknown.');}
   if(response.status===202){await response.body?.cancel();return {pending:true};}
@@ -72,5 +105,19 @@ export function createProspectProviders({pdlKey='',hunterKey='',fetcher=fetch,no
   if(!status)throw fail(502,'Verifier returned an unsupported status.');
   return {email,status,provider_status:data.status,provider:'hunter',checked_at:now().toISOString()};
  }
- return {readiness:{search:!!pdlKey,enrichment:!!pdlKey,email_verification:!!hunterKey,domain_check:true},search,enrich,verifyEmail,checkDomain:domainChecker};
+ // One paid reverse-phone lookup (Trestle Phone Intel). The key travels in a
+ // header, never the URL. A number that cannot be a US line is refused here:
+ // the API rejects it unbilled anyway, and this says so sooner.
+ async function checkPhone(contact){
+  if(!trestleKey)throw fail(503,'Phone checks are not configured.');
+  if(contact.suppressed)throw fail(422,'Suppressed contacts cannot be checked.');
+  const digits=String(contact.phone||'').replace(/\D/g,'').replace(/^1(?=\d{10}$)/,'');
+  if(!/^[2-9]\d{2}[2-9]\d{6}$/.test(digits))throw fail(422,'A US phone number is required for a phone check.');
+  const url=new URL('/3.1/phone',trestleBase);url.searchParams.set('phone',digits);
+  const response=await request(url,{headers:{'x-api-key':trestleKey}});
+  if(response.not_found||response.suppressed||response.pending)return response.pending?{not_found:true}:response;
+  const record=phoneCheckRecord(response,digits,contact);if(record.not_found)return record;
+  return {...record,phone:contact.phone,provider:'trestle',checked_at:now().toISOString()};
+ }
+ return {readiness:{search:!!pdlKey,enrichment:!!pdlKey,email_verification:!!hunterKey,domain_check:true,phone_check:!!trestleKey},search,enrich,verifyEmail,checkDomain:domainChecker,checkPhone};
 }

@@ -87,6 +87,6 @@ These are recorded so they are not reopened by accident.
 |---|---|---|
 | A | This plan, `CLAUDE.md`, Delete this person | Done |
 | B | Lead Qualifier's "Move to ProspectPilot" export, in the columns the contact import already reads; `test/lead-qualifier-import.test.mjs` pins the contract | Done |
-| C | WhitePages/Trestle on the provider budget | |
+| C | WhitePages/Trestle phone check (`check_phone`) on the provider queue and budget | Done |
 | D | Claude research sources, AI QC, SEC proxy ages | |
 | E | Email and `.ics`, ZoomInfo sourcing, Autopilot, sharing; redirect leads.financialplannersofamerica.com and retire Lead Qualifier | |

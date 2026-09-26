@@ -171,6 +171,8 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
    const evidence={source:'User correction',kind:'manual_review',imported_at:new Date().toISOString(),observed_at:null,reason:input.reason.trim(),changes};
    next.field_sources={...(old.field_sources||{})};for(const key of Object.keys(changes))next.field_sources[key]=evidence;
    if(changes.email){next.email_status=next.email?'unverified':'missing';}
+   // A phone check answered for one number and name; after either changes it is someone else's answer.
+   if(changes.phone||changes.first_name||changes.last_name)delete next.phone_check;
    if(changes.phone){next.phone_status=next.phone?'unverified':'missing';}
    if(changes.phone||changes.mobile_phone){next.phone_import={...(old.phone_import||{})};if(changes.phone){next.phone_origin=normalized.phone_origin;if(next.phone_import.direct)next.phone_import.direct={...next.phone_import.direct,status:'reviewed'};}if(changes.mobile_phone&&next.phone_import.mobile)next.phone_import.mobile={...next.phone_import.mobile,status:'reviewed'};}
    if(changes.first_name||changes.last_name){next.email_status=next.email?'unverified':'missing';next.phone_status=next.phone?'unverified':'missing';}
@@ -210,6 +212,8 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
    const record={...c,contact_id:id,last_email_checked_at:c.email_verification?.checked_at,last_email_checked_address:c.email_verification?.email,last_email_verifier:c.email_verification?.provider,last_domain_checked_at:c.email_domain_check?.checked_at,last_domain_checked:c.email_domain_check?.domain,last_domain_status:c.email_domain_check?.status,data_review_issues:contactQuality(c,now).issues.map(issue=>issue.code).join(';')};
    for(const [key,value] of Object.entries(c.zoominfo||{}))record['zoominfo_'+key]=value;
    const phones=phoneReadiness(c);record.zoominfo_direct_do_not_call=phones.direct_do_not_call;record.zoominfo_mobile_do_not_call=phones.mobile_do_not_call;
+   // A number a phone check found listed under someone else, or dead, is not handed to a dialler.
+   if(['wrong_person','invalid'].includes(c.phone_status)&&c.phone_check?.phone===c.phone){if(record.mobile_phone===record.phone)record.mobile_phone='';record.phone='';}
    if(phones.primary_blocked){record.phone='';record.phone_status='do_not_call';}if(phones.mobile_blocked)record.mobile_phone='';
    record.next_review=contactQuality(c,now).next_review.label;
    return fields.map(key=>record[key]);
