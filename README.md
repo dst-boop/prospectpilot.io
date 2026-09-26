@@ -259,27 +259,21 @@ before reaching a handler, and no session cookie is ever sent. It therefore
 outcomes and dial counter still need a person with an account, and a passing run
 says so rather than implying otherwise.
 
-**The health path and the public surface live on different hosts, and cannot be
-checked from one address.** `/healthz` is answered before the origin check, so the
-Cloud Run service URL serves it — but every other route is behind that check, and
-`APP_ORIGINS` lists only the custom domain and the Firebase Hosting ones, so the
-service URL answers `403` for all of them. The front door is the reverse: it
-serves the surface and never rewrites `/healthz`. To cover both, give it both:
+The external process-health route is `/health`, which must return `200 ok`.
+Cloud Run reserves some paths ending in `z`; `/healthz` is retained only as a
+compatibility alias, not the external monitoring target. See [Google's reserved
+URL paths](https://docs.cloud.google.com/run/docs/known-issues#reserved_url_paths).
+This checks that the app can respond, not database or provider availability.
+
+Health is required by default on every host. A `404`, failed request, or wrong
+response body fails verification. `--health-optional` is an explicit exception
+that reports a missing route as unchecked, never as a passing health check.
+To check the service process separately from the public site:
 
 ```bash
 pnpm verify https://prospectpilot.io <release-id> \
   --health-base=https://<service>-<hash>-uc.a.run.app --health-required
 ```
-
-With one address, the check adapts to it. On the custom domain and the Firebase
-Hosting domains a 404 on `/healthz` reports **not exposed on this host** rather
-than failing. **Everywhere else a 404 there fails** — on the service URL or a
-staging environment the path should be answered, and a broken health route
-excused as `n/a` would be a health check that cannot fail. `--health-required`
-holds any host to it; `--health-optional` excuses one.
-
-Uptime monitoring has to point at the Cloud Run service URL, not the custom
-domain, for the same reason: on the domain that path never reaches the app.
 
 The advisor workflow adds migration **013** for activity history and contact links, and **014** for outreach pacing, drafted touches and the advisor profile. The contact workspace requires migrations **008** and **009** before starting the service and worker; these add contacts, lists, imports, saved searches, durable tasks and cost reservations. The migration runner applies all outstanding migrations in order.
 
