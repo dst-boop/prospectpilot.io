@@ -2,7 +2,7 @@ import test from 'node:test';import assert from 'node:assert/strict';import {rea
 import {matchPlans,selectEmployers,importPlanRecords,catalogSummary} from '../plan-catalog.mjs';
 test('plan matches use exact company identity; discovery rotates recently researched employers',async()=>{
   const db=new PGlite();try{
-    await db.exec(readFileSync(new URL('../generated/schema.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/006-research-lab.sql',import.meta.url),'utf8'));
+    await db.exec(readFileSync(new URL('../generated/schema.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/006-research-lab.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/017-forget.sql',import.meta.url),'utf8'));
   await db.exec(readFileSync(new URL('../migrations/012-plan-catalog-summary.sql',import.meta.url),'utf8'));
     const year=new Date().getUTCFullYear()-1;
     for(const [id,sponsor,balances,separated] of [['a','Example Manufacturing',500,200],['b','Other Manufacturing',100,0]])await db.query('INSERT INTO employer_plan_catalog(id,sponsor_key,state,plan_year,payload) VALUES($1,$2,$3,$4,$5::jsonb)',[id,sponsor.toLowerCase(),'NY',year,JSON.stringify({id,sponsor,ein:id,plan_number:'001',plan_year:year,net_assets:5000000,participants_with_balances:balances,separated_future_benefits:separated,scope:'employer_plan'})]);
@@ -16,7 +16,7 @@ test('plan matches use exact company identity; discovery rotates recently resear
 });
 test('latest filing is chosen before termination and location filters',async()=>{
  const db=new PGlite();try{
-  await db.exec(readFileSync(new URL('../generated/schema.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/006-research-lab.sql',import.meta.url),'utf8'));
+  await db.exec(readFileSync(new URL('../generated/schema.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/006-research-lab.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/017-forget.sql',import.meta.url),'utf8'));
   await db.exec(readFileSync(new URL('../migrations/012-plan-catalog-summary.sql',import.meta.url),'utf8'));
   const year=new Date().getUTCFullYear();
   const put=async(id,ein,planYear,state,distributed,sponsor='Example Co')=>db.query('INSERT INTO employer_plan_catalog(id,sponsor_key,state,plan_year,payload) VALUES($1,$2,$3,$4,$5::jsonb)',[id,sponsor.toLowerCase(),state,planYear,JSON.stringify({id,ein,plan_number:'001',sponsor,plan_year:planYear,all_assets_distributed:distributed,net_assets:1000,participants_with_balances:10})]);
@@ -33,7 +33,7 @@ test('latest filing is chosen before termination and location filters',async()=>
 
 test('catalog refresh rolls back every batch on malformed input and rejects older amendments',async()=>{
  const db=new PGlite();try{
-  await db.exec(readFileSync(new URL('../generated/schema.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/006-research-lab.sql',import.meta.url),'utf8'));
+  await db.exec(readFileSync(new URL('../generated/schema.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/006-research-lab.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/017-forget.sql',import.meta.url),'utf8'));
   await db.exec(readFileSync(new URL('../migrations/012-plan-catalog-summary.sql',import.meta.url),'utf8'));
   const make=(i,ack='b')=>({id:`plan-${i}`,sponsor:'Example Co',state:'NY',plan_year:2025,scope:'employer_plan',individual_balance:null,filed_at:'2026-01-01',ack_id:ack});
   await importPlanRecords(db,[make(0)]);
@@ -50,7 +50,7 @@ test('catalog refresh rolls back every batch on malformed input and rejects olde
 test('catalog summary migration backfills exact plan totals and dashboard reads avoid catalog scans',async()=>{
  const db=new PGlite();try{
   await db.exec(readFileSync(new URL('../generated/schema.sql',import.meta.url),'utf8'));
-  await db.exec(readFileSync(new URL('../migrations/006-research-lab.sql',import.meta.url),'utf8'));
+  await db.exec(readFileSync(new URL('../migrations/006-research-lab.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/017-forget.sql',import.meta.url),'utf8'));
   for(const [id,ein,year] of [['a','111111111',2024],['b','111111111',2025],['c','222222222',2025]])await db.query('INSERT INTO employer_plan_catalog(id,sponsor_key,state,plan_year,payload) VALUES($1,$2,$3,$4,$5::jsonb)',[id,'example','NY',year,JSON.stringify({ein,plan_number:'001'})]);
   await db.exec(readFileSync(new URL('../migrations/012-plan-catalog-summary.sql',import.meta.url),'utf8'));
   const summary=await catalogSummary({query:(sql,args)=>{assert.match(sql,/FROM employer_plan_catalog_summary WHERE id=1/);assert.doesNotMatch(sql,/count\(|payload/);return db.query(sql,args);}});

@@ -4,9 +4,11 @@ import {normalizeLead, mergeLead, isUsableStoredLead} from './generated/worker.m
 import {assessLead, candidateKeys, leadIdentity, validateObservation, nameKey, US_STATES, researchCSV, hash, QUALITY_VERSION} from './lead-quality.mjs';
 import {matchPlans, selectEmployers, catalogSummary} from './plan-catalog.mjs';
 import {SOURCE_CATALOG} from './source-catalog.mjs';
+import {LEAD_TEAM,LEAD_VISIBLE_SQL,forgetPerson,forgottenKeys} from './forget.mjs';
+import {identityLookupKeys} from './prospect-workspace.mjs';
 import {csvRows} from './warn.mjs';
 
-const TEAM='wealth-management';
+const TEAM=LEAD_TEAM;
 const fail=(status,message)=>Object.assign(Error(message),{status});
 const parse=value=>typeof value==='string'?JSON.parse(value):value;
 const integer=(value,min,max,fallback)=>{const n=Number(value??fallback);if(!Number.isSafeInteger(n)||n<min||n>max)throw fail(422,'A setting is outside its allowed range.');return n;};
@@ -33,7 +35,7 @@ async function transaction(pool,fn) {
   catch(error){try{await client.query('ROLLBACK');}catch(e){broken=e;}throw error;}
   finally{client.release(broken);}
 }
-const visibleSQL=`team=$1 AND (owner_user_id=$2 OR lower(owner_email)=lower($3) OR EXISTS(SELECT 1 FROM discovery_users WHERE user_id=$2 AND role='admin'))`;
+const visibleSQL=LEAD_VISIBLE_SQL;
 
 export async function assessInventory(ids,assess,{clock=()=>performance.now(),budgetMs=60000}={}) {
   const started=clock();let assessed=0,failed=0,skipped=0;
@@ -121,6 +123,9 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       const lead=normalizeLead(mapResearchRow(raw),{source:raw.source_names?.[0]||source,owner_email:user.email});
       if(!lead.first_name||!lead.last_name||!isUsableStoredLead(lead)||nameKey(lead.company).includes('equitable')) {rejected++;continue;}
       const keys=candidateKeys(lead);if(!keys.length){rejected++;continue;}
+      // A person this user deleted stays deleted, whether a CSV or a research
+      // run finds them again.
+      if((await forgottenKeys(client,user.uid,keys)).size){rejected++;continue;}
       const matches=[...new Map(keys.flatMap(key=>index.get(key)||[]).map(r=>[r.id,r])).values()];
       if(matches.length>1){ambiguous++;continue;}
       let saved=lead,isNew=!matches.length;
@@ -408,6 +413,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     }
     const leadMatch=path.match(/^\/api\/lab\/leads\/([^/]+)(?:\/(review))?$/);
     if(leadMatch&&request.method==='GET'&&!leadMatch[2])return detail(user,decodeURIComponent(leadMatch[1]));
+    if(leadMatch&&request.method==='DELETE'&&!leadMatch[2])return transaction(pool,client=>forgetPerson(client,user,{leadId:decodeURIComponent(leadMatch[1])},{contactKeys:identityLookupKeys}));
     if(leadMatch&&request.method==='POST'&&leadMatch[2])return review(user,decodeURIComponent(leadMatch[1]),await body());
     const runMatch=path.match(/^\/api\/lab\/runs\/([^/]+)$/);
     if(runMatch&&request.method==='GET')return runDetail(user,decodeURIComponent(runMatch[1]));

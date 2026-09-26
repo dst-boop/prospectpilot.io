@@ -7,10 +7,10 @@ import {leadIdentity} from '../lead-quality.mjs';
 async function fixture(options={}) {
   const db=new PGlite();
   await db.exec(readFileSync(new URL('../generated/schema.sql',import.meta.url),'utf8'));
-  await db.exec(readFileSync(new URL('../migrations/006-research-lab.sql',import.meta.url),'utf8'));
+  await db.exec(readFileSync(new URL('../migrations/006-research-lab.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/017-forget.sql',import.meta.url),'utf8'));
   await db.exec(readFileSync(new URL('../migrations/012-plan-catalog-summary.sql',import.meta.url),'utf8'));
   await db.exec(readFileSync(new URL('../migrations/007-quality-v2.sql',import.meta.url),'utf8'));
-  await db.exec(readFileSync(new URL('../migrations/008-prospect-workspace.sql',import.meta.url),'utf8'));
+  await db.exec(readFileSync(new URL('../migrations/008-prospect-workspace.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/017-forget.sql',import.meta.url),'utf8'));
   await db.exec(readFileSync(new URL('../migrations/013-advisor-workflow.sql',import.meta.url),'utf8'));
   await db.exec(readFileSync(new URL('../migrations/014-outreach-cadence.sql',import.meta.url),'utf8'));
 await db.exec(readFileSync(new URL('../migrations/015-dial-budget.sql',import.meta.url),'utf8'));

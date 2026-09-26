@@ -4,7 +4,7 @@ import {createProspectJobs,providerJobConfig} from './prospect-jobs.mjs';
 import {createProspectProviders} from './prospect-providers.mjs';
 import pg from 'pg';import worker from './generated/worker.mjs';import {createDatabase} from './database.mjs';import {createResearchJobs} from './research-jobs.mjs';import {createNativeResearch,publicGet} from './native-research.mjs';import {createWarnService} from './warn.mjs';
 const pool=new pg.Pool({max:3,connectionTimeoutMillis:10000,statement_timeout:30000});
-const prospectJobs=createProspectJobs({pool,providers:createProspectProviders({pdlKey:process.env.PDL_API_KEY||'',hunterKey:process.env.HUNTER_API_KEY||''}),config:providerJobConfig()});
+const prospectJobs=createProspectJobs({pool,providers:createProspectProviders({pdlKey:process.env.PDL_API_KEY||'',hunterKey:process.env.HUNTER_API_KEY||'',trestleKey:process.env.TRESTLE_API_KEY||'',anthropicKey:process.env.ANTHROPIC_API_KEY||''}),config:providerJobConfig()});
 const db=createDatabase(pool),native=createNativeResearch({warn:createWarnService({get:publicGet})});
 const lab=createResearchLab({pool,sources:createLabSources({warn:createWarnService({get:publicGet}),searchKey:process.env.BRAVE_SEARCH_API_KEY||'',searchCostMicros:process.env.BRAVE_QUERY_COST_MICROS===undefined?null:Number(process.env.BRAVE_QUERY_COST_MICROS)})});
 let stop=false;process.on('SIGTERM',()=>{stop=true;});
