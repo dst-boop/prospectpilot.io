@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
 
-function client(responses){
+function client(responses,href='https://example.com/prospect'){
  const elements=new Map(),requests=[];
- const element=id=>{if(!elements.has(id))elements.set(id,{value:'',textContent:'',innerHTML:'',disabled:false,setAttribute(key,value){this[key]=value;},classList:{toggle(){}}});return elements.get(id);};
- const context=vm.createContext({URLSearchParams,matchMedia:()=>({matches:false}),FormData:class{constructor(){return [];}},
+ const element=id=>{if(!elements.has(id))elements.set(id,{value:'',textContent:'',innerHTML:'',disabled:false,open:false,showModal(){this.open=true;},setAttribute(key,value){this[key]=value;},classList:{toggle(){}}});return elements.get(id);};
+ const context=vm.createContext({URL,location:{href},URLSearchParams,matchMedia:()=>({matches:false}),FormData:class{constructor(){return [];}},
   document:{getElementById:element,querySelectorAll:()=>[]}});
  const source=readFileSync(new URL('../prospect-client.js',import.meta.url),'utf8');
  vm.runInContext(source.slice(source.indexOf('const $='),source.indexOf('async function loadLists()')),context);
@@ -57,4 +57,12 @@ test('startup list failure offers a retry that initializes the whole directory',
  assert.doesNotMatch(c.element('notice').textContent,/workspace is ready/);
  await c.element('retryContacts').onclick();assert.equal(c.run('attempts'),2);
  assert.match(c.element('table').innerHTML,/Jamie Example/);assert.equal(c.element('notice').textContent,'Your contact workspace is ready.');
+});
+
+test('requested CSV import opens after startup recovery and only once',async()=>{
+ const c=client([new Error('Contacts temporarily unavailable'),{contacts:[person],total:1},{contacts:[person],total:1}],'https://example.com/prospect?import=1');
+ c.run('function loadLists(){}function loadSearches(){}');
+ await c.run('initializeDirectory()');assert.notEqual(c.element('importDialog').open,true);
+ await c.element('retryContacts').onclick();assert.equal(c.element('importDialog').open,true);
+ c.element('importDialog').open=false;await c.run('initializeDirectory()');assert.equal(c.element('importDialog').open,false);
 });
