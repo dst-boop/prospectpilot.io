@@ -282,7 +282,25 @@ function renderDraft(){
   $('draftCopied').textContent='';
   const mail=d.channel==='email'&&!!reviewedEmail();
   $('draftOutlook').hidden=!mail;$('draftMailApp').hidden=!mail;
+  $('draftLinkedIn').hidden=d.channel!=='linkedin';
+  $('draftLinkedIn').disabled=!reviewedLinkedIn();
+  $('draftHelp').textContent=d.channel==='linkedin'
+    ? 'Review the note, copy it, then open the verified profile and send on LinkedIn. Return here to record what happened. Opening a profile never records a touch.'
+    : 'Review the draft before sending with your own tools. Nothing is sent from here. Record the outcome below afterwards.';
+  if(d.channel==='linkedin'&&!reviewedLinkedIn())$('draftNeeds').textContent+=' Review the LinkedIn contact evidence below before opening a messaging shortcut, and check any outreach hold in the brief.';
 }
+function reviewedLinkedIn(){
+  const c=currentWorkflow?.action?.contact,step=currentWorkflow?.cadence?.step;
+  if(currentWorkflow?.draft?.channel!=='linkedin'||!step?.ready||c?.channel!=='linkedin')return '';
+  try{const u=new URL(c.address);return u.protocol==='https:'&&['linkedin.com','www.linkedin.com'].includes(u.hostname)&&!u.username&&!u.password&&/^\/in\/[^/]+\/?$/.test(u.pathname)?u.origin+u.pathname:'';}catch{return '';}
+}
+$('draftLinkedIn').onclick=()=>{
+  const url=reviewedLinkedIn();if(!url)return;
+  window.open(url,'_blank','noopener,noreferrer');
+  $('activityChannel').value='linkedin';
+  $('draftCopied').textContent='LinkedIn profile opened. Send there if appropriate, then return and record the outcome. Nothing has been logged yet.';
+};
+$('draftLogOutcome').onclick=()=>{$('activityForm').scrollIntoView({behavior:'smooth',block:'start'});$('activityOutcome').focus({preventScroll:true});};
 // Outreach leaves from the advisor's own mailbox, never from here. The firm's
 // Microsoft tenant allows no third-party sign-in, and what an advisor sends
 // must be archived by the firm, so Outlook on the web opens with the message
@@ -323,6 +341,11 @@ $('draftCopy').onclick=async()=>{
   catch{$('draftBody').select();$('draftCopied').textContent='Select the message and copy it.';}
 };
 function activityFields(){const outcome=$('activityOutcome').value,closed=['not_interested','do_not_contact','reopen','became_client'].includes(outcome);$('nextAtLabel').hidden=closed;
+  const message=$('activityChannel').value==='linkedin';
+  const noAnswer=document.querySelector('#activityOutcome option[value="no_answer"]');
+  const connected=document.querySelector('#activityOutcome option[value="connected"]');
+  if(noAnswer)noAnswer.textContent=message?'Message / request sent — no reply yet':'No answer';
+  if(connected)connected.textContent=message?'Reply received':'Connected';
   // A no-show needs a new time; a meeting that happened may or may not produce one.
   $('activityNext').required=['follow_up','meeting_booked','no_show'].includes(outcome);$('activityNext').disabled=closed;
   // The channel stays available for "not interested" and "do not contact": a
@@ -350,6 +373,7 @@ function prepareActivity(){renderConversation();$('activityForm').reset();$('act
   else $('activityNext').value='';
   activityFields();}
 $('activityOutcome').onchange=activityFields;
+$('activityChannel').onchange=activityFields;
 function activityConflict(id,version,message='This prospect changed. Your note and selected outcome are kept. Refresh the prospect, review the latest activity, then save again.'){
  $('activityError').innerHTML=`${esc(message)} <button type="button" class="secondary" id="reloadActivity">Refresh prospect and keep note</button>`;
  $('reloadActivity').onclick=async()=>{

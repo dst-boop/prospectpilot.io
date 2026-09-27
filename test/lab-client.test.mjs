@@ -24,6 +24,33 @@ const lead=name=>({lead:{id:name,first_name:name,last_name:'Example',evidence:[]
 const run=name=>({run:{status:name,created_at:'2026-09-10'},tasks:[],costs:[]});
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 
+test('LinkedIn shortcut requires a reviewed profile and a ready touch',()=>{
+  const c=client();
+  c.run("currentWorkflow={draft:{channel:'linkedin'},cadence:{step:{ready:true}},action:{contact:{channel:'linkedin',address:'https://www.linkedin.com/in/synthetic-person?tracking=1'}}}");
+  assert.equal(c.run('reviewedLinkedIn()'),'https://www.linkedin.com/in/synthetic-person');
+  for(const address of ['https://linkedin.com.evil.example/in/person','https://name:secret@www.linkedin.com/in/person','https://www.linkedin.com/company/example','http://www.linkedin.com/in/person']){
+    c.run('currentWorkflow.action.contact.address='+JSON.stringify(address));
+    assert.equal(c.run('reviewedLinkedIn()'),'');
+  }
+  c.run("currentWorkflow.action.contact.address='https://www.linkedin.com/in/synthetic-person';currentWorkflow.cadence.step.ready=false");
+  assert.equal(c.run('reviewedLinkedIn()'),'');
+  c.run("currentWorkflow.cadence.step.ready=true;currentWorkflow.action.contact=null");
+  assert.equal(c.run('reviewedLinkedIn()'),'');
+});
+
+test('opening LinkedIn sets logging channel without writing an outcome',()=>{
+  const c=client();
+  c.run("var opened=[];var window={open:(...args)=>opened.push(args)};currentWorkflow={draft:{channel:'linkedin'},cadence:{step:{ready:true}},action:{contact:{channel:'linkedin',address:'https://www.linkedin.com/in/synthetic-person'}}}");
+  c.element('draftLinkedIn').onclick();
+  assert.equal(c.run('opened.length'),1);
+  assert.equal(c.element('activityChannel').value,'linkedin');
+  assert.match(c.element('draftCopied').textContent,/Nothing has been logged/);
+  assert.equal(c.pending.length,0);
+  c.run('currentWorkflow.cadence.step.ready=false');
+  c.element('draftLinkedIn').onclick();
+  assert.equal(c.run('opened.length'),1);
+});
+
 test('lead details ignore stale responses and cannot reopen after closing',async()=>{
   const c=client(),a=c.run("openLead('A')"),b=c.run("openLead('B')");
   c.pending[1].respond(lead('B'));await b;
@@ -310,4 +337,15 @@ test('opening another lead disarms delete',async()=>{
   await c.run("$('forgetLead').onclick()");
   const b=c.run("openLead('B')");c.pending[1].respond(lead('B'));await b;
   assert.equal(c.element('forgetLead').dataset.armed,'');
+});
+
+
+test('LinkedIn outcome labels describe a message without changing stored outcomes',()=>{
+ const c=client();c.element('activityChannel').value='linkedin';c.element('activityOutcome').value='no_answer';
+ c.element('activityChannel').onchange();
+ assert.match(c.element('#activityOutcome option[value="no_answer"]').textContent,/no reply yet/);
+ assert.equal(c.element('activityOutcome').value,'no_answer');
+ assert.equal(c.pending.length,0);
+ c.element('activityChannel').value='phone';c.element('activityChannel').onchange();
+ assert.equal(c.element('#activityOutcome option[value="no_answer"]').textContent,'No answer');
 });

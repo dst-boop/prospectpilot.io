@@ -1337,3 +1337,12 @@ test('more than two colleagues are summarised rather than listed', async () => {
     assert.equal(seen.cadence.touches.remaining, MAX_TOUCHES - 4);
   } finally { await db.close(); }
 });
+
+
+test('LinkedIn connection note needs no invented previous employer',()=>{
+  const draft=composeTouch({id:'connect',channel:'linkedin'},{lead:{first_name:'Jamie',company:'Example Manufacturing'},advisor:{name:'Synthetic Advisor'}});
+  assert.equal(draft.channel,'linkedin');
+  assert.deepEqual(draft.needs,[]);
+  assert.match(draft.body,/Jamie/);
+  assert.doesNotMatch(draft.body,/250,000|retired|left your employer/);
+});
