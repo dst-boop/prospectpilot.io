@@ -16,6 +16,8 @@ Conversation and meeting counters reflect manually logged outcomes over seven ro
 
 See [the advisor workflow release](ADVISOR-WORKFLOW-RELEASE.md) for the short usage flow and deployment status.
 
+**Campaigns by place.** Under the research tools, enter a ZIP code or town, a radius and business types (for example *11747, 25 miles, electrical contractors*), and optionally the titles to keep (*Owner, President, VP*). The worker first finds companies in OpenStreetMap's free business directory and saves them with the run, then researches each company's own pages and SEC filings for people. Only people whose title matches are stored; the others are counted, not kept. Run details list every company found and why any were passed over (the run's company limit, or researched in the last seven days, so a daily campaign moves through the area). Leave the place blank to research named employers or the plan catalog as before.
+
 ## Outreach pacing and the next touch
 
 The qualification gates decide whether someone may be approached. This decides

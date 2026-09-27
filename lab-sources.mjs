@@ -1,5 +1,5 @@
 import {publicGet, createCachedGet} from './native-research.mjs';
-import {parsePublicWebPage} from './generated/worker.mjs';
+import {parsePublicWebPage,discoverMarketCompanies} from './generated/worker.mjs';
 import {nameKey, publicURL, linkedinURL} from './lead-quality.mjs';
 import {robotsAllowed} from './robots-policy.mjs';
 
@@ -31,7 +31,7 @@ export function proxyCandidates(html, url, company, filedAt) {
   return [...new Map(results.map(c=>[nameKey(c.name),c])).values()].slice(0,60);
 }
 
-export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicros=null,apiFetch=fetch}={}) {
+export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicros=null,apiFetch=fetch,discoverCompanies=discoverMarketCompanies}={}) {
   const cached=createCachedGet(get,{ttl:3600000,maxEntries:150,maxBytes:20000000});
   const robots=new Map();
   async function read(url, signal, maxBytes=2*1024*1024,options={}) {return cached(url,{signal,maxBytes,...options});}
@@ -139,6 +139,14 @@ export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicr
     if(!urls.length) errors.push('No official website was found in the free index. Add an employer website or enable licensed web search.');
     return {status:errors.length?'partial':candidates.length?'completed':'no_match',candidates,documents,errors:[...new Set(errors)],pages_checked:seen.size};
   }
-  return {run, quote:source=>source==='web_search' ? searchKey && Number.isSafeInteger(searchCostMicros) && searchCostMicros>=0 ? searchCostMicros : null : 0,
+  // Companies near a place, from OpenStreetMap's public business directory
+  // (free, ODbL). Business listings only; people are found afterwards on each
+  // company's own pages.
+  async function market({location,radius_miles,industries,max_companies}) {
+    const found=await discoverCompanies({locations:[location],radius_miles,industries,max_companies});
+    const companies=(found.companies||[]).map(c=>({name:c.name,website:c.website||'',location:c.location||'',distance_miles:c.distance_miles??null,industries:c.industries||[],source:c.source||'OpenStreetMap',source_url:c.source_url||''}));
+    return {status:companies.length?'completed':found.errors?.length?'partial':'no_match',companies,errors:found.errors||[],location:found.location||null,radius_miles:found.radius_miles,industry_labels:found.industry_labels||[],provider:found.provider||'',attribution:found.attribution||''};
+  }
+  return {run, market, quote:source=>source==='web_search' ? searchKey && Number.isSafeInteger(searchCostMicros) && searchCostMicros>=0 ? searchCostMicros : null : 0,
     readiness:{web_search:Boolean(searchKey)&&Number.isSafeInteger(searchCostMicros)&&searchCostMicros>=0,web_search_query_cost_micros:Number.isSafeInteger(searchCostMicros)?searchCostMicros:null}};
 }
