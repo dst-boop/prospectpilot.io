@@ -269,3 +269,21 @@ test('dashboard revalidation cannot overwrite a newer assessment version',async(
   assert.notEqual((await db.query('SELECT status FROM lab_qualification WHERE lead_id=$1',[id])).rows[0].status,'verified');
  }finally{await db.close();}
 });
+
+
+test('related people are scoped, conservative, read-only and respect suppression',async()=>{
+ const {db,lab,user}=await fixture();try{
+  await lab.importCSV(user,{csv:csv+'\nTaylor,Sample,Example Manufacturing,Engineer,taylor@example.com,62,US\nMorgan,Sample,Other Company,Director,morgan@example.com,62,US\nAlex,Sample,Unrelated Company,Designer,alex@example.com,62,US'});
+  const records=(await lab.list(user)).leads.map(r=>r.lead),seed=records.find(l=>l.first_name==='Jamie');
+  let result=await lab.relatedPeople(user,seed.id);
+  assert.equal(result.people.length,2);
+  assert.ok(result.people.every(p=>p.basis.includes('unconfirmed')));
+  assert.deepEqual(result.people.find(p=>p.first_name==='Taylor').reasons,['Same reported employer']);
+  assert.deepEqual(result.people.find(p=>p.first_name==='Morgan').reasons,['Same reported role']);
+  await assert.rejects(lab.relatedPeople({uid:'other',email:'other@example.com'},seed.id),{status:404});
+  const target=records.find(l=>l.first_name==='Taylor');
+  await db.query(`UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{suppressed}','true')::text WHERE id=$1`,[target.id]);
+  result=await lab.relatedPeople(user,seed.id);assert.equal(result.people.length,1);
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM advisor_activities')).rows[0].n,0);
+ }finally{await db.close();}
+});
