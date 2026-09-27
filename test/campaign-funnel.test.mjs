@@ -40,6 +40,14 @@ test('a run with nothing found still says where it stopped, and zero losses are 
   const odd=runFunnel({tasks:[{source:'sec',payload:{company:'X'},status:'skipped',result:{errors:['Synthetic demo: no external provider calls.']}}]});
   assert.equal(lost(stage(odd,'companies_researched'),'Synthetic demo: no external provider calls.'),1,'an unrecognised reason is shown as recorded');
   assert.deepEqual(stage(odd,'pages_read').lost,[],'a skipped task read no pages');
+  // Two sources failing one company for the same reason count that company once.
+  const twice=runFunnel({tasks:[{source:'public_web',payload:{company:'Y'},status:'partial',result:{errors:['Public page unavailable.']}},{source:'sec',payload:{company:'Y'},status:'partial',result:{errors:['Source unavailable or timed out.']}},
+    {source:'sec',payload:{company:'Z'},status:'partial',result:{errors:['Source unavailable or timed out.']}}]});
+  assert.equal(lost(stage(twice,'pages_read'),'Page or source unavailable'),2);
+  // Matches held by another advisor are counted by the task but never linked to the run.
+  const other=runFunnel({tasks:[{source:'public_web',payload:{company:'W'},status:'completed',result:{discovered:2,added:0,duplicates:2}}],statuses:{}});
+  const saved=stage(other,'people_saved');
+  assert.equal(saved.count,0);assert.equal(lost(saved,'Already held by another advisor'),2);assert.match(saved.detail,/0 new · 0 already on file/);
 });
 
 const migrations=['006-research-lab','017-forget','012-plan-catalog-summary','007-quality-v2','008-prospect-workspace','013-advisor-workflow','014-outreach-cadence','015-dial-budget','016-inbound-contact','021-lab-companies'];

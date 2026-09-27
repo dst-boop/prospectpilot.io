@@ -82,19 +82,24 @@ export function runFunnel({tasks=[],companies=[],statuses={}}={}) {
   const sum=field=>research.reduce((n,t)=>n+(Number(result(t)[field])||0),0);
   const pages=sum('pages_checked'),kept=sum('discovered'),offTarget=sum('off_target'),added=sum('added'),known=sum('duplicates'),rejected=sum('rejected'),ambiguous=sum('ambiguous');
   const status=name=>Number(statuses[name]||0);
+  // Saved means linked to this run and visible to this user; a match that
+  // belongs to another advisor is counted by the task but never linked.
   const saved=Object.values(statuses).reduce((n,v)=>n+Number(v||0),0);
+  const onFile=Math.max(0,saved-added),heldElsewhere=Math.max(0,known-onFile);
   const promising=status('promising')+status('verified');
   const notResearched=[...companies.filter(c=>!c.queued).map(c=>[c.skip_reason||'Not researched',1]),
     ...[...byCompany.values()].filter(list=>!list.some(t=>['completed','partial'].includes(t.status))).map(list=>[list.every(t=>['pending','running'].includes(t.status))?'Still waiting to run':lossReason((result(list[0]).errors||[])[0]||''),1])];
   // Only tasks that read pages can lose anything at the page stage.
-  const pageLosses=research.filter(t=>['completed','partial'].includes(t.status)).flatMap(t=>[...new Set((result(t).errors||[]).map(lossReason))].map(reason=>[reason,1]));
+  // Grouped by company, so two sources failing one company for the same reason count once.
+  const companyOf=t=>nameKey((typeof t.payload==='string'?JSON.parse(t.payload):t.payload||{}).company||'');
+  const pageLosses=[...new Set(research.filter(t=>['completed','partial'].includes(t.status)).flatMap(t=>(result(t).errors||[]).map(e=>`${companyOf(t)}\u0000${lossReason(e)}`)))].map(key=>[key.split('\u0000')[1],1]);
   return {stages:[
     {key:'companies_found',label:'Companies found',count:found},
     {key:'companies_researched',label:'Companies researched',count:researched,lost:tally(notResearched)},
     {key:'pages_read',label:'Pages read',count:pages,lost:tally(pageLosses),note:'Losses count companies, once per reason.'},
     {key:'people_found',label:'People found',count:kept+offTarget},
     {key:'people_kept',label:'Matched the titles',count:kept,lost:tally([['Other titles, not kept',offTarget]])},
-    {key:'people_saved',label:'Saved to your records',count:saved||added+known,detail:`${added} new · ${known} already on file`,lost:tally([['Missing a full name, Equitable, or previously deleted',rejected],['Matched more than one existing record',ambiguous]])},
+    {key:'people_saved',label:'Saved to your records',count:saved,detail:`${Math.min(added,saved)} new · ${onFile} already on file`,lost:tally([['Missing a full name, Equitable, or previously deleted',rejected],['Matched more than one existing record',ambiguous],['Already held by another advisor',heldElsewhere]])},
     {key:'promising',label:'Promising or better',count:promising,lost:tally([['Excluded by a qualification check',status('excluded')],['Conflicting identifiers to resolve',status('identity_review')],['Evidence still needed',status('incomplete')+status('unassessed')]])},
     {key:'qualified',label:'All five checks confirmed',count:status('verified'),lost:tally([['Promising, evidence still to review',status('promising')]])}]};
 }
