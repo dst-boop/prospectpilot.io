@@ -51,6 +51,9 @@
 !lab.css
 !lab-client.js
 !lead-quality.mjs
+!prospect-core.mjs
+!identity-resolution.mjs
+!campaign-engine.mjs
 !source-catalog.mjs
 !plan-catalog.mjs
 !contact-benchmark.mjs

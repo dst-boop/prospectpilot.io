@@ -18,7 +18,7 @@ const trestle=(o={})=>({id:'Phone.1',phone_number:'2125550199',is_valid:true,lin
 
 async function fixture(fn,{answer=trestle(),price=1500}={}){
   const db=new PGlite();try{
-    for(const name of ['008-prospect-workspace','009-prospect-jobs','011-email-domain-check','017-forget','018-phone-check'])await db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
+    for(const name of ['008-prospect-workspace','020-list-sharing','009-prospect-jobs','011-email-domain-check','017-forget','018-phone-check'])await db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
     const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
     const sent=[];let reply=answer;
     const fetcher=async(url,options)=>{sent.push({url:String(url),headers:options.headers});return typeof reply==='function'?reply():Response.json(reply);};
