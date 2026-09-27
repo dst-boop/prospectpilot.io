@@ -58,6 +58,51 @@ async function transaction(pool,fn) {
 }
 const visibleSQL=LEAD_VISIBLE_SQL;
 
+// Why a source task came back short, in words an advisor can act on. Each task
+// counts once per reason, however many of its pages hit the same wall.
+const LOSS_REASONS=[
+  [/budget/i,'Daily provider budget reached'],[/not configured/i,'Source not configured'],
+  [/disallows/i,'Site blocks automated reading'],[/No official website/i,'No company website found'],
+  [/did not establish the employer/i,'Page did not name the employer'],
+  [/SEC registrant|proxy filing|proxy is older/i,'No usable SEC proxy filing'],
+  [/format requires/i,'Page format not readable (PDF or similar)'],
+  [/unavailable|timed out|exhausted|interrupted/i,'Page or source unavailable']];
+// An unrecognised reason is shown as recorded (these are the app's own messages) rather than as "Other".
+const lossReason=message=>LOSS_REASONS.find(([pattern])=>pattern.test(message))?.[1]||String(message||'').replace(/\s+/g,' ').trim().slice(0,120)||'Reason not recorded';
+const tally=pairs=>Object.entries(pairs.reduce((all,[reason,n])=>{if(n)all[reason]=(all[reason]||0)+n;return all;},{})).map(([reason,count])=>({reason,count})).sort((a,b)=>b.count-a.count);
+// A campaign read as a funnel: how many made it through each stage and what
+// stopped the rest. Counts come from what the run recorded; nothing is estimated.
+export function runFunnel({tasks=[],companies=[],statuses={}}={}) {
+  const research=tasks.filter(t=>!['market','inventory'].includes(t.source));
+  const byCompany=new Map();
+  for(const t of research){const key=nameKey((typeof t.payload==='string'?JSON.parse(t.payload):t.payload||{}).company||'');if(!key)continue;if(!byCompany.has(key))byCompany.set(key,[]);byCompany.get(key).push(t);}
+  const found=companies.length||byCompany.size;
+  const researched=[...byCompany.values()].filter(list=>list.some(t=>['completed','partial'].includes(t.status))).length;
+  const result=t=>t.result||{};
+  const sum=field=>research.reduce((n,t)=>n+(Number(result(t)[field])||0),0);
+  const pages=sum('pages_checked'),kept=sum('discovered'),offTarget=sum('off_target'),added=sum('added'),known=sum('duplicates'),rejected=sum('rejected'),ambiguous=sum('ambiguous');
+  const status=name=>Number(statuses[name]||0);
+  // Saved means linked to this run and visible to this user; a match that
+  // belongs to another advisor is counted by the task but never linked.
+  const saved=Object.values(statuses).reduce((n,v)=>n+Number(v||0),0);
+  const onFile=Math.max(0,saved-added),heldElsewhere=Math.max(0,known-onFile);
+  const promising=status('promising')+status('verified');
+  const notResearched=[...companies.filter(c=>!c.queued).map(c=>[c.skip_reason||'Not researched',1]),
+    ...[...byCompany.values()].filter(list=>!list.some(t=>['completed','partial'].includes(t.status))).map(list=>[list.every(t=>['pending','running'].includes(t.status))?'Still waiting to run':lossReason((result(list[0]).errors||[])[0]||''),1])];
+  // Only tasks that read pages can lose anything at the page stage.
+  // Grouped by company, so two sources failing one company for the same reason count once.
+  const companyOf=t=>nameKey((typeof t.payload==='string'?JSON.parse(t.payload):t.payload||{}).company||'');
+  const pageLosses=[...new Set(research.filter(t=>['completed','partial'].includes(t.status)).flatMap(t=>(result(t).errors||[]).map(e=>`${companyOf(t)}\u0000${lossReason(e)}`)))].map(key=>[key.split('\u0000')[1],1]);
+  return {stages:[
+    {key:'companies_found',label:'Companies found',count:found},
+    {key:'companies_researched',label:'Companies researched',count:researched,lost:tally(notResearched)},
+    {key:'pages_read',label:'Pages read',count:pages,lost:tally(pageLosses),note:'Losses count companies, once per reason.'},
+    {key:'people_found',label:'People found',count:kept+offTarget},
+    {key:'people_kept',label:'Matched the titles',count:kept,lost:tally([['Other titles, not kept',offTarget]])},
+    {key:'people_saved',label:'Saved to your records',count:saved,detail:`${Math.min(added,saved)} new · ${onFile} already on file`,lost:tally([['Missing a full name, Equitable, or previously deleted',rejected],['Matched more than one existing record',ambiguous],['Already held by another advisor',heldElsewhere]])},
+    {key:'promising',label:'Promising or better',count:promising,lost:tally([['Excluded by a qualification check',status('excluded')],['Conflicting identifiers to resolve',status('identity_review')],['Evidence still needed',status('incomplete')+status('unassessed')]])},
+    {key:'qualified',label:'All five checks confirmed',count:status('verified'),lost:tally([['Promising, evidence still to review',status('promising')]])}]};
+}
 export async function assessInventory(ids,assess,{clock=()=>performance.now(),budgetMs=60000}={}) {
   const started=clock();let assessed=0,failed=0,skipped=0;
   for(const id of ids){
@@ -366,8 +411,13 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     FROM lab_runs r WHERE user_id=$1 ORDER BY created_at DESC LIMIT 30`,[user.uid])).rows;}
   async function runDetail(user,id) {
     const run=(await pool.query('SELECT * FROM lab_runs WHERE id=$1 AND user_id=$2',[id,user.uid])).rows[0];if(!run)throw fail(404,'Research run not found.');
-    return {run,tasks:(await pool.query('SELECT source,payload,status,result,started_at,completed_at,reserved_micros FROM lab_tasks WHERE run_id=$1 ORDER BY started_at NULLS LAST,id',[id])).rows,costs:(await pool.query('SELECT * FROM lab_costs WHERE run_id=$1',[id])).rows,
-      companies:(await pool.query('SELECT name,website,location,distance_miles,industries,source,source_url,queued,skip_reason FROM lab_companies WHERE run_id=$1 ORDER BY queued DESC,distance_miles NULLS LAST,name LIMIT 200',[id])).rows};
+    const tasks=(await pool.query('SELECT source,payload,status,result,started_at,completed_at,reserved_micros FROM lab_tasks WHERE run_id=$1 ORDER BY started_at NULLS LAST,id',[id])).rows;
+    const companies=(await pool.query('SELECT name,website,location,distance_miles,industries,source,source_url,queued,skip_reason FROM lab_companies WHERE run_id=$1 ORDER BY queued DESC,distance_miles NULLS LAST,name',[id])).rows;
+    // Where the people this run touched stand now, by this user's current assessment.
+    const statuses=Object.fromEntries((await pool.query(`SELECT COALESCE(q.status,'unassessed') AS status,count(*)::int AS n FROM lab_run_leads l
+      LEFT JOIN lab_qualification q ON q.lead_id=l.lead_id AND q.user_id=$2 WHERE l.run_id=$1 GROUP BY 1`,[id,user.uid])).rows.map(r=>[r.status,r.n]));
+    return {run,tasks,costs:(await pool.query('SELECT * FROM lab_costs WHERE run_id=$1',[id])).rows,companies:companies.slice(0,200),
+      funnel:run.kind==='discovery'?runFunnel({tasks,companies,statuses}):null};
   }
   async function cost(user,input) {
     await runDetail(user,input.run_id);
