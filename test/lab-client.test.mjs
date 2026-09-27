@@ -343,9 +343,9 @@ test('opening another lead disarms delete',async()=>{
 test('LinkedIn outcome labels describe a message without changing stored outcomes',()=>{
  const c=client();c.element('activityChannel').value='linkedin';c.element('activityOutcome').value='no_answer';
  c.element('activityChannel').onchange();
- assert.match(c.element('#activityOutcome option[value="no_answer"]').textContent,/no reply yet/);
+ assert.match(c.element('noAnswerOutcome').textContent,/no reply yet/);
  assert.equal(c.element('activityOutcome').value,'no_answer');
  assert.equal(c.pending.length,0);
  c.element('activityChannel').value='phone';c.element('activityChannel').onchange();
- assert.equal(c.element('#activityOutcome option[value="no_answer"]').textContent,'No answer');
+ assert.equal(c.element('noAnswerOutcome').textContent,'No answer');
 });

@@ -342,8 +342,8 @@ $('draftCopy').onclick=async()=>{
 };
 function activityFields(){const outcome=$('activityOutcome').value,closed=['not_interested','do_not_contact','reopen','became_client'].includes(outcome);$('nextAtLabel').hidden=closed;
   const message=$('activityChannel').value==='linkedin';
-  const noAnswer=document.querySelector('#activityOutcome option[value="no_answer"]');
-  const connected=document.querySelector('#activityOutcome option[value="connected"]');
+  const noAnswer=$('noAnswerOutcome');
+  const connected=$('connectedOutcome');
   if(noAnswer)noAnswer.textContent=message?'Message / request sent — no reply yet':'No answer';
   if(connected)connected.textContent=message?'Reply received':'Connected';
   // A no-show needs a new time; a meeting that happened may or may not produce one.
