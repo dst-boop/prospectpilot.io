@@ -360,3 +360,13 @@ test('related people ignores stale results after switching prospects and support
  const second=c.element('exploreRelated').onclick();c.pending[1].respond({error:'Unavailable'},500);await second;
  assert.equal(c.element('exploreRelated').disabled,false);assert.match(c.element('relatedPeople').textContent,/retry/);
 });
+
+
+test('related lookup explains missing profile context without claiming a network search',async()=>{
+ const c=client();c.run("current={lead:{id:'synthetic'}};leadDetailVersion=1");
+ const task=c.element('exploreRelated').onclick();c.pending[0].respond({status:'missing_context',searched:false,people:[],truncated:false});await task;
+ assert.match(c.element('relatedPeople').innerHTML,/no saved employer or job title/);
+ assert.match(c.element('relatedPeople').innerHTML,/have not been searched/);
+ assert.doesNotMatch(c.element('relatedPeople').innerHTML,/No shared employer/);
+ assert.equal(c.element('exploreRelated').disabled,false);
+});

@@ -182,7 +182,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     const {lead:seed}=await accessible(user,id);
     const key=v=>String(v||'').trim().toLowerCase().replace(/\s+/g,' ');
     const company=key(seed.company),role=key(seed.current_title);
-    if(!company&&!role)return {people:[],truncated:false};
+    if(!company&&!role)return {people:[],truncated:false,status:'missing_context',searched:false,missing_fields:['company','current_title']};
     const rows=(await pool.query(`SELECT d.id,d.payload FROM discovery_leads d WHERE ${visibleSQL} AND d.id<>$4
       AND (($5<>'' AND lower(regexp_replace(trim(d.payload::jsonb->>'company'),'\\s+',' ','g'))=$5)
         OR ($6<>'' AND lower(regexp_replace(trim(d.payload::jsonb->>'current_title'),'\\s+',' ','g'))=$6))
@@ -200,7 +200,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
         next_step:'Review this person and their contact evidence. Ask whether they know your existing contact before requesting an introduction.'});
     }
     people.sort((a,b)=>b.reasons.length-a.reasons.length||a.id.localeCompare(b.id));
-    return {people:people.slice(0,20),truncated:rows.length>100||people.length>20};
+    return {people:people.slice(0,20),truncated:rows.length>100||people.length>20,status:people.length?'matches':'no_matches',searched:true};
   }
   async function saveCandidates(client,user,candidates,run,source) {
     if(!candidates.length)return {added:0,duplicates:0,rejected:0,ambiguous:0};

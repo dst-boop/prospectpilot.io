@@ -287,3 +287,13 @@ test('related people are scoped, conservative, read-only and respect suppression
   assert.equal((await db.query('SELECT count(*)::int AS n FROM advisor_activities')).rows[0].n,0);
  }finally{await db.close();}
 });
+
+
+test('related lookup distinguishes missing context from a completed search with no matches',async()=>{
+ const {db,lab,user}=await fixture();try{
+  await lab.importCSV(user,{csv});const id=(await lab.list(user)).leads[0].lead.id;
+  const empty=await lab.relatedPeople(user,id);assert.equal(empty.status,'no_matches');assert.equal(empty.searched,true);
+  await db.query("UPDATE discovery_leads SET payload=(payload::jsonb - 'company' - 'current_title')::text WHERE id=$1",[id]);
+  const missing=await lab.relatedPeople(user,id);assert.equal(missing.status,'missing_context');assert.equal(missing.searched,false);assert.deepEqual(missing.missing_fields,['company','current_title']);
+ }finally{await db.close();}
+});
