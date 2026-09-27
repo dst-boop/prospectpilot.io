@@ -288,12 +288,16 @@ function reviewedEmail(){const c=currentWorkflow?.action?.contact;return c?.chan
 function outlookMail({to,subject,body}){return OUTLOOK+'/mail/deeplink/compose?'+query({to,subject,body});}
 function mailApp({to,subject,body}){return 'mailto:'+encodeURIComponent(to)+'?'+query({subject,body});}
 function outlookInvite({to,subject,body,start,end}){return OUTLOOK+'/calendar/deeplink/compose?'+query({path:'/calendar/action/compose',rru:'addevent',subject,body,startdt:start.toISOString(),enddt:end.toISOString(),to});}
-function inviteICS({to,name,subject,body,start,end,uid}){
+// A plain appointment, not an iTIP request: a request needs an ORGANIZER, and
+// ProspectPilot does not know which mailbox the advisor sends from. Outlook
+// opens it on the advisor's calendar, they add the guest and send it from
+// there. Invite in Outlook is the path that fills the guest in.
+function inviteICS({subject,body,start,end,uid}){
   const text=v=>String(v).replace(/\\/g,'\\\\').replace(/;/g,'\\;').replace(/,/g,'\\,').replace(/\r?\n/g,'\\n');
   const stamp=d=>d.toISOString().replace(/[-:]/g,'').replace(/\.\d{3}/,'');
-  return ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//ProspectPilot//EN','METHOD:REQUEST','BEGIN:VEVENT','UID:'+uid+'@prospectpilot.io',
+  return ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//ProspectPilot//EN','BEGIN:VEVENT','UID:'+uid+'@prospectpilot.io',
     'DTSTAMP:'+stamp(new Date()),'DTSTART:'+stamp(start),'DTEND:'+stamp(end),'SUMMARY:'+text(subject),'DESCRIPTION:'+text(body),
-    to?`ATTENDEE;CN="${String(name).replace(/["\r\n]/g,'')}";RSVP=TRUE:mailto:${to}`:'','STATUS:CONFIRMED','END:VEVENT','END:VCALENDAR'].filter(Boolean).join('\r\n')+'\r\n';
+    'STATUS:CONFIRMED','END:VEVENT','END:VCALENDAR'].join('\r\n')+'\r\n';
 }
 function draftMessage(){const d=currentWorkflow?.draft,to=reviewedEmail();return d?.channel==='email'&&to?{to,subject:d.subject||'',body:d.body}:null;}
 $('draftOutlook').onclick=()=>{const m=draftMessage();if(!m)return;window.open(outlookMail(m),'_blank','noopener');$('draftCopied').textContent='Opened in Outlook. Press Send there, then record the outcome below.';};
@@ -305,7 +309,7 @@ function meetingInvite(){
   return {to:reviewedEmail(),name,subject:'Our conversation',body:'Looking forward to speaking with you.',start,end,uid:crypto.randomUUID()};
 }
 $('inviteOutlook').onclick=()=>{const m=meetingInvite();if(!m)return;window.open(outlookInvite(m),'_blank','noopener');$('inviteNote').textContent=(m.to?'':'No reviewed email address, so add the guest in Outlook. ')+'Press Send in Outlook, then save the outcome here.';};
-$('inviteICS').onclick=()=>{const m=meetingInvite();if(!m)return;const url=URL.createObjectURL(new Blob([inviteICS(m)],{type:'text/calendar'})),a=document.createElement('a');a.href=url;a.download='meeting-invite.ics';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);$('inviteNote').textContent='Invite downloaded. Open it in Outlook and send it from there.';};
+$('inviteICS').onclick=()=>{const m=meetingInvite();if(!m)return;const url=URL.createObjectURL(new Blob([inviteICS(m)],{type:'text/calendar'})),a=document.createElement('a');a.href=url;a.download='meeting-invite.ics';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);$('inviteNote').textContent='Invite downloaded. Open it in Outlook, add the guest'+(m.to?' ('+m.to+')':'')+' and send it from there.';};
 $('draftCopy').onclick=async()=>{
   const d=currentWorkflow?.draft;if(!d)return;
   const text=[d.subject?'Subject: '+d.subject:'',d.body].filter(Boolean).join('\n\n');

@@ -10,7 +10,7 @@ const lab=readFileSync(new URL('../lab-client.js',import.meta.url),'utf8');
 function outreach(workflow){
  const elements=new Map(),element=id=>{if(!elements.has(id))elements.set(id,{value:'',textContent:'',hidden:false,checked:false,disabled:false});return elements.get(id);};
  const opened=[];
- const context=vm.createContext({URL,Blob,crypto,$:element,window:{open:(...a)=>opened.push(a)},location:{},document:{createElement:()=>({click(){}})},when:String,
+ const context=vm.createContext({URL:{createObjectURL:()=>'blob:x',revokeObjectURL(){}},Blob,crypto,setTimeout,$:element,window:{open:(...a)=>opened.push(a)},location:{},document:{createElement:()=>({click(){}})},when:String,
   currentWorkflow:workflow,current:{lead:{first_name:'Jamie',last_name:'Rivera, Jr.'}}});
  const start=lab.indexOf('function renderDraft()'),end=lab.indexOf("$('activityOutcome').onchange");
  vm.runInContext(lab.slice(start,end),context);
@@ -53,9 +53,10 @@ test('a booked meeting prepares an Outlook invite or an .ics for the saved time,
  assert.equal(url.searchParams.get('startdt'),start.toISOString());
  assert.equal(url.searchParams.get('enddt'),new Date(start.getTime()+45*60000).toISOString());
  const ics=c.run('inviteICS(meetingInvite())');
- assert.match(ics,/^BEGIN:VCALENDAR\r\n/);assert.match(ics,/METHOD:REQUEST\r\n/);
+ assert.match(ics,/^BEGIN:VCALENDAR\r\n/);
+ assert.doesNotMatch(ics,/METHOD:|ATTENDEE|jamie@example\.com/,'a plain appointment: a request would need an organizer the app does not know');
  assert.match(ics,new RegExp('DTSTART:'+start.toISOString().replace(/[-:]/g,'').replace(/\.\d{3}/,'')+'\r\n'));
- assert.match(ics,/ATTENDEE;CN="Jamie Rivera, Jr.";RSVP=TRUE:mailto:jamie@example.com\r\n/);
+ c.element('inviteICS').onclick();assert.match(c.element('inviteNote').textContent,/add the guest \(jamie@example\.com\)/);
  assert.doesNotMatch(ics,/[^\r]\n/,'every line ends CRLF');
 });
 
@@ -64,7 +65,6 @@ test('without a reviewed email the invite has no guest; the advisor adds one in 
  c.element('activityNext').value='2026-10-01T09:00';c.element('inviteOutlook').onclick();
  assert.equal(new URL(c.opened[0][0]).searchParams.get('to'),null);
  assert.match(c.element('inviteNote').textContent,/add the guest in Outlook/);
- assert.doesNotMatch(c.run('inviteICS(meetingInvite())'),/ATTENDEE/);
 });
 
 // The ZoomInfo export is recognised from its own headers; no API or login.

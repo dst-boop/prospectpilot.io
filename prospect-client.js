@@ -52,7 +52,7 @@ function renderImportReport(r,{archived=false}={}){
 // choose it), the format is recognised from its headers, a list named after the
 // file is offered, and the preview runs. Nothing is saved until Import. No
 // ZoomInfo API or login is involved; the export is ZoomInfo's own.
-const NEW_LIST='__new__';let newListName='';
+const NEW_LIST='__new__';let newListName='',autoList='';
 const ZOOMINFO_HEADERS=/(^|,)"?(ZoomInfo Contact ID|ZoomInfo Company ID|Contact Accuracy Score)"?(,|$)/i;
 function fileListName(file){return file.name.replace(/\.csv$/i,'').replace(/[_]+/g,' ').replace(/\s+/g,' ').trim().slice(0,100)||'Imported contacts';}
 async function prepareImportFile(file){
@@ -61,19 +61,24 @@ async function prepareImportFile(file){
  $('importInputMode').value='file';$('csvFileLabel').hidden=false;$('csvTextLabel').hidden=true;
  const header=(await file.slice(0,8000).text()).replace(/^\uFEFF/,'').split(/\r?\n/)[0]||'',zoominfo=ZOOMINFO_HEADERS.test(header);
  $('importFormat').value=zoominfo?'zoominfo':'generic';$('source').value=zoominfo?'ZoomInfo CSV export':$('source').value==='ZoomInfo CSV export'?'':$('source').value;
- if(!$('importList').value||$('importList').value===NEW_LIST){
+ // A list the advisor picked for this file is kept; one generated for an
+ // earlier file (or the list that import created) is replaced.
+ if(!$('importList').value||$('importList').value===NEW_LIST||$('importList').value===autoList){
   newListName=fileListName(file);$('importList').querySelector(`option[value="${NEW_LIST}"]`)?.remove();
   $('importList').add(new Option('New list: '+newListName,NEW_LIST));$('importList').value=NEW_LIST;
  }
  clearPreview();if(!$('source').value){$('importResult').textContent='Name the source, then preview the import.';$('source').focus();return;}
  $('importResult').textContent=zoominfo?'Recognised a ZoomInfo export. Checking the rows…':'Checking the rows…';$('previewImport').click();
 }
+let createdList='';
 async function importList(create){
+ if(create)createdList='';
  const value=$('importList').value;if(value!==NEW_LIST)return value||undefined;if(!create)return undefined;
- try{return (await api('lists',{name:newListName})).id;}
- catch(e){await loadLists();const same=lists.find(l=>l.name===newListName);if(same)return same.id;throw e;}
+ try{return createdList=(await api('lists',{name:newListName})).id;}
+ catch(e){await loadLists();const same=lists.find(l=>l.name===newListName);if(same)return createdList=same.id;throw e;}
 }
 $('csvFile').addEventListener('change',()=>prepareImportFile($('csvFile').files[0]));
+$('importList').addEventListener('change',()=>{autoList='';});
 let dragDepth=0;
 const dragsFiles=event=>[...(event.dataTransfer?.types||[])].includes('Files');
 document.addEventListener('dragenter',event=>{if(!dragsFiles(event))return;event.preventDefault();dragDepth++;document.body.classList.add('dropping');});
@@ -96,7 +101,7 @@ function clearPreview(){$('continueImport').hidden=true;importRevision++;lastImp
 $('importInputMode').onchange=()=>{$('csvFileLabel').hidden=$('importInputMode').value==='paste';$('csvTextLabel').hidden=$('importInputMode').value!=='paste';clearPreview();};
 for(const id of ['csvFile','csvText','source','sourceURL','sourceObservedAt','importList','importFormat'])$(id).addEventListener('input',clearPreview);
 $('previewImport').onclick=async()=>{const button=$('previewImport'),version=importRevision;button.disabled=true;try{const r=await api('import/preview',await importInput());if(version===importRevision)renderImportReport(r);}catch(e){if(version===importRevision)$('importResult').textContent=e.message;}finally{button.disabled=false;}};
-$('importForm').onsubmit=e=>submit(e,'importResult',async()=>{const version=importRevision,input=await importInput(true),r=await api('import',input);await loadLists();if(input.list_id)$('importList').value=input.list_id;offset=0;selected.clear();await load();if(version===importRevision)renderImportReport(r);notice(importMessage(r));});
+$('importForm').onsubmit=e=>submit(e,'importResult',async()=>{const version=importRevision,input=await importInput(true),r=await api('import',input);await loadLists();if(input.list_id){$('importList').value=input.list_id;if(input.list_id===createdList)autoList=input.list_id;}offset=0;selected.clear();await load();if(version===importRevision)renderImportReport(r);notice(importMessage(r));});
 function downloadCSV(name,rows){const cell=value=>'"'+String(value??'').replace(/^[\s]*[=+@\-\t\r]/,"'$&").replaceAll('"','""')+'"';const blob=new Blob(['\uFEFF'+rows.map(row=>row.map(cell).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 function downloadReport(report){downloadCSV('prospectpilot-import-report.csv',[['Source line','Contact','Result','Message','Review notes'],...(report.rows||[]).map(row=>[row.row,row.name,row.status,row.message,(row.issues||[]).map(issue=>issue.message).join(' ')])]);}
 $('continueImport').onclick=()=>{$('importDialog').close();$('filters').reset();$('listFilter').value=$('importList').value;offset=0;selected.clear();load();$('resultTitle').scrollIntoView({behavior:'smooth',block:'start'});notice('Select the contacts you want to work, then choose Add & open worklist.');};
