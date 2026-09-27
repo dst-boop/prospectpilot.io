@@ -12,6 +12,7 @@ const TEAM=LEAD_TEAM;
 const fail=(status,message)=>Object.assign(Error(message),{status});
 const parse=value=>typeof value==='string'?JSON.parse(value):value;
 const integer=(value,min,max,fallback)=>{const n=Number(value??fallback);if(!Number.isSafeInteger(n)||n<min||n>max)throw fail(422,'A setting is outside its allowed range.');return n;};
+const publicWebsite=value=>{try{const url=new URL(String(value||''));return url.protocol==='https:'||url.protocol==='http:'?url.href.slice(0,500):'';}catch{return '';}};
 const cleanList=(values,max=100)=>[...new Set((Array.isArray(values)?values:[]).map(v=>String(v).trim().slice(0,200)).filter(Boolean))].slice(0,max);
 export function mapResearchRow(raw) {
   const columns=new Map(Object.entries(raw).map(([k,v])=>[nameKey(k).replaceAll(' ',''),v]));
@@ -26,8 +27,28 @@ export function labConfiguration(input={}) {
   if(states.some(v=>!US_STATES.has(v)))throw fail(422,'Use two-letter US state codes.');
   const sources=cleanList(input.sources||['public_web','sec','warn'],4);
   if(sources.some(v=>!['public_web','sec','warn','web_search'].includes(v)))throw fail(422,'Unsupported discovery source.');
+  // A campaign by place: a ZIP or town, a radius and business types find the
+  // companies; titles decide which people found there are kept.
+  const location=String(input.location??'').replace(/\s+/g,' ').trim().slice(0,120),industries=cleanList(input.industries,20);
+  if(Boolean(location)!==Boolean(industries.length))throw fail(422,'A campaign by place needs both a place and at least one business type.');
   return {states,employers:cleanList(input.employers,50),sources,max_companies:integer(input.max_companies,1,50,10),
-    websites:(Array.isArray(input.websites)?input.websites:[]).slice(0,50).map(v=>String(v).trim().slice(0,500)),daily_budget_micros:integer(input.daily_budget_micros,0,100000000,0)};
+    websites:(Array.isArray(input.websites)?input.websites:[]).slice(0,50).map(v=>String(v).trim().slice(0,500)),daily_budget_micros:integer(input.daily_budget_micros,0,100000000,0),
+    location,radius_miles:integer(input.radius_miles,1,100,25),industries,titles:cleanList(input.titles,30).map(v=>v.slice(0,80))};
+}
+// Title terms match whole words, with the common abbreviations read both ways,
+// so "VP" keeps a Vice President and "Owner" does not keep an Ownership Analyst.
+// Expansions are whole titles, so "CFO" never keeps a Chief Financial Analyst.
+const TITLE_ALIASES=[['vp','vice president'],['svp','senior vice president'],['evp','executive vice president'],['ceo','chief executive officer'],['cfo','chief financial officer'],['coo','chief operating officer'],['cto','chief technology officer'],['md','managing director'],['gm','general manager']];
+const titleWords=value=>` ${nameKey(value).replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim()} `;
+export function titleMatches(title,terms) {
+  if(!terms?.length)return true;
+  const text=titleWords(title);if(!text.trim())return false;
+  return terms.some(term=>{
+    const t=titleWords(term).trim();if(!t)return false;
+    const forms=[t,...TITLE_ALIASES.filter(pair=>pair.includes(t)).flat()];
+    // "President" asks for a president, not every Vice President.
+    return forms.some(form=>text.replaceAll(` vice ${form} `,' ').includes(` ${form} `)||(form.startsWith('vice ')&&text.includes(` ${form} `)));
+  });
 }
 async function transaction(pool,fn) {
   const client=await pool.connect();let broken;
@@ -164,19 +185,21 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       if(!config.sources.length)throw fail(422,'Select at least one discovery source.');
       if(config.sources.includes('web_search')&&sources.quote('web_search')==null)throw fail(422,'Licensed web search is not configured. Deselect it to use free sources.');
       if(config.sources.includes('web_search')&&sources.quote('web_search')>config.daily_budget_micros)throw fail(422,'The daily provider budget cannot cover one search query. Increase the budget or deselect licensed web search.');
-      const plans=await selectEmployers(pool,config,user.uid);
+      // A campaign by place finds its own companies in the worker; the plan
+      // catalog and saved leads are the fallback only for a campaign without one.
+      const plans=config.location?[]:await selectEmployers(pool,config,user.uid);
       employers=plans.map(p=>({company:p.sponsor,city:p.city,state:p.state,plan_id:p.id}));
       for(const [i,company] of config.employers.entries()) {
         const target=employers.find(e=>nameKey(e.company)===nameKey(company));
         if(target)target.website=config.websites[i]||'';
         else employers.push({company,website:config.websites[i]||'',state:config.states.length===1?config.states[0]:''});
       }
-      if(!employers.length) {
+      if(!employers.length&&!config.location) {
         const saved=(await pool.query(`SELECT payload FROM discovery_leads WHERE ${visibleSQL} ORDER BY updated_at DESC LIMIT 2000`,[TEAM,user.uid,user.email])).rows;
         employers=[...new Map(saved.map(r=>parse(r.payload)).filter(l=>l.company&&(!config.states.length||config.states.includes(l.state))).map(l=>[nameKey(l.company),{company:l.company,website:l.company_website||'',city:'',state:''}])).values()];
       }
       employers=employers.filter(e=>!nameKey(e.company).includes('equitable')).slice(0,config.max_companies);
-      if(!employers.length)throw fail(422,'Add an employer, import a lead list, or load the DOL plan catalog to start discovery.');
+      if(!employers.length&&!config.location)throw fail(422,'Add a place and business type, an employer, import a lead list, or load the DOL plan catalog to start discovery.');
     }
     let run;
     try {
@@ -192,7 +215,10 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
           const ids=(await client.query(`SELECT d.id FROM discovery_leads d LEFT JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2 WHERE ${visibleSQL} ORDER BY q.evaluated_at ASC NULLS FIRST,d.id`,[TEAM,user.uid,user.email])).rows.map(r=>r.id);
           for(let i=0;i<ids.length;i+=100)await client.query('INSERT INTO lab_tasks(id,run_id,task_key,source,payload) VALUES($1,$2,$3,$4,$5::jsonb)',[randomUUID(),id,`inventory:${i}`,'inventory',JSON.stringify({ids:ids.slice(i,i+100)})]);
           if(!ids.length)return (await client.query("UPDATE lab_runs SET status='completed',completed_at=now(),message='No saved leads to assess.' WHERE id=$1 RETURNING *",[id])).rows[0];
-        } else for(const employer of employers)for(const source of config.sources)await client.query('INSERT INTO lab_tasks(id,run_id,task_key,source,payload) VALUES($1,$2,$3,$4,$5::jsonb) ON CONFLICT(run_id,task_key) DO NOTHING',[randomUUID(),id,hash(`${source}:${nameKey(employer.company)}`),source,JSON.stringify(employer)]);
+        } else {
+          for(const employer of employers)for(const source of config.sources)await client.query('INSERT INTO lab_tasks(id,run_id,task_key,source,payload) VALUES($1,$2,$3,$4,$5::jsonb) ON CONFLICT(run_id,task_key) DO NOTHING',[randomUUID(),id,hash(`${source}:${nameKey(employer.company)}`),source,JSON.stringify(employer)]);
+          if(config.location)await client.query("INSERT INTO lab_tasks(id,run_id,task_key,source,payload) VALUES($1,$2,'market','market',$3::jsonb)",[randomUUID(),id,JSON.stringify({location:config.location,radius_miles:config.radius_miles,industries:config.industries})]);
+        }
         return row;
       });
     } catch(error) {
@@ -229,7 +255,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     return transaction(pool,async client=>{
       // One reservation at a time across replicas protects concurrent daily budgets.
       await client.query('SELECT pg_advisory_xact_lock(505007)');
-      const task=(await client.query(`SELECT t.*,r.user_id,r.user_email,r.budget_micros FROM lab_tasks t JOIN lab_runs r ON r.id=t.run_id
+      const task=(await client.query(`SELECT t.*,r.user_id,r.user_email,r.budget_micros,r.configuration FROM lab_tasks t JOIN lab_runs r ON r.id=t.run_id
         WHERE r.status IN ('queued','running') AND (t.status='pending' OR (t.status='running' AND t.lease_until<now()))
         ORDER BY r.created_at,t.id LIMIT 1 FOR UPDATE OF t,r SKIP LOCKED`)).rows[0];
       if(!task)return null;
@@ -256,19 +282,66 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     await pool.query(`UPDATE lab_runs SET status=CASE WHEN EXISTS(SELECT 1 FROM lab_tasks WHERE run_id=$1 AND status IN ('failed','partial','skipped')) THEN 'completed_with_gaps' ELSE 'completed' END,completed_at=now()
       WHERE id=$1 AND status IN ('queued','running') AND NOT EXISTS(SELECT 1 FROM lab_tasks WHERE run_id=$1 AND status IN ('pending','running'))`,[id]);
   }
+  // Company discovery, then person discovery: the companies a place search
+  // found are saved with the run and each becomes research tasks for the
+  // selected sources. Companies this user researched in the last seven days
+  // are passed over, so a daily campaign moves through the area instead of
+  // repeating its first page of results.
+  async function expandMarket(client,task,user,config,result) {
+    const companies=(result.companies||[]).filter(c=>c?.name&&!nameKey(c.name).includes('equitable'));
+    // A company counts as researched only when one of its source tasks actually
+    // ran; one skipped for budget or never reached stays in the rotation.
+    const recent=new Set((await client.query(`SELECT DISTINCT t.payload->>'company_key' AS company_key FROM lab_tasks t JOIN lab_runs r ON r.id=t.run_id
+      WHERE r.user_id=$1 AND r.id<>$2 AND r.created_at>now()-interval '7 days' AND t.source<>'market' AND t.status IN ('completed','partial') AND t.payload ? 'company_key'`,[task.user_id,task.run_id])).rows.map(r=>r.company_key));
+    const existing=new Set((await client.query('SELECT payload FROM lab_tasks WHERE run_id=$1 AND source<>$2',[task.run_id,'market'])).rows.map(r=>nameKey(parse(r.payload).company)));
+    let queued=0,recently=0;
+    for(const company of companies) {
+      const key=nameKey(company.name);if(!key)continue;
+      let reason='';
+      if(existing.has(key))reason='Already in this run.';
+      else if(recent.has(key)){reason='Researched in the last 7 days.';recently++;}
+      else if(existing.size>=config.max_companies)reason='Beyond this run\'s company limit.';
+      const website=publicWebsite(company.website);
+      await client.query(`INSERT INTO lab_companies(run_id,company_key,user_id,name,website,location,distance_miles,industries,source,source_url,queued,skip_reason)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12) ON CONFLICT(run_id,company_key) DO NOTHING`,
+        [task.run_id,key,task.user_id,String(company.name).slice(0,200),website,String(company.location||'').slice(0,240),Number.isFinite(Number(company.distance_miles))&&company.distance_miles!==null?Number(company.distance_miles):null,
+         JSON.stringify((company.industries||[]).slice(0,10)),String(company.source||'Business directory').slice(0,100),String(company.source_url||'').slice(0,500),!reason,reason]);
+      if(reason)continue;
+      queued++;existing.add(key);
+      const employer={company:String(company.name).slice(0,200),company_key:key,website,city:'',state:config.states.length===1?config.states[0]:'',location:String(company.location||'').slice(0,240)};
+      for(const source of config.sources)await client.query('INSERT INTO lab_tasks(id,run_id,task_key,source,payload) VALUES($1,$2,$3,$4,$5::jsonb) ON CONFLICT(run_id,task_key) DO NOTHING',[randomUUID(),task.run_id,hash(`${source}:${key}`),source,JSON.stringify(employer)]);
+    }
+    const errors=[...(result.errors||[])];
+    if(companies.length&&!queued)errors.push(recently===companies.length?'Every company found was researched in the last 7 days. Widen the radius or add business types.':'No new companies to research in this run.');
+    const status=result.status==='failed'?'failed':queued&&result.status!=='partial'?'completed':'partial';
+    await client.query('UPDATE lab_tasks SET status=$1,result=$2::jsonb,completed_at=now(),lease_until=NULL,lease_token=NULL WHERE id=$3',[status,JSON.stringify({status,companies_found:companies.length,companies_queued:queued,recently_researched:recently,
+      area:result.location?.label||'',radius_miles:result.radius_miles??config.radius_miles,industry_labels:result.industry_labels||[],provider:result.provider||'',attribution:result.attribution||'',errors}),task.id]);
+  }
   async function tick() {
     const task=await claimTask();if(!task)return false;
     if(task.skipped){await finishRun(task.run_id);return true;}
     const user={uid:task.user_id,email:task.user_email},started=performance.now();let result;
+    let config;try{config=labConfiguration(parse(task.configuration)||{});}catch{config=labConfiguration();}
     try {
       if(task.source==='inventory') {
         result=await assessInventory(parse(task.payload).ids,async id=>{await detail(user,id,task);});
+      } else if(task.source==='market') {
+        if(typeof sources.market!=='function')throw Error('unavailable');
+        result=await sources.market({...parse(task.payload),max_companies:100});
       } else result=await sources.run(task.source,parse(task.payload));
     } catch {result={status:'failed',candidates:[],errors:['Source unavailable or timed out. No lead evidence was fabricated.']};}
+    // Only the people the campaign asked for are kept; the rest are counted, not stored.
+    let offTarget=0;
+    if(config.titles.length&&result.candidates?.length){
+      const kept=result.candidates.filter(c=>titleMatches(c.current_title||c.title,config.titles));
+      offTarget=result.candidates.length-kept.length;result={...result,candidates:kept};
+    }
     await transaction(pool,async client=>{
       const owned=(await client.query('SELECT id FROM lab_tasks WHERE id=$1 AND lease_token=$2 AND status=\'running\' FOR UPDATE',[task.id,task.lease_token])).rows[0];
       if(!owned)return;
+      if(task.source==='market'){await expandMarket(client,task,user,config,result);return;}
       const counts=await saveCandidates(client,user,result.candidates||[],{id:task.run_id},task.source);
+      if(offTarget)counts.off_target=offTarget;
       const {candidates,...summary}=result;
       const status=['completed','no_match'].includes(result.status)?'completed':result.status==='partial'?'partial':'failed';
       await client.query('UPDATE lab_tasks SET status=$1,result=$2::jsonb,completed_at=now(),lease_until=NULL,lease_token=NULL WHERE id=$3',[status,JSON.stringify({...summary,...counts,discovered:candidates?.length||0,duration_ms:Math.round(performance.now()-started)}),task.id]);
@@ -293,7 +366,8 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     FROM lab_runs r WHERE user_id=$1 ORDER BY created_at DESC LIMIT 30`,[user.uid])).rows;}
   async function runDetail(user,id) {
     const run=(await pool.query('SELECT * FROM lab_runs WHERE id=$1 AND user_id=$2',[id,user.uid])).rows[0];if(!run)throw fail(404,'Research run not found.');
-    return {run,tasks:(await pool.query('SELECT source,payload,status,result,started_at,completed_at,reserved_micros FROM lab_tasks WHERE run_id=$1 ORDER BY started_at NULLS LAST,id',[id])).rows,costs:(await pool.query('SELECT * FROM lab_costs WHERE run_id=$1',[id])).rows};
+    return {run,tasks:(await pool.query('SELECT source,payload,status,result,started_at,completed_at,reserved_micros FROM lab_tasks WHERE run_id=$1 ORDER BY started_at NULLS LAST,id',[id])).rows,costs:(await pool.query('SELECT * FROM lab_costs WHERE run_id=$1',[id])).rows,
+      companies:(await pool.query('SELECT name,website,location,distance_miles,industries,source,source_url,queued,skip_reason FROM lab_companies WHERE run_id=$1 ORDER BY queued DESC,distance_miles NULLS LAST,name LIMIT 200',[id])).rows};
   }
   async function cost(user,input) {
     await runDetail(user,input.run_id);

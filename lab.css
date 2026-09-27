@@ -84,3 +84,4 @@ a{color:var(--blue)}
 #draftPanel input,#draftPanel textarea,dialog input:not([type=checkbox]),dialog textarea,dialog select{font-weight:400;line-height:1.6}
 #personName{font-size:24px;letter-spacing:-.4px}
 .invite-field{border:1px solid var(--line);border-radius:10px;background:var(--soft);padding:14px 16px;margin:0 0 16px}.invite-field label{max-width:220px;margin-bottom:0}.invite-field .actions{margin:12px 0 8px}
+.campaign-place{border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:0 0 18px;background:var(--soft,#f8fafc)}.campaign-place legend{padding:0 6px;font-weight:600}.company-list{margin:12px 0}
