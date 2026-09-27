@@ -1,6 +1,7 @@
 // Local synthetic demonstration only. Production continues to use server.mjs,
 // Firebase authentication, Cloud SQL, and the real source adapters.
 import {createServer} from 'node:http';
+import {migrate} from '../migrate.mjs';
 import {readFileSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
 import {createResearchLab} from '../research-lab.mjs';
@@ -12,17 +13,8 @@ const port=Number(process.env.DEMO_PORT||8088);
 if(!Number.isInteger(port)||port<1024||port>65535)throw Error('Invalid DEMO_PORT.');
 const origin=`http://127.0.0.1:${port}`,db=new PGlite();
 const read=file=>readFileSync(new URL('../'+file,import.meta.url),'utf8');
-await db.exec(read('generated/schema.sql'));
-await db.exec(read('migrations/006-research-lab.sql'));
-await db.exec(read('migrations/012-plan-catalog-summary.sql'));
-await db.exec(read('migrations/007-quality-v2.sql'));
-await db.exec(read('migrations/008-prospect-workspace.sql'));
-await db.exec(read('migrations/009-prospect-jobs.sql'));
-await db.exec(read('migrations/011-email-domain-check.sql'));
-await db.exec(read('migrations/013-advisor-workflow.sql'));
-await db.exec(read('migrations/014-outreach-cadence.sql'));
-await db.exec(read('migrations/015-dial-budget.sql'));
-await db.exec(read('migrations/016-inbound-contact.sql'));
+// Use the application migration list so new features have their tables in the demo.
+await migrate({connect:async()=>({query:async(sql,values)=>sql.includes(';')?(await db.exec(sql)).at(-1):db.query(sql,values),release(){}}),end:async()=>{}});
 // Serialize requests because this embedded database has a single connection.
 const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
 const user={uid:'synthetic-demo',email:'research@example.com',name:'Synthetic demonstration'};
