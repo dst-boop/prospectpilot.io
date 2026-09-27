@@ -12,7 +12,7 @@ test('company biographies preserve source links and never use employer address a
 });
 test('robots denials, unrelated search pages and provider failures remain visible gaps',async()=>{
   let pageRead=false;const get=async url=>{if(String(url).endsWith('/robots.txt'))return response('User-agent: *\nDisallow: /',url,'text/plain');pageRead=true;return response('',url,'text/html');};
-  const blocked=await createLabSources({get}).run('public_web',{company:'Example',website:'https://example.org/team'});assert.equal(pageRead,false);assert.equal(blocked.status,'partial');assert.equal(blocked.candidates.length,0);
+  const blocked=await createLabSources({get,fallbacks:false}).run('public_web',{company:'Example',website:'https://example.org/team'});assert.equal(pageRead,false);assert.equal(blocked.status,'partial');assert.equal(blocked.candidates.length,0);
   const missing=createLabSources({get});assert.equal(missing.quote('web_search'),null);
   const paid=createLabSources({searchKey:'fixture',searchCostMicros:5000,apiFetch:async()=>new Response('',{status:503})});await assert.rejects(paid.run('web_search',{company:'Example'}),/503/);
 });
@@ -22,7 +22,7 @@ test('WARN results always remain employer-level context and never emit individua
 
 test('public pages use applicable robots groups and query restrictions',async()=>{
  let reads=0;const get=async url=>String(url).endsWith('/robots.txt')?response('User-agent: OtherBot\nDisallow: /\nUser-agent: *\nDisallow: /*?private=',url,'text/plain'):(reads++,response('<title>Example Company</title>',url,'text/html'));
- const sources=createLabSources({get});await sources.run('public_web',{company:'Example Company',website:'https://example.org/team'});assert.equal(reads,1);
+ const sources=createLabSources({get,fallbacks:false});await sources.run('public_web',{company:'Example Company',website:'https://example.org/team'});assert.equal(reads,1);
  const blocked=await sources.run('public_web',{company:'Example Company',website:'https://example.org/team?private=yes'});assert.equal(reads,1);assert.equal(blocked.status,'partial');
 });
 
@@ -81,4 +81,52 @@ test('leadership pages outrank earlier general navigation within the crawl budge
  const result=await createLabSources({get}).run('public_web',{company:'Example Manufacturing',website:'https://example.org/'});
  assert.equal(seen[1],'https://example.org/about/leadership');assert.equal(seen.filter(u=>u.includes('/leadership')).length,1);
  assert.equal(result.candidates.length,1);assert.equal(seen.length,5);
+});
+
+// When a company's own links lead to nobody, the usual addresses and then the
+// free news index are tried, each under the same robots rules.
+const person=(name,title,company)=>`<title>${company}</title><script type="application/ld+json">{"@type":"Person","name":"${name}","jobTitle":"${title}","worksFor":{"name":"${company}"}}</script>`;
+test('the usual team addresses are tried only when the site\'s own links found nobody, and a missing one is not a failure',async()=>{
+ const seen=[];const get=async url=>{url=String(url);if(url.endsWith('/robots.txt'))return response('User-agent: *\nDisallow: /staff',url,'text/plain');seen.push(url);
+  if(url==='https://smallco.example/')return response('<title>Small Co Electric</title><div id="menu"></div>',url,'text/html');
+  if(url==='https://smallco.example/our-team')return response(person('Pat Owens','Owner','Small Co Electric'),url,'text/html');
+  throw Error('HTTP 404');};
+ const result=await createLabSources({get}).run('public_web',{company:'Small Co Electric',website:'https://smallco.example/'});
+ assert.deepEqual(result.candidates.map(c=>c.name),['Pat Owens']);
+ assert.equal(result.candidates[0].company_website,'https://smallco.example');
+ assert.ok(!seen.includes('https://smallco.example/staff'),'robots still decides');
+ assert.deepEqual(result.fallbacks,['common_paths']);
+ assert.ok(!result.errors.some(e=>/unavailable/.test(e)),'a guessed address that 404s is not reported');
+ assert.ok(!seen.some(u=>u.includes('gdelt')),'people were found, so no news lookup');
+ // A site whose own pages list people is not probed at all.
+ const direct=[];await createLabSources({get:async url=>{url=String(url);if(url.endsWith('/robots.txt'))return response('',url,'text/plain');direct.push(url);return response(person('Sam Lee','President','Direct Co'),url,'text/html');}}).run('public_web',{company:'Direct Co',website:'https://direct.example/'});
+ assert.deepEqual(direct,['https://direct.example/']);
+});
+test('a blocked site falls back to news articles that name the company, and the article site is never the company website',async()=>{
+ const seen=[];const get=async url=>{url=String(url);
+  if(url==='https://blocked.example/robots.txt')return response('User-agent: *\nDisallow: /',url,'text/plain');
+  if(url.endsWith('/robots.txt'))return response(url.includes('refuses')?'User-agent: *\nDisallow: /':'',url,'text/plain');
+  seen.push(url);
+  if(url.startsWith('https://api.gdeltproject.org/')){const q=new URL(url).searchParams.get('query');assert.match(q,/^"Harbor Electrical" \(owner OR president/);
+   return response({articles:[{url:'https://news.example/a'},{url:'https://refuses.example/b'},{url:'https://news.example/c'}]},url);}
+  if(url==='https://news.example/a')return response('<p>Harbor Electrical names new leader</p><p>Robin Hale is the president of Harbor Electrical.</p><p>'+'Unrelated regional business coverage continues here. '.repeat(12)+'</p><p>Kim Doe is the owner of a bakery across town.</p>',url,'text/html');
+  if(url==='https://news.example/c')return response('<p>Unrelated story about Kim Doe, owner of Other Firm.</p>',url,'text/html');
+  throw Error('unexpected '+url);};
+ const result=await createLabSources({get}).run('public_web',{company:'Harbor Electrical',website:'https://blocked.example/'});
+ assert.ok(!seen.some(u=>u.startsWith('https://blocked.example/')),'the blocked site is never read');
+ assert.ok(!seen.includes('https://refuses.example/b'),'a news site that refuses is not read');
+ assert.deepEqual(result.candidates.map(c=>[c.name,c.current_title]),[['Robin Hale','President']],'someone named far from the company in the same article is not credited to it');
+ assert.equal(result.candidates[0].company_website,'https://blocked.example','the company site, not the news site');
+ assert.deepEqual(result.candidates[0].source_names,['News article']);assert.equal(result.candidates[0].evidence[0].source,'News article');
+ assert.ok(result.errors.includes('A news site blocks automated reading.'));
+ assert.deepEqual(result.fallbacks,['common_paths','news']);
+ assert.equal(result.pages_checked,2,'two articles read');
+ const off=await createLabSources({get,fallbacks:false}).run('public_web',{company:'Harbor Electrical',website:'https://blocked.example/'});
+ assert.equal(off.candidates.length,0);assert.deepEqual(off.fallbacks,[]);
+});
+test('no website and no news is reported plainly',async()=>{
+ const get=async url=>{url=String(url);if(url.includes('wikidata'))return response({search:[]},url);if(url.includes('gdelt'))return response({articles:[]},url);throw Error('unexpected '+url);};
+ const result=await createLabSources({get}).run('public_web',{company:'Quiet Firm'});
+ assert.equal(result.status,'partial');assert.equal(result.candidates.length,0);
+ assert.ok(result.errors.some(e=>/No official website/.test(e)));assert.ok(result.errors.includes('No recent news articles named this company.'));
 });
