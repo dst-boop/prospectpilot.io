@@ -28,6 +28,10 @@ test('deleting a contact removes the linked lead and its history, and keeps only
   const {db,lab,ws,call}=await fixture();try{
     await ws.importCSV(owner,{csv});await ws.importCSV(other,{csv});
     const id=(await ws.search(owner)).contacts[0].id,theirs=(await ws.search(other)).contacts[0].id;
+    const sharedList=await ws.createList(owner,{name:'Shared deletion fixture'});
+    await ws.membership(owner,sharedList.id,{ids:[id]});
+    await db.query("INSERT INTO prospect_list_shares(list_id,recipient_uid,recipient_email,owner_email,role) VALUES($1,$2,$3,$4,'viewer')",[sharedList.id,other.uid,other.email,owner.email]);
+    assert.equal((await call(ws,other,'GET','/api/prospect/lists/'+sharedList.id+'/contacts')).total,1);
     await lab.importContacts(owner,{ids:[id]});
     const leadId=(await db.query('SELECT lead_id FROM advisor_contact_links WHERE contact_id=$1',[id])).rows[0].lead_id;
     // Provider work about them: one finished and charged, one still queued.
@@ -46,6 +50,9 @@ test('deleting a contact removes the linked lead and its history, and keeps only
 
     const result=await call(ws,owner,'DELETE','/api/prospect/contacts/'+id);
     assert.deepEqual(result,{deleted:true,contacts:1,leads:1});
+    assert.equal((await call(ws,other,'GET','/api/prospect/lists/'+sharedList.id+'/contacts')).total,0);
+    await assert.rejects(call(ws,other,'GET','/api/prospect/lists/'+sharedList.id+'/contacts/'+id),{status:404});
+
     assert.equal(await count(db,'SELECT count(*)::int AS n FROM prospect_contacts WHERE id=$1',[id]),0);
     assert.equal(await count(db,'SELECT count(*)::int AS n FROM discovery_leads WHERE id=$1',[leadId]),0);
     for(const table of ['lab_observations','lab_qualification','advisor_contact_links','research_jobs','lead_call_records'])

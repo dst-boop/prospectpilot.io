@@ -13,7 +13,7 @@ const csv=['First Name,Last Name,Company,Title,Email,Direct Phone,Mobile Phone,L
 
 test('a Lead Qualifier export imports with every column mapped, flags and suppression intact',async()=>{
  const db=new PGlite();try{
-  for(const f of ['008-prospect-workspace','017-forget'])await db.exec(readFileSync(new URL(`../migrations/${f}.sql`,import.meta.url),'utf8'));
+  for(const f of ['008-prospect-workspace','020-list-sharing','017-forget'])await db.exec(readFileSync(new URL(`../migrations/${f}.sql`,import.meta.url),'utf8'));
   const app=createProspectWorkspace({pool:{query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})}});
   const user={uid:'u',email:'u@example.com'};
   const result=await app.importCSV(user,{csv,source:'Lead Qualifier'});
