@@ -274,7 +274,38 @@ function renderDraft(){
   $('draftBody').value=d.body;
   $('draftNeeds').textContent=d.needs.length?`Add ${d.needs.join(', ')} to personalize this further.`:'';
   $('draftCopied').textContent='';
+  const mail=d.channel==='email'&&!!reviewedEmail();
+  $('draftOutlook').hidden=!mail;$('draftMailApp').hidden=!mail;
 }
+// Outreach leaves from the advisor's own mailbox, never from here. The firm's
+// Microsoft tenant allows no third-party sign-in, and what an advisor sends
+// must be archived by the firm, so Outlook on the web opens with the message
+// filled in and the advisor's own press of Send is the only send. The address
+// is the reviewed contact route only, never an unreviewed imported one.
+const OUTLOOK='https://outlook.office.com';
+const query=fields=>Object.entries(fields).filter(([,v])=>v).map(([k,v])=>k+'='+encodeURIComponent(v)).join('&');
+function reviewedEmail(){const c=currentWorkflow?.action?.contact;return c?.channel==='email'&&/^[^\s@"<>]+@[^\s@"<>]+$/.test(c.address||'')?c.address:'';}
+function outlookMail({to,subject,body}){return OUTLOOK+'/mail/deeplink/compose?'+query({to,subject,body});}
+function mailApp({to,subject,body}){return 'mailto:'+encodeURIComponent(to)+'?'+query({subject,body});}
+function outlookInvite({to,subject,body,start,end}){return OUTLOOK+'/calendar/deeplink/compose?'+query({path:'/calendar/action/compose',rru:'addevent',subject,body,startdt:start.toISOString(),enddt:end.toISOString(),to});}
+function inviteICS({to,name,subject,body,start,end,uid}){
+  const text=v=>String(v).replace(/\\/g,'\\\\').replace(/;/g,'\\;').replace(/,/g,'\\,').replace(/\r?\n/g,'\\n');
+  const stamp=d=>d.toISOString().replace(/[-:]/g,'').replace(/\.\d{3}/,'');
+  return ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//ProspectPilot//EN','METHOD:REQUEST','BEGIN:VEVENT','UID:'+uid+'@prospectpilot.io',
+    'DTSTAMP:'+stamp(new Date()),'DTSTART:'+stamp(start),'DTEND:'+stamp(end),'SUMMARY:'+text(subject),'DESCRIPTION:'+text(body),
+    to?`ATTENDEE;CN="${String(name).replace(/["\r\n]/g,'')}";RSVP=TRUE:mailto:${to}`:'','STATUS:CONFIRMED','END:VEVENT','END:VCALENDAR'].filter(Boolean).join('\r\n')+'\r\n';
+}
+function draftMessage(){const d=currentWorkflow?.draft,to=reviewedEmail();return d?.channel==='email'&&to?{to,subject:d.subject||'',body:d.body}:null;}
+$('draftOutlook').onclick=()=>{const m=draftMessage();if(!m)return;window.open(outlookMail(m),'_blank','noopener');$('draftCopied').textContent='Opened in Outlook. Press Send there, then record the outcome below.';};
+$('draftMailApp').onclick=()=>{const m=draftMessage();if(m)location.href=mailApp(m);};
+function meetingInvite(){
+  if(!current||!$('activityNext').value){$('inviteNote').textContent='Set the meeting time above first.';return null;}
+  const start=new Date($('activityNext').value);if(!Number.isFinite(start.getTime())){$('inviteNote').textContent='Set the meeting time above first.';return null;}
+  const end=new Date(start.getTime()+Number($('inviteLength').value||30)*60000),name=[current.lead.first_name,current.lead.last_name].filter(Boolean).join(' ');
+  return {to:reviewedEmail(),name,subject:'Our conversation',body:'Looking forward to speaking with you.',start,end,uid:crypto.randomUUID()};
+}
+$('inviteOutlook').onclick=()=>{const m=meetingInvite();if(!m)return;window.open(outlookInvite(m),'_blank','noopener');$('inviteNote').textContent=(m.to?'':'No reviewed email address, so add the guest in Outlook. ')+'Press Send in Outlook, then save the outcome here.';};
+$('inviteICS').onclick=()=>{const m=meetingInvite();if(!m)return;const url=URL.createObjectURL(new Blob([inviteICS(m)],{type:'text/calendar'})),a=document.createElement('a');a.href=url;a.download='meeting-invite.ics';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);$('inviteNote').textContent='Invite downloaded. Open it in Outlook and send it from there.';};
 $('draftCopy').onclick=async()=>{
   const d=currentWorkflow?.draft;if(!d)return;
   const text=[d.subject?'Subject: '+d.subject:'',d.body].filter(Boolean).join('\n\n');
@@ -295,7 +326,8 @@ function activityFields(){const outcome=$('activityOutcome').value,closed=['not_
   // Only a conversation can be inbound. A missed call from them is not an event,
   // and a meeting is mutual by the time it is held.
   const inbound=['connected','follow_up','meeting_booked'].includes(outcome);
-  $('inboundField').hidden=!inbound;if(!inbound)$('activityInbound').checked=false;}
+  $('inboundField').hidden=!inbound;if(!inbound)$('activityInbound').checked=false;
+  $('inviteField').hidden=outcome!=='meeting_booked';$('inviteNote').textContent='Uses the time above. Outlook opens with the invite filled in, and it is sent only when you press Send there.';}
 function prepareActivity(){renderConversation();$('activityForm').reset();$('activityError').textContent='';activityKey=crypto.randomUUID();
   // The sequence already knows which channel this touch uses and when the next
   // one falls due, so neither is the advisor's to work out.

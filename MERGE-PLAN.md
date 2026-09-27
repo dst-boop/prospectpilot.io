@@ -63,6 +63,22 @@ These are recorded so they are not reopened by accident.
    deletion writes both the directory's and the Research Lab's identity keys,
    and provider searches honour them too.
 
+6. **Email and invites open in the advisor's own Outlook.** The firm's
+   Microsoft tenant (@equitable.com) allows no third-party sign-in, and the
+   firm must archive and supervise what its advisors send. So ProspectPilot
+   never sends. "Draft in Outlook" opens Outlook on the web with the drafted
+   message addressed to the reviewed email route, and a booked meeting offers
+   an Outlook invite or an `.ics` file. The advisor's own press of Send is the
+   only send, and it goes out from their work address. This is Lead
+   Qualifier's zero-permission path. Microsoft Graph would supersede it only
+   if the firm ever approves an app registration.
+7. **ZoomInfo arrives as ZoomInfo's own CSV export.** The plan has no API
+   access, and reading contacts out of ZoomInfo's website or logging in on the
+   user's behalf would breach ZoomInfo's terms. The export is made one step
+   instead: drop the file anywhere on Contacts, the format is recognised from
+   its headers, a list named after the file is offered and the rows are
+   previewed. Nothing is saved until Import.
+
 ## Open items
 
 - **Legacy owner-only batch tables** (`enrichment_batches`, `wealthfeed_jobs`,
@@ -94,4 +110,4 @@ These are recorded so they are not reopened by accident.
 | B | Lead Qualifier's "Move to ProspectPilot" export, in the columns the contact import already reads; `test/lead-qualifier-import.test.mjs` pins the contract | Done |
 | C | WhitePages/Trestle phone check (`check_phone`) on the provider queue and budget | Done |
 | D | Claude web research (`web_research` job) and profile screenshots (read once, never stored) are done. SEC proxy ages and the employer-site reader were already covered (`lab-sources.mjs`, `native-research.mjs`). AI QC is superseded by the five evidence gates | Done |
-| E | Email and `.ics`, ZoomInfo sourcing, Autopilot, sharing; redirect leads.financialplannersofamerica.com and retire Lead Qualifier | |
+| E | Email and `.ics` through the advisor's Outlook, and ZoomInfo CSV drop-to-import, are done (decisions 6 and 7). Autopilot and sharing remain; then redirect leads.financialplannersofamerica.com and retire Lead Qualifier | In progress |
