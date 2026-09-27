@@ -17,4 +17,3 @@ CREATE TABLE IF NOT EXISTS lab_companies (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY(run_id, company_key)
 );
-CREATE INDEX IF NOT EXISTS lab_companies_recent ON lab_companies(user_id, company_key, created_at DESC) WHERE queued;

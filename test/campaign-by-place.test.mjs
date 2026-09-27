@@ -8,14 +8,14 @@ import {createResearchLab,labConfiguration,titleMatches} from '../research-lab.m
 // company's own pages, keeping only the titles asked for. The business
 // directory and the pages are stubs; nothing leaves the test.
 const migrations=['006-research-lab','017-forget','012-plan-catalog-summary','007-quality-v2','008-prospect-workspace','013-advisor-workflow','014-outreach-cadence','015-dial-budget','016-inbound-contact','020-lab-companies'];
-async function fixture({companies,people={},marketFails=false}={}) {
+async function fixture({companies,people={},marketFails=false,quote=()=>0,unmatched=[],marketStatus='completed',marketErrors=[]}={}) {
   const db=new PGlite();
   await db.exec(readFileSync(new URL('../generated/schema.sql',import.meta.url),'utf8'));
   for(const name of migrations)await db.exec(readFileSync(new URL(`../migrations/${name}.sql`,import.meta.url),'utf8'));
   const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>pool.query(...a),release(){}})};
   const calls={market:[],run:[]};
-  const sources={readiness:{},quote:()=>0,
-    market:async input=>{calls.market.push(input);if(marketFails)throw Error('directory down');return {status:'completed',companies,errors:[],location:{label:'Huntington, NY'},radius_miles:input.radius_miles,industry_labels:['Electrical contractors'],provider:'OpenStreetMap',attribution:'© OpenStreetMap contributors · ODbL'};},
+  const sources={readiness:{},quote,
+    market:async input=>{calls.market.push(input);if(marketFails)throw Error('directory down');return {status:marketStatus,companies,errors:marketErrors,unmatched_terms:unmatched,location:{label:'Huntington, NY'},radius_miles:input.radius_miles,industry_labels:['Electrical contractors'],provider:'OpenStreetMap',attribution:'© OpenStreetMap contributors · ODbL'};},
     run:async(source,employer)=>{calls.run.push([source,employer.company]);return {status:'completed',candidates:people[employer.company]||[]};}};
   return {db,calls,lab:createResearchLab({pool,sources}),user:{uid:'owner',email:'owner@example.com'}};
 }
@@ -38,6 +38,11 @@ test('title terms match whole words and read common abbreviations both ways',()=
   assert.equal(titleMatches('Chief Executive Officer',['CEO']),true);
   assert.equal(titleMatches('Director of Operations',['Director']),true);
   assert.equal(titleMatches('Ownership Analyst',['Owner']),false);
+  assert.equal(titleMatches('Chief Financial Analyst',['CFO']),false,'an abbreviation means the whole title');
+  assert.equal(titleMatches('Chief Executive Assistant',['CEO']),false);
+  assert.equal(titleMatches('Vice President, Sales',['President']),false,'President does not keep every Vice President');
+  assert.equal(titleMatches('President and CEO',['President']),true);
+  assert.equal(titleMatches('Vice President, Sales',['Vice President']),true);
   assert.equal(titleMatches('',['Owner']),false);
   assert.equal(titleMatches('Anything',[]),true,'no titles means everyone is kept');
 });
@@ -105,4 +110,34 @@ test('the place search passes the campaign to the business directory and keeps o
   const empty=createLabSources({discoverCompanies:async()=>({companies:[],errors:['Business type “widgets” is not recognized yet.']})});
   const none=await empty.market({location:'11747',radius_miles:25,industries:['widgets'],max_companies:100});
   assert.equal(none.status,'partial');assert.match(none.errors[0],/not recognized/);
+});
+
+test('a company counts as researched only when a source actually ran for it',async()=>{
+  // The only source costs more than the day's budget, so every company task is skipped.
+  const {db,lab,user}=await fixture({companies:[co('Alpha Electric',1),co('Beta Electric',2)],quote:source=>source==='sec'?1000:0});
+  try{
+    await lab.enqueue(user,{location:'11747',industries:['Electrical contractors'],sources:['sec'],idempotency_key:'skipped-day'});
+    await drain(lab);
+    assert.deepEqual((await db.query("SELECT DISTINCT status FROM lab_tasks WHERE source='sec'")).rows.map(r=>r.status),['skipped']);
+    const second=await lab.enqueue(user,{location:'11747',industries:['Electrical contractors'],sources:['sec'],idempotency_key:'next-day'});
+    await drain(lab);
+    const market=(await lab.runDetail(user,second.id)).tasks.find(t=>t.source==='market');
+    assert.equal(market.result.companies_queued,2,'skipped companies stay in the rotation');assert.equal(market.result.recently_researched,0);
+  }finally{await db.close();}
+});
+
+test('business types the directory did not recognise are reported and the search is not called complete',async()=>{
+  const {createLabSources}=await import('../lab-sources.mjs');
+  const sources=createLabSources({discoverCompanies:async()=>({companies:[co('Echo Electric',1)],errors:[],unmatched_terms:['widgets'],provider:'OpenStreetMap',location:{label:'x'},radius_miles:25,industry_labels:['Electrical contractors']})});
+  const out=await sources.market({location:'11747',radius_miles:25,industries:['electrician','widgets'],max_companies:100});
+  assert.equal(out.status,'partial');assert.match(out.errors[0],/Not recognised, so not searched: widgets/);
+  // The run keeps that partial answer: the companies are researched, the gap stays visible.
+  const {db,lab,user}=await fixture({companies:[co('Echo Electric',1)],marketStatus:'partial',marketErrors:out.errors});
+  try{
+    const run=await lab.enqueue(user,{location:'11747',industries:['Electrical contractors','widgets'],sources:['public_web'],idempotency_key:'mixed'});
+    await drain(lab);
+    const detail=await lab.runDetail(user,run.id),market=detail.tasks.find(t=>t.source==='market');
+    assert.equal(market.status,'partial');assert.equal(market.result.companies_queued,1);assert.match(market.result.errors[0],/widgets/);
+    assert.equal(detail.run.status,'completed_with_gaps');
+  }finally{await db.close();}
 });

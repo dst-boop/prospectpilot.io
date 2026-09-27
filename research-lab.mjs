@@ -37,7 +37,8 @@ export function labConfiguration(input={}) {
 }
 // Title terms match whole words, with the common abbreviations read both ways,
 // so "VP" keeps a Vice President and "Owner" does not keep an Ownership Analyst.
-const TITLE_ALIASES=[['vp','vice president'],['svp','senior vice president'],['evp','executive vice president'],['ceo','chief executive'],['cfo','chief financial'],['coo','chief operating'],['cto','chief technology'],['md','managing director'],['gm','general manager']];
+// Expansions are whole titles, so "CFO" never keeps a Chief Financial Analyst.
+const TITLE_ALIASES=[['vp','vice president'],['svp','senior vice president'],['evp','executive vice president'],['ceo','chief executive officer'],['cfo','chief financial officer'],['coo','chief operating officer'],['cto','chief technology officer'],['md','managing director'],['gm','general manager']];
 const titleWords=value=>` ${nameKey(value).replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim()} `;
 export function titleMatches(title,terms) {
   if(!terms?.length)return true;
@@ -45,7 +46,8 @@ export function titleMatches(title,terms) {
   return terms.some(term=>{
     const t=titleWords(term).trim();if(!t)return false;
     const forms=[t,...TITLE_ALIASES.filter(pair=>pair.includes(t)).flat()];
-    return forms.some(form=>text.includes(` ${form} `));
+    // "President" asks for a president, not every Vice President.
+    return forms.some(form=>text.replaceAll(` vice ${form} `,' ').includes(` ${form} `)||(form.startsWith('vice ')&&text.includes(` ${form} `)));
   });
 }
 async function transaction(pool,fn) {
@@ -287,8 +289,10 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
   // repeating its first page of results.
   async function expandMarket(client,task,user,config,result) {
     const companies=(result.companies||[]).filter(c=>c?.name&&!nameKey(c.name).includes('equitable'));
-    const recent=new Set((await client.query(`SELECT DISTINCT c.company_key FROM lab_companies c JOIN lab_runs r ON r.id=c.run_id
-      WHERE c.user_id=$1 AND c.queued AND c.run_id<>$2 AND r.created_at>now()-interval '7 days'`,[task.user_id,task.run_id])).rows.map(r=>r.company_key));
+    // A company counts as researched only when one of its source tasks actually
+    // ran; one skipped for budget or never reached stays in the rotation.
+    const recent=new Set((await client.query(`SELECT DISTINCT t.payload->>'company_key' AS company_key FROM lab_tasks t JOIN lab_runs r ON r.id=t.run_id
+      WHERE r.user_id=$1 AND r.id<>$2 AND r.created_at>now()-interval '7 days' AND t.source<>'market' AND t.status IN ('completed','partial') AND t.payload ? 'company_key'`,[task.user_id,task.run_id])).rows.map(r=>r.company_key));
     const existing=new Set((await client.query('SELECT payload FROM lab_tasks WHERE run_id=$1 AND source<>$2',[task.run_id,'market'])).rows.map(r=>nameKey(parse(r.payload).company)));
     let queued=0,recently=0;
     for(const company of companies) {
@@ -304,12 +308,12 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
          JSON.stringify((company.industries||[]).slice(0,10)),String(company.source||'Business directory').slice(0,100),String(company.source_url||'').slice(0,500),!reason,reason]);
       if(reason)continue;
       queued++;existing.add(key);
-      const employer={company:String(company.name).slice(0,200),website,city:'',state:config.states.length===1?config.states[0]:'',location:String(company.location||'').slice(0,240)};
+      const employer={company:String(company.name).slice(0,200),company_key:key,website,city:'',state:config.states.length===1?config.states[0]:'',location:String(company.location||'').slice(0,240)};
       for(const source of config.sources)await client.query('INSERT INTO lab_tasks(id,run_id,task_key,source,payload) VALUES($1,$2,$3,$4,$5::jsonb) ON CONFLICT(run_id,task_key) DO NOTHING',[randomUUID(),task.run_id,hash(`${source}:${key}`),source,JSON.stringify(employer)]);
     }
     const errors=[...(result.errors||[])];
     if(companies.length&&!queued)errors.push(recently===companies.length?'Every company found was researched in the last 7 days. Widen the radius or add business types.':'No new companies to research in this run.');
-    const status=result.status==='failed'?'failed':queued?'completed':'partial';
+    const status=result.status==='failed'?'failed':queued&&result.status!=='partial'?'completed':'partial';
     await client.query('UPDATE lab_tasks SET status=$1,result=$2::jsonb,completed_at=now(),lease_until=NULL,lease_token=NULL WHERE id=$3',[status,JSON.stringify({status,companies_found:companies.length,companies_queued:queued,recently_researched:recently,
       area:result.location?.label||'',radius_miles:result.radius_miles??config.radius_miles,industry_labels:result.industry_labels||[],provider:result.provider||'',attribution:result.attribution||'',errors}),task.id]);
   }

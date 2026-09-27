@@ -145,7 +145,11 @@ export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicr
   async function market({location,radius_miles,industries,max_companies}) {
     const found=await discoverCompanies({locations:[location],radius_miles,industries,max_companies});
     const companies=(found.companies||[]).map(c=>({name:c.name,website:c.website||'',location:c.location||'',distance_miles:c.distance_miles??null,industries:c.industries||[],source:c.source||'OpenStreetMap',source_url:c.source_url||''}));
-    return {status:companies.length?'completed':found.errors?.length?'partial':'no_match',companies,errors:found.errors||[],location:found.location||null,radius_miles:found.radius_miles,industry_labels:found.industry_labels||[],provider:found.provider||'',attribution:found.attribution||''};
+    // A type the directory does not recognise was not searched: say so, and
+    // do not report the search as complete.
+    const unmatched=(found.unmatched_terms||[]).map(t=>String(t).slice(0,80)).slice(0,20);
+    const errors=[...(found.errors||[]),...(unmatched.length&&companies.length?[`Not recognised, so not searched: ${unmatched.join(', ')}. Try another name for ${unmatched.length===1?'this business type':'these business types'}.`]:[])];
+    return {status:companies.length&&!unmatched.length?'completed':errors.length?'partial':'no_match',companies,errors,unmatched_terms:unmatched,location:found.location||null,radius_miles:found.radius_miles,industry_labels:found.industry_labels||[],provider:found.provider||'',attribution:found.attribution||''};
   }
   return {run, market, quote:source=>source==='web_search' ? searchKey && Number.isSafeInteger(searchCostMicros) && searchCostMicros>=0 ? searchCostMicros : null : 0,
     readiness:{web_search:Boolean(searchKey)&&Number.isSafeInteger(searchCostMicros)&&searchCostMicros>=0,web_search_query_cost_micros:Number.isSafeInteger(searchCostMicros)?searchCostMicros:null}};
