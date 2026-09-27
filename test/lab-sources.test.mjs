@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createLabSources,proxyCandidates} from '../lab-sources.mjs';
+import {createLabSources,proxyCandidates,newsRoleLinks} from '../lab-sources.mjs';
 const response=(text,url,type='application/json')=>({text:typeof text==='string'?text:JSON.stringify(text),url:String(url),type});
 test('SEC proxy rows pair age with the named person, never an unrelated numeric table',()=>{
   const html='<table><tr><th>Name</th><th>Age</th><th>Position</th></tr><tr><td>Jamie Rivera</td><td>62</td><td>Director</td></tr><tr><td>Total Employees</td><td>60</td><td>Revenue</td></tr></table>';
@@ -109,13 +109,13 @@ test('a blocked site falls back to news articles that name the company, and the 
   seen.push(url);
   if(url.startsWith('https://api.gdeltproject.org/')){const q=new URL(url).searchParams.get('query');assert.match(q,/^"Harbor Electrical" \(owner OR president/);
    return response({articles:[{url:'https://news.example/a'},{url:'https://refuses.example/b'},{url:'https://news.example/c'}]},url);}
-  if(url==='https://news.example/a')return response('<p>Harbor Electrical names new leader</p><p>Robin Hale is the president of Harbor Electrical.</p><p>'+'Unrelated regional business coverage continues here. '.repeat(12)+'</p><p>Kim Doe is the owner of a bakery across town.</p>',url,'text/html');
+  if(url==='https://news.example/a')return response('<p>Harbor Electrical acquired Other Firm. Kim Doe is the owner of Other Firm.</p><p>Robin Hale is the president of Harbor Electrical.</p><p>Lee Park is the owner of a bakery across town.</p>',url,'text/html');
   if(url==='https://news.example/c')return response('<p>Unrelated story about Kim Doe, owner of Other Firm.</p>',url,'text/html');
   throw Error('unexpected '+url);};
  const result=await createLabSources({get}).run('public_web',{company:'Harbor Electrical',website:'https://blocked.example/'});
  assert.ok(!seen.some(u=>u.startsWith('https://blocked.example/')),'the blocked site is never read');
  assert.ok(!seen.includes('https://refuses.example/b'),'a news site that refuses is not read');
- assert.deepEqual(result.candidates.map(c=>[c.name,c.current_title]),[['Robin Hale','President']],'someone named far from the company in the same article is not credited to it');
+ assert.deepEqual(result.candidates.map(c=>[c.name,c.current_title]),[['Robin Hale','President']],'someone whose role sentence names another company is not credited to this one');
  assert.equal(result.candidates[0].company_website,'https://blocked.example','the company site, not the news site');
  assert.deepEqual(result.candidates[0].source_names,['News article']);assert.equal(result.candidates[0].evidence[0].source,'News article');
  assert.ok(result.errors.includes('A news site blocks automated reading.'));
@@ -129,4 +129,13 @@ test('no website and no news is reported plainly',async()=>{
  const result=await createLabSources({get}).run('public_web',{company:'Quiet Firm'});
  assert.equal(result.status,'partial');assert.equal(result.candidates.length,0);
  assert.ok(result.errors.some(e=>/No official website/.test(e)));assert.ok(result.errors.includes('No recent news articles named this company.'));
+});
+
+test('a news sentence credits a person only when it ties their role to this company',()=>{
+ const yes=[['Robin Hale is the president of Harbor Electrical.','President'],["Harbor Electrical's CEO Robin Hale said the firm will grow.",'CEO'],
+  ['Harbor Electrical president Robin Hale said.','President'],['Robin Hale, vice president of operations at Harbor Electrical, said.','Vice President of Operations']];
+ for(const [text,title] of yes)assert.equal(newsRoleLinks(text,'Robin Hale',title,'Harbor Electrical'),true,text);
+ const no=['Harbor Electrical acquired Other Firm. Kim Doe is the owner of Other Firm.','Kim Doe, owner of Other Firm, which Harbor Electrical acquired, spoke.',
+  'Kim Doe, owner of Other Firm at Harbor Electrical plaza, said.','Other Firm owner Kim Doe met Harbor Electrical staff.','Kim Doe spoke. Harbor Electrical owner search continues.'];
+ for(const text of no)assert.equal(newsRoleLinks(text,'Kim Doe','Owner','Harbor Electrical'),false,text);
 });

@@ -31,6 +31,27 @@ export function proxyCandidates(html, url, company, filedAt) {
   return [...new Map(results.map(c=>[nameKey(c.name),c])).values()].slice(0,60);
 }
 
+// A news sentence names a person in a role at this company only as
+// "<Name>[,] (is|was|serves as)? [the] <title> (of|at|with|for) [the] <Company>"
+// or "<Company>['s] <title> <Name>". Nearness alone is not enough: in
+// "Harbor Electrical acquired Other Firm. Kim Doe is the owner of Other Firm."
+// Kim Doe is not Harbor Electrical's owner.
+const escapeRe=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+const looseWords=value=>String(value||'').trim().split(/\s+/).filter(Boolean).map(escapeRe).join('[\\s,.-]+');
+export function newsRoleLinks(text,name,title,company){
+  const role=(String(title||'').match(/[A-Za-z][A-Za-z-]{2,}/g)||[]).find(w=>!/^(the|and|of|at|for|with|senior|chief)$/i.test(w))||'';
+  const person=looseWords(name),employer=looseWords(String(company||'').replace(/[^\p{L}\p{N}&' -]/gu,' '));
+  if(!person||!employer||!role)return false;
+  const sentences=String(text).split(/(?<=[.!?])\s+/);
+  const after=new RegExp(`${person},?\\s+(?:(?:is|was|serves as|has been|who is)\\s+)?(?:(?:the|a|an|its|our)\\s+)?[\\p{L}&,' -]{0,40}?\\b${escapeRe(role)}\\w*[\\p{L}&,' -]{0,30}?\\s(?:of|at|with|for)\\s+(?:the\\s+)?${employer}\\b`,'iu');
+  const before=new RegExp(`${employer}(?:'s|’s)?\\s+(?:[\\p{L}&-]+\\s+){0,3}?${escapeRe(role)}\\w*\\s+${person}\\b`,'iu');
+  // Words of the title itself ("Vice President of Operations") may hold a
+  // connector; any other "of/at" before the company means a different employer.
+  const ownTitle=new RegExp(looseWords(String(title||'').replace(/[^\p{L}\p{N}&' -]/gu,' ')),'iu');
+  return sentences.some(s=>{const segment=s.match(after);
+    if(segment){const head=segment[0].slice(0,segment[0].search(new RegExp(`\\s(?:of|at|with|for)\\s+(?:the\\s+)?${employer}\\b`,'iu'))).replace(ownTitle,' ');if(!/\s(?:of|at|with|for)\s/i.test(head))return true;}
+    return before.test(s);});
+}
 // Where a small company's site usually keeps its people, tried when menus are
 // built by script and their links cannot be read. Each is still robots-checked.
 const COMMON_PATHS=['/leadership','/our-team','/team','/management','/about-us','/about','/company','/who-we-are','/staff'];
@@ -118,9 +139,8 @@ export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicr
       let found=parsePublicWebPage(result.text,result.url,employer.company).filter(c=>companyKey(c.company)===targetCompany);
       // The page reader credits everyone on a page to the company being
       // researched. On the company's own site that holds; in a news article
-      // the person must be named within a sentence or two of the company.
-      if(scope==='news'){const words=` ${companyKey(plain(result.text))} `;found=found.filter(c=>{const name=` ${companyKey(c.name)} `;let at=words.indexOf(name);
-        while(at>=0){if(words.slice(Math.max(0,at-200),at+name.length+200).includes(` ${targetCompany} `))return true;at=words.indexOf(name,at+1);}return false;});}
+      // the sentence itself must tie the person, their role and the company.
+      if(scope==='news'){const article=plain(result.text);found=found.filter(c=>newsRoleLinks(article,c.name,c.current_title,employer.company));}
       for (const c of found) {
         // Company address never becomes residence. Do not manufacture a LinkedIn slug or email pattern.
         c.company_website=website;c.company_location=[employer.city,employer.state].filter(Boolean).join(', ');
