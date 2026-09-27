@@ -64,13 +64,13 @@ async function refresh(showNotice=true){
   }
 }
 async function openLead(id){
-  const version=++leadDetailVersion;current=null;clearConversation();$('saveReview').disabled=true;$('activityForm').hidden=true;$('conversationBrief').textContent='Loading the conversation brief…';$('contactActions').replaceChildren();$('activityHistory').replaceChildren();
+  const version=++leadDetailVersion;current=null;$('relatedPeople').replaceChildren();$('exploreRelated').disabled=true;clearConversation();$('saveReview').disabled=true;$('activityForm').hidden=true;$('conversationBrief').textContent='Loading the conversation brief…';$('contactActions').replaceChildren();$('activityHistory').replaceChildren();
   $('personName').textContent='Loading evidence…';$('personRole').textContent='';
   for(const name of ['personGates','personSources','personPlans','reviewError','forgetError'])$(name).textContent='';
   $('forgetLead').dataset.armed='';$('forgetLead').textContent='Delete this person';
   $('reviewForm').reset();$('observedAt').value=new Date().toISOString().slice(0,10);$('observedAt').max=$('observedAt').value;reviewFields();
   if(!$('detail').open)$('detail').showModal();
-  try{const data=await request('/api/lab/leads/'+encodeURIComponent(id));if(version!==leadDetailVersion)return;current=data;renderPerson();$('saveReview').disabled=false;await loadActivity(id,version);}
+  try{const data=await request('/api/lab/leads/'+encodeURIComponent(id));if(version!==leadDetailVersion)return;current=data;renderPerson();$('saveReview').disabled=false;$('exploreRelated').disabled=false;await loadActivity(id,version);}
   catch(e){if(version===leadDetailVersion){$('personName').textContent='Evidence unavailable';$('conversationBrief').innerHTML=`<p role="alert">${esc(e.message)}</p><button id="retryEvidence" class="secondary">Retry evidence</button>`;$('retryEvidence').onclick=()=>{if(version===leadDetailVersion)return openLead(id);};}}
 }
 function renderPerson(){const {lead:l,quality:q}=current;$('personName').textContent=[l.first_name,l.last_name].join(' ');$('personRole').textContent=[l.current_title,l.company].filter(Boolean).join(' · ');$('personGates').innerHTML=Object.entries(q.gates).map(([f,g])=>`<div class="gate-card"><strong>${esc(labels[f])}</strong> ${badge(g.state)}<p>${esc(g.reason)}</p>${g.evidence?`<small>${esc(g.evidence.source)} · ${esc(g.evidence.observed_at.slice(0,10))}</small><p>${esc(g.evidence.note)}</p>${link(g.evidence.url,'Review original source')}`:''}</div>`).join('');
@@ -419,4 +419,20 @@ $('profileForm').onsubmit=async e=>{
     $('profileDialog').close();notice('Saved. Drafted messages will sign themselves with these details.');
   }catch(err){$('profileError').textContent=err.message;}finally{button.disabled=false;}
 };
+
+
+$('exploreRelated').onclick=async()=>{
+  if(!current)return;
+  const id=current.lead.id,version=leadDetailVersion;
+  $('exploreRelated').disabled=true;$('relatedPeople').textContent='Looking for shared professional context…';
+  try{
+    const result=await request('/api/lab/leads/'+encodeURIComponent(id)+'/related');
+    if(version!==leadDetailVersion)return;
+    $('relatedPeople').innerHTML=result.people.length?result.people.map(p=>`<div class="source-card"><h4>${esc([p.first_name,p.last_name].filter(Boolean).join(' '))}</h4><p>${esc([p.current_title,p.company].filter(Boolean).join(' · '))}</p><p>${esc(p.reasons.join(' · '))}</p><small>${esc(p.basis)}${p.sources.length?' · '+esc(p.sources.join(', ')):''}</small><p>${esc(p.next_step)}</p><button type="button" class="secondary" data-related="${esc(p.id)}">Review & prepare next step</button></div>`).join(''):'<p>No shared employer or role was found among your eligible saved people. Use “Expand beyond saved people” below to grow your workspace.</p>';
+    if(result.truncated)$('relatedPeople').innerHTML+='<p>Showing a limited set of matches. Use the directory to explore more saved people.</p>';
+    document.querySelectorAll('[data-related]').forEach(button=>button.onclick=()=>openLead(button.dataset.related));
+  }catch(error){if(version===leadDetailVersion)$('relatedPeople').textContent=error.message+' Select Find related people to retry.';}
+  finally{if(version===leadDetailVersion)$('exploreRelated').disabled=false;}
+};
+
 init();

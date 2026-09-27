@@ -349,3 +349,14 @@ test('LinkedIn outcome labels describe a message without changing stored outcome
  c.element('activityChannel').value='phone';c.element('activityChannel').onchange();
  assert.equal(c.element('noAnswerOutcome').textContent,'No answer');
 });
+
+
+test('related people ignores stale results after switching prospects and supports retry',async()=>{
+ const c=client();c.run("current={lead:{id:'first'}};leadDetailVersion=1");
+ const first=c.element('exploreRelated').onclick();assert.match(c.pending[0].url,/first\/related$/);
+ c.run("current={lead:{id:'second'}};leadDetailVersion=2");c.element('relatedPeople').textContent='Second person';
+ c.pending[0].respond({people:[],truncated:false});await first;
+ assert.equal(c.element('relatedPeople').textContent,'Second person');
+ const second=c.element('exploreRelated').onclick();c.pending[1].respond({error:'Unavailable'},500);await second;
+ assert.equal(c.element('exploreRelated').disabled,false);assert.match(c.element('relatedPeople').textContent,/retry/);
+});

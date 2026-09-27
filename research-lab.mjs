@@ -132,6 +132,31 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     });
     return {leads,total,offset,limit,filter_basis:'Last inventory assessment; displayed evidence is re-evaluated now.'};
   }
+  // Suggestions reuse saved records only; shared employment is not a social edge.
+  async function relatedPeople(user,id) {
+    const {lead:seed}=await accessible(user,id);
+    const key=v=>String(v||'').trim().toLowerCase().replace(/\s+/g,' ');
+    const company=key(seed.company),role=key(seed.current_title);
+    if(!company&&!role)return {people:[],truncated:false};
+    const rows=(await pool.query(`SELECT d.id,d.payload FROM discovery_leads d WHERE ${visibleSQL} AND d.id<>$4
+      AND (($5<>'' AND lower(regexp_replace(trim(d.payload::jsonb->>'company'),'\\s+',' ','g'))=$5)
+        OR ($6<>'' AND lower(regexp_replace(trim(d.payload::jsonb->>'current_title'),'\\s+',' ','g'))=$6))
+      ORDER BY d.id LIMIT 101`,[TEAM,user.uid,user.email,id,company,role])).rows;
+    const people=[];
+    for(const row of rows.slice(0,100)) {
+      const {lead}=await accessible(user,row.id);
+      const quality=assessLead(lead,await observations(user,row.id),{now:now()});
+      if(['excluded','identity_review'].includes(quality.status)||/^(not a fit|client)$/i.test(lead.follow_up_status||''))continue;
+      const reasons=[];
+      if(company&&key(lead.company)===company)reasons.push('Same reported employer');
+      if(role&&key(lead.current_title)===role)reasons.push('Same reported role');
+      people.push({id:lead.id,first_name:lead.first_name,last_name:lead.last_name,company:lead.company,current_title:lead.current_title,
+        reasons,basis:'Saved profile fields; relationship unconfirmed',sources:lead.source_names||[],
+        next_step:'Review this person and their contact evidence. Ask whether they know your existing contact before requesting an introduction.'});
+    }
+    people.sort((a,b)=>b.reasons.length-a.reasons.length||a.id.localeCompare(b.id));
+    return {people:people.slice(0,20),truncated:rows.length>100||people.length>20};
+  }
   async function saveCandidates(client,user,candidates,run,source) {
     if(!candidates.length)return {added:0,duplicates:0,rejected:0,ambiguous:0};
     // Serialize imports and source completions for this team, including concurrent workers.
@@ -468,6 +493,8 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     if(path==='/api/lab/scoreboard'&&request.method==='GET')return advisor.scoreboard(user,Object.fromEntries(url.searchParams));
     if(path==='/api/lab/advisor-profile'&&request.method==='GET')return advisor.profile(user);
     if(path==='/api/lab/advisor-profile'&&request.method==='POST')return advisor.saveProfile(user,await body());
+    const relatedMatch=path.match(/^\/api\/lab\/leads\/([^/]+)\/related$/);
+    if(relatedMatch&&request.method==='GET')return relatedPeople(user,decodeURIComponent(relatedMatch[1]));
     const activityMatch=path.match(/^\/api\/lab\/leads\/([^/]+)\/activity$/);
     if(activityMatch&&request.method==='GET')return advisor.detail(user,decodeURIComponent(activityMatch[1]));
     if(activityMatch&&request.method==='POST')return advisor.save(user,decodeURIComponent(activityMatch[1]),await body());
@@ -493,5 +520,5 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     if(runMatch&&request.method==='GET')return runDetail(user,decodeURIComponent(runMatch[1]));
     throw fail(404,'Research endpoint not found.');
   }
-  return {importContacts,advisor,route,tick,scheduleDue,enqueue,importCSV,detail,list,review,metrics,settings,cost,runDetail};
+  return {relatedPeople,importContacts,advisor,route,tick,scheduleDue,enqueue,importCSV,detail,list,review,metrics,settings,cost,runDetail};
 }
