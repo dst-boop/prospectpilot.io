@@ -22,17 +22,81 @@ export function searchFilters(input={}) {
  filters.country=normalizeCountry(filters.country);filters.state=normalizeState(filters.state,filters.country);
  return filters;
 }
-async function tx(pool,fn){const c=await pool.connect();let broken;try{await c.query('BEGIN');const value=await fn(c);await c.query('COMMIT');return value;}catch(e){try{await c.query('ROLLBACK');}catch(error){broken=error;}throw e;}finally{c.release(broken);}}
-export function createProspectWorkspace({pool,jobs,checkDomain=createDomainChecker()}) {
- async function expireVerification(user){const now=new Date(),cutoff=new Date(now.getTime()-30*86400000).toISOString();await pool.query(`UPDATE prospect_contacts SET payload=jsonb_set(payload,'{email_status}','"unverified"'),updated_at=now() WHERE user_id=$1 AND payload->>'email_status' IN ('valid','invalid','catch_all','unknown') AND (payload->'email_verification'->>'email' IS DISTINCT FROM payload->>'email' OR COALESCE(payload->'email_verification'->>'checked_at','')<$2 OR payload->'email_verification'->>'checked_at'>$3)`,[user.uid,cutoff,now.toISOString()]);}
- const ownedList=async(c,user,id)=>{const row=(await c.query('SELECT * FROM prospect_lists WHERE id=$1 AND user_id=$2',[id,user.uid])).rows[0];if(!row)throw fail(404,'List not found.');return row;};
- async function lists(user){return {lists:(await pool.query(`SELECT l.*,count(m.contact_id)::int AS contacts FROM prospect_lists l LEFT JOIN prospect_list_members m ON m.list_id=l.id WHERE l.user_id=$1 GROUP BY l.id ORDER BY l.created_at DESC,l.id`,[user.uid])).rows};}
+async function tx(pool,fn){if(pool.transactionClient)return fn(pool.transactionClient);const c=await pool.connect();let broken;try{await c.query('BEGIN');const value=await fn(c);await c.query('COMMIT');return value;}catch(e){try{await c.query('ROLLBACK');}catch(error){broken=error;}throw e;}finally{c.release(broken);}}
+export function createProspectWorkspace({pool,jobs,checkDomain=createDomainChecker(),resolveRecipient,scope=null}) {
+ async function expireVerification(user){const now=new Date(),cutoff=new Date(now.getTime()-30*86400000).toISOString();await pool.query(`UPDATE prospect_contacts SET payload=jsonb_set(payload,'{email_status}','"unverified"'),updated_at=now() WHERE user_id=$1 ${scope?"AND id IN (SELECT contact_id FROM prospect_list_members WHERE list_id=$4)":''} AND payload->>'email_status' IN ('valid','invalid','catch_all','unknown') AND (payload->'email_verification'->>'email' IS DISTINCT FROM payload->>'email' OR COALESCE(payload->'email_verification'->>'checked_at','')<$2 OR payload->'email_verification'->>'checked_at'>$3)`,[user.uid,cutoff,now.toISOString(),...(scope?[scope.id]:[])]);}
+ // Lock the parent first for both access and share changes. A revocation waits
+ // for an in-flight scoped operation; later requests cannot reuse old access.
+ async function listAccess(c,user,id,required='read',lock='SHARE'){
+  const row=(await c.query(`SELECT * FROM prospect_lists WHERE id=$1 FOR ${lock}`,[id])).rows[0];
+  if(!row)throw fail(404,'List not found.');
+  const share=row.user_id===user.uid?null:(await c.query('SELECT * FROM prospect_list_shares WHERE list_id=$1 AND recipient_uid=$2',[id,user.uid])).rows[0];
+  const role=row.user_id===user.uid?'owner':share?.role;
+  if(!role)throw fail(404,'List not found.');
+  if(required==='owner'&&role!=='owner')throw fail(403,'Only the owner can manage this list.');
+  if(required==='write'&&role==='viewer')throw fail(403,'This list is view-only.');
+  return {...row,role};
+ }
+ const ownedList=(c,user,id)=>listAccess(c,user,id,'owner');
+ async function lists(user){return {lists:(await pool.query(`SELECT l.id,l.name,l.created_at,
+  CASE WHEN l.user_id=$1 THEN 'owner' ELSE s.role END AS role,
+  CASE WHEN l.user_id=$1 THEN NULL ELSE s.owner_email END AS shared_by,
+  (SELECT count(*)::int FROM prospect_list_members m WHERE m.list_id=l.id) AS contacts
+  FROM prospect_lists l LEFT JOIN prospect_list_shares s ON s.list_id=l.id AND s.recipient_uid=$1
+  WHERE l.user_id=$1 OR s.recipient_uid=$1 ORDER BY l.created_at DESC,l.id`,[user.uid])).rows};}
+ async function shares(user,id,method,input,target){
+  return tx(pool,async c=>{
+   const list=await listAccess(c,user,id,method==='DELETE'&&target==='me'?'read':'owner','UPDATE');
+   if(method==='GET')return {shares:(await c.query('SELECT recipient_uid,recipient_email,role,created_at FROM prospect_list_shares WHERE list_id=$1 ORDER BY created_at,recipient_uid',[id])).rows};
+   if(method==='POST'){
+    if(!input||Object.keys(input).some(k=>!['email','role'].includes(k))||!['editor','viewer'].includes(input.role)||typeof input.email!=='string'||input.email.length>254||! /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email.trim()))throw fail(422,'Provide an email and editor or viewer role.');
+    if(!resolveRecipient)throw fail(503,'Sharing is not configured.');
+    let recipient;try{recipient=await resolveRecipient(input.email.trim().toLowerCase());}catch(e){if(e.code!=='auth/user-not-found')throw e;}
+    if(!recipient?.uid||!recipient.emailVerified||recipient.disabled)throw fail(422,'Recipient must have an active, verified ProspectPilot account.');
+    if(recipient.uid===user.uid)throw fail(422,'You already own this list.');
+    await c.query(`INSERT INTO prospect_list_shares(list_id,recipient_uid,recipient_email,owner_email,role) VALUES($1,$2,$3,$4,$5)
+     ON CONFLICT(list_id,recipient_uid) DO UPDATE SET role=EXCLUDED.role,recipient_email=EXCLUDED.recipient_email,owner_email=EXCLUDED.owner_email`,[id,recipient.uid,recipient.email,user.email,input.role]);
+    return {shared:true};
+   }
+   if(target==='me'&&list.role==='owner')throw fail(422,'Owners cannot leave their own list.');
+   const recipient=target==='me'?user.uid:target;
+   const removed=await c.query('DELETE FROM prospect_list_shares WHERE list_id=$1 AND recipient_uid=$2 RETURNING recipient_uid',[id,recipient]);
+   if(!removed.rows.length)throw fail(404,'Share not found.');
+   await c.query("DELETE FROM prospect_saved_searches WHERE user_id=$1 AND filters->>'list_id'=$2",[recipient,id]);
+   return {removed:true};
+  });
+ }
+ // Only this allowlisted adapter may act on owner-owned rows for a recipient.
+ // The transaction pins access, list membership, and all reads/writes together.
+ async function scopedRoute(request,user,id,suffix){
+  const method=request.method,read=method==='GET'||suffix==='export';
+  const allowed=(suffix==='contacts'&&method==='GET')||(/^contacts\/[^/]+$/.test(suffix)&&['GET','PATCH'].includes(method))||(/^contacts\/[^/]+\/prepare$/.test(suffix)&&method==='POST')||(['import','import/preview','export'].includes(suffix)&&method==='POST')||(suffix==='members'&&['POST','DELETE'].includes(method));
+  if(!allowed)throw fail(404,'List endpoint not found.');
+  return tx(pool,async c=>{
+   const list=await listAccess(c,user,id,read?'read':'write',read?'SHARE':'UPDATE');
+   // Serialize contact mutations with normal owner imports/corrections.
+   await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`prospect:${list.user_id}`]);
+   const selected=suffix.match(/^contacts\/([^/]+)/);
+   if(selected&&!(await c.query('SELECT m.contact_id FROM prospect_list_members m JOIN prospect_contacts c ON c.id=m.contact_id WHERE m.list_id=$1 AND m.contact_id=$2 AND c.user_id=$3',[id,selected[1],list.user_id])).rows.length)throw fail(404,'Contact not found.');
+   const scopedPool={query:(...args)=>c.query(...args),transactionClient:c};
+   const app=createProspectWorkspace({pool:scopedPool,checkDomain,scope:{id,actor:user.uid,role:list.role}});
+   const owner={uid:list.user_id};
+   if(suffix==='contacts')return app.search(owner,{...Object.fromEntries(new URL(request.url).searchParams),list_id:id});
+   let input;if(method!=='GET'){try{input=await request.json();}catch{throw fail(422,'Invalid JSON.');}if(!input||typeof input!=='object'||Array.isArray(input))throw fail(422,'Provide a request object.');}
+   if(['import','import/preview'].includes(suffix))return app.importCSV(owner,{...input,list_id:id},{preview:suffix.endsWith('/preview')});
+   if(suffix==='export')return app.exportCSV(owner,input);
+   if(suffix==='members')return app.membership(owner,id,input,method==='DELETE');
+   const result=await app.route(new Request('https://internal/api/prospect/'+suffix,{method,...(input?{body:JSON.stringify(input)}:{})}),owner);
+   if(result.contact)result.role=list.role;
+   return result;
+  });
+ }
  async function createList(user,input){const name=text(input.name,100);if(!name)throw fail(422,'Name your list.');try{return (await pool.query('INSERT INTO prospect_lists(id,user_id,name) VALUES($1,$2,$3) RETURNING *',[randomUUID(),user.uid,name])).rows[0];}catch(e){if(e.code==='23505')throw fail(409,'A list with this name already exists.');throw e;}}
  function ids(input){if(!Array.isArray(input)||!input.length||input.length>5000||input.some(v=>typeof v!=='string'||v.length>100))throw fail(422,'Choose 1–5,000 contacts.');return [...new Set(input)];}
- async function membership(user,listId,input,remove=false){const selected=ids(input.ids);return tx(pool,async c=>{await ownedList(c,user,listId);const owned=(await c.query('SELECT id FROM prospect_contacts WHERE user_id=$1 AND id=ANY($2::text[])',[user.uid,selected])).rows;if(owned.length!==selected.length)throw fail(404,'One or more contacts are unavailable.');if(remove)await c.query('DELETE FROM prospect_list_members WHERE list_id=$1 AND contact_id=ANY($2::text[])',[listId,selected]);else await c.query('INSERT INTO prospect_list_members(list_id,contact_id) SELECT $1,unnest($2::text[]) ON CONFLICT DO NOTHING',[listId,selected]);return {affected:selected.length};});}
+ async function membership(user,listId,input,remove=false){const selected=ids(input.ids);return tx(pool,async c=>{await listAccess(c,user,listId,'owner','UPDATE');const owned=(await c.query(`SELECT id FROM prospect_contacts WHERE user_id=$1 AND id=ANY($2::text[]) ${scope&&scope.role!=='owner'?'AND id IN (SELECT contact_id FROM prospect_list_members WHERE list_id=$3)':''}`,[user.uid,selected,...(scope&&scope.role!=='owner'?[scope.id]:[])])).rows;if(owned.length!==selected.length)throw fail(404,'One or more contacts are unavailable.');if(remove)await c.query('DELETE FROM prospect_list_members WHERE list_id=$1 AND contact_id=ANY($2::text[])',[listId,selected]);else await c.query('INSERT INTO prospect_list_members(list_id,contact_id) SELECT $1,unnest($2::text[]) ON CONFLICT DO NOTHING',[listId,selected]);return {affected:selected.length};});}
  async function search(user,input={}) {
   await expireVerification(user);
-  const filters=searchFilters(input),limit=Number(input.limit??50),offset=Number(input.offset??0);
+  const filters=searchFilters(scope?{...input,list_id:scope.id}:input),limit=Number(input.limit??50),offset=Number(input.offset??0);
   if(!Number.isInteger(limit)||limit<1||limit>100||!Number.isInteger(offset)||offset<0||offset>1000000)throw fail(422,'Invalid page.');
   if(filters.list_id)await ownedList(pool,user,filters.list_id);
   const values=[user.uid],where=['c.user_id=$1'];
@@ -69,10 +133,10 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
   if(input.source_url&&(!sourceURL||sourceURL.length>1000))throw fail(422,'Provide a public HTTP or HTTPS source URL without credentials.');
   const observed=input.source_observed_at||'';
   if(observed&&(!/^\d{4}-\d{2}-\d{2}$/.test(observed)||!Number.isFinite(Date.parse(observed))||new Date(observed).toISOString().slice(0,10)!==observed||observed>new Date().toISOString().slice(0,10)))throw fail(422,'Use a valid source date, no later than today.');
-  const fingerprint=hash('contact-import-v2\0'+input.csv+'\0'+source+'\0'+text(input.list_id)+(format==='zoominfo'?'\0zoominfo':'')+(sourceURL||observed?'\0'+sourceURL+'\0'+observed:''));
+  const fingerprint=hash((scope?'contact-list-import-v1\0'+scope.actor+'\0':'contact-import-v2\0')+input.csv+'\0'+source+'\0'+text(input.list_id)+(format==='zoominfo'?'\0zoominfo':'')+(sourceURL||observed?'\0'+sourceURL+'\0'+observed:''));
   return tx(pool,async c=>{
+   if(input.list_id)await listAccess(c,user,input.list_id,'owner','UPDATE');
    await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`prospect:${user.uid}`]);
-   if(input.list_id)await ownedList(c,user,input.list_id);
    const previous=(await c.query('SELECT result FROM prospect_imports WHERE user_id=$1 AND fingerprint=$2',[user.uid,fingerprint])).rows[0];if(previous)return {...previous.result,replayed:true,preview};
    const result={id:randomUUID(),added:0,duplicates:0,conflicts:0,field_reviews:0,rejected:0,errors:[],rows:[],preview,replayed:false,total:records.length,mapped_columns:parsed.mapped_columns,ignored_columns:parsed.ignored_columns};
    const prepared=records.map(({cells,row})=>{
@@ -88,7 +152,14 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
    const forgotten=await forgottenKeys(c,user.uid,prepared.flatMap(record=>record.keys||[]));
    for(const record of prepared)if(!record.error&&record.keys.some(key=>forgotten.has(key))){record.error='This person was deleted at your request, so they are not imported again.';delete record.keys;}
    const allKeys=[...new Set(prepared.flatMap(record=>record.keys||[]))];
-   const existing=allKeys.length?(await c.query('SELECT id,payload,identity_keys FROM prospect_contacts WHERE user_id=$1 AND identity_keys ?| $2::text[] FOR UPDATE',[user.uid,allKeys])).rows:[];
+   if(scope&&allKeys.length){
+    // Do not disclose/merge an owner's private match, or create a duplicate
+    // which could lose that person's suppression or recorded provider results.
+    const hidden=(await c.query('SELECT identity_keys FROM prospect_contacts WHERE user_id=$1 AND identity_keys ?| $2::text[] AND id NOT IN (SELECT contact_id FROM prospect_list_members WHERE list_id=$3)',[user.uid,allKeys,scope.id])).rows;
+    const hiddenKeys=new Set(hidden.flatMap(row=>row.identity_keys));
+    for(const record of prepared)if(!record.error&&record.keys.some(key=>hiddenKeys.has(key)))record.error='Contact unavailable for this list. Ask the owner to review the import.';
+   }
+   const existing=allKeys.length?(await c.query(`SELECT id,payload,identity_keys FROM prospect_contacts WHERE user_id=$1 AND identity_keys ?| $2::text[] ${scope?'AND id IN (SELECT contact_id FROM prospect_list_members WHERE list_id=$3)':''} FOR UPDATE`,[user.uid,allKeys,...(scope?[scope.id]:[])])).rows:[];
    const byId=new Map(existing.map(row=>[row.id,row])),byKey=new Map();
    const changed=new Map();
    const indexRow=row=>{byId.set(row.id,row);for(const key of row.identity_keys){if(!byKey.has(key))byKey.set(key,new Set());byKey.get(key).add(row.id);}};
@@ -104,7 +175,7 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
     const matches=[...new Set(keys.flatMap(key=>[...(byKey.get(key)||[])]))].map(id=>byId.get(id));
     if(matches.length>1){result.conflicts++;report(record.row,'conflict','Identifiers match more than one existing contact. Review the identity before importing.',contact);continue;}
     let id=matches[0]?.id||randomUUID();
-    const evidence={source,kind:contact.source_kind,import_id:result.id,row:record.row,imported_at:now,observed_at:observed||null,url:sourceURL||null,zoominfo:contact.zoominfo,phone_import:contact.phone_import,phone_restrictions:contact.phone_restrictions,import_warnings:contact.import_warnings};
+    const evidence={...(scope?{actor_uid:scope.actor}:{}),source,kind:contact.source_kind,import_id:result.id,row:record.row,imported_at:now,observed_at:observed||null,url:sourceURL||null,zoominfo:contact.zoominfo,phone_import:contact.phone_import,phone_restrictions:contact.phone_restrictions,import_warnings:contact.import_warnings};
     contact.source_observed_at=observed||null;contact.last_seen_at=now;
     if(matches.length){const old=matches[0].payload;
      if(old.zoominfo?.contact_id&&contact.zoominfo?.contact_id&&old.zoominfo.contact_id!==contact.zoominfo.contact_id){result.conflicts++;report(record.row,'conflict','Different ZoomInfo contact IDs matched an existing identifier. Review identity; existing record preserved.',contact);continue;}
@@ -169,7 +240,7 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
    if(!identities(next).length)throw fail(422,'Keep a company, individual email or LinkedIn profile for identity matching.');
    if((await c.query('SELECT id FROM prospect_contacts WHERE user_id=$1 AND id<>$2 AND identity_keys ?| $3::text[]',[user.uid,id,identityLookupKeys(next)])).rows.length)throw fail(409,'These identifiers match another contact. Review both records before correcting their identities. No records were merged.');
    if(!event&&!Object.keys(changes).length)return {id,changed:false};
-   const evidence={source:'User correction',kind:'manual_review',imported_at:new Date().toISOString(),observed_at:null,reason:input.reason.trim(),changes};
+   const evidence={...(scope?{actor_uid:scope.actor}:{}),source:'User correction',kind:'manual_review',imported_at:new Date().toISOString(),observed_at:null,reason:input.reason.trim(),changes};
    next.field_sources={...(old.field_sources||{})};for(const key of Object.keys(changes))next.field_sources[key]=evidence;
    if(changes.email){next.email_status=next.email?'unverified':'missing';}
    // A phone check answered for one number and name; after either changes it is someone else's answer.
@@ -204,7 +275,7 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
  }
  async function exportCSV(user,input){
   await expireVerification(user);
-  const selected=ids(input.ids),rows=(await pool.query('SELECT id,payload FROM prospect_contacts WHERE user_id=$1 AND id=ANY($2::text[]) ORDER BY id',[user.uid,selected])).rows;
+  const selected=ids(input.ids),rows=(await pool.query(`SELECT id,payload FROM prospect_contacts WHERE user_id=$1 AND id=ANY($2::text[]) ${scope?'AND id IN (SELECT contact_id FROM prospect_list_members WHERE list_id=$3)':''} ORDER BY id`,[user.uid,selected,...(scope?[scope.id]:[])])).rows;
   if(rows.length!==selected.length)throw fail(404,'One or more contacts are unavailable.');
   // Keep the original contact columns first for existing CSV consumers. Last
   // check columns are explicitly historical and never refresh verification.
@@ -252,8 +323,12 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
   return {summary,sources,coverage,imports,limits:{sources:50,imports:20}};
  }
  async function route(request,user){if(!user?.uid)throw fail(401,'Sign in.');const url=new URL(request.url),path=url.pathname,method=request.method;const body=async()=>{try{return await request.json();}catch{throw fail(422,'Invalid JSON.');}};
+  const shared=path.match(/^\/api\/prospect\/lists\/([^/]+)\/shares(?:\/([^/]+))?$/);
+  if(shared&&((!shared[2]&&['GET','POST'].includes(method))||(shared[2]&&method==='DELETE')))return shares(user,shared[1],method,method==='POST'?await body():null,shared[2]);
+  const scoped=path.match(/^\/api\/prospect\/lists\/([^/]+)\/(contacts(?:\/[^/]+(?:\/prepare)?)?|import(?:\/preview)?|export|members)$/);
+  if(!scope&&scoped)return scopedRoute(request,user,scoped[1],scoped[2]);
   if(jobs && (path==='/api/prospect/providers'||path.startsWith('/api/prospect/jobs')))return jobs.route(request,user);
-  if(path==='/api/prospect/contacts'&&method==='GET')return search(user,Object.fromEntries(url.searchParams));
+  if(path==='/api/prospect/contacts'&&method==='GET'){if(!scope&&url.searchParams.get('list_id'))return scopedRoute(request,user,url.searchParams.get('list_id'),'contacts');return search(user,Object.fromEntries(url.searchParams));}
   if(path==='/api/prospect/data-quality'&&method==='GET')return qualitySummary(user);
   const importReport=path.match(/^\/api\/prospect\/imports\/([^/]+)$/);
   if(importReport&&method==='GET'){
@@ -269,7 +344,7 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
    await expireVerification(user);
    const row=(await pool.query('SELECT id,payload,created_at,updated_at FROM prospect_contacts WHERE id=$1 AND user_id=$2',[contact[1],user.uid])).rows[0];
    if(!row)throw fail(404,'Contact not found.');
-   const memberships=(await pool.query('SELECT l.id,l.name FROM prospect_lists l JOIN prospect_list_members m ON m.list_id=l.id WHERE m.contact_id=$1 AND l.user_id=$2 ORDER BY l.name',[row.id,user.uid])).rows;
+   const memberships=(await pool.query(`SELECT l.id,l.name FROM prospect_lists l JOIN prospect_list_members m ON m.list_id=l.id WHERE m.contact_id=$1 AND l.user_id=$2 ${scope?'AND l.id=$3':''} ORDER BY l.name`,[row.id,user.uid,...(scope?[scope.id]:[])])).rows;
    return {contact:{id:row.id,...row.payload,preparation_current:row.payload.preparation?.source_revision===preparationRevision(row.payload),created_at:row.created_at,updated_at:row.updated_at,quality:contactQuality({...row.payload,created_at:row.created_at}),edit_revision:hash(JSON.stringify(row.payload))},lists:memberships};
   }
   if(contact&&method==='DELETE')return tx(pool,c=>forgetPerson(c,user,{contactId:contact[1]},{contactKeys:identityLookupKeys}));
@@ -281,10 +356,13 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
   if(path==='/api/prospect/lists'&&method==='GET')return lists(user);
   if(path==='/api/prospect/lists'&&method==='POST')return createList(user,await body());
   const list=path.match(/^\/api\/prospect\/lists\/([^/]+)$/);
-  if(list&&method==='PATCH'){const name=text((await body()).name,100);if(!name)throw fail(422,'Name your list.');try{const row=(await pool.query('UPDATE prospect_lists SET name=$1 WHERE id=$2 AND user_id=$3 RETURNING *',[name,list[1],user.uid])).rows[0];if(!row)throw fail(404,'List not found.');return row;}catch(e){if(e.code==='23505')throw fail(409,'A list with this name already exists.');throw e;}}
-  if(list&&method==='DELETE'){return tx(pool,async c=>{await ownedList(c,user,list[1]);await c.query('DELETE FROM prospect_lists WHERE id=$1 AND user_id=$2',[list[1],user.uid]);await c.query("UPDATE prospect_saved_searches SET filters=filters-'list_id' WHERE user_id=$1 AND filters->>'list_id'=$2",[user.uid,list[1]]);return {deleted:true};});}
-  if(path==='/api/prospect/import'&&method==='POST')return importCSV(user,await body());
-  if(path==='/api/prospect/import/preview'&&method==='POST')return importCSV(user,await body(),{preview:true});
+  if(list&&method==='PATCH'){const name=text((await body()).name,100);if(!name)throw fail(422,'Name your list.');try{return await tx(pool,async c=>{await listAccess(c,user,list[1],'owner','UPDATE');return (await c.query('UPDATE prospect_lists SET name=$1 WHERE id=$2 AND user_id=$3 RETURNING *',[name,list[1],user.uid])).rows[0];});}catch(e){if(e.code==='23505')throw fail(409,'A list with this name already exists.');throw e;}}
+  if(list&&method==='DELETE'){return tx(pool,async c=>{await listAccess(c,user,list[1],'owner','UPDATE');await c.query("DELETE FROM prospect_saved_searches WHERE user_id<>$1 AND filters->>'list_id'=$2",[user.uid,list[1]]);await c.query('DELETE FROM prospect_lists WHERE id=$1 AND user_id=$2',[list[1],user.uid]);await c.query("UPDATE prospect_saved_searches SET filters=filters-'list_id' WHERE user_id=$1 AND filters->>'list_id'=$2",[user.uid,list[1]]);return {deleted:true};});}
+  if(['/api/prospect/import','/api/prospect/import/preview'].includes(path)&&method==='POST'){
+   const input=await body();
+   if(input?.list_id&&!(await pool.query('SELECT id FROM prospect_lists WHERE id=$1 AND user_id=$2',[input.list_id,user.uid])).rows.length)return scopedRoute(new Request(request.url,{method,body:JSON.stringify(input)}),user,input.list_id,path.endsWith('/preview')?'import/preview':'import');
+   return importCSV(user,input,{preview:path.endsWith('/preview')});
+  }
   if(path==='/api/prospect/export'&&method==='POST')return exportCSV(user,await body());
   const member=path.match(/^\/api\/prospect\/lists\/([^/]+)\/members$/);
   if(member&&['POST','DELETE'].includes(method))return membership(user,member[1],await body(),method==='DELETE');
@@ -296,7 +374,7 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
    try{return await tx(pool,async c=>{
     // Keep the selected list alive until insertion, so concurrent deletion can
     // remove its scope from this search as part of the normal cleanup.
-    if(filters.list_id&&!(await c.query('SELECT id FROM prospect_lists WHERE id=$1 AND user_id=$2 FOR SHARE',[filters.list_id,user.uid])).rows.length)throw fail(404,'List not found.');
+    if(filters.list_id)await listAccess(c,user,filters.list_id);
     return (await c.query('INSERT INTO prospect_saved_searches(id,user_id,name,filters) VALUES($1,$2,$3,$4::jsonb) RETURNING *',[randomUUID(),user.uid,name,JSON.stringify(filters)])).rows[0];
    });}catch(e){if(e.code==='23505')throw fail(409,'A search with this name exists.');throw e;}
   }

@@ -53,7 +53,7 @@ test('refusals, unreadable answers, missing identity and a missing key fail loud
 
 async function fixture(fn,answers){
   const db=new PGlite();try{
-    for(const name of ['008-prospect-workspace','009-prospect-jobs','011-email-domain-check','017-forget','018-phone-check','019-web-research'])await db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
+    for(const name of ['008-prospect-workspace','020-list-sharing','009-prospect-jobs','011-email-domain-check','017-forget','018-phone-check','019-web-research'])await db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
     const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
     const client=stub(...answers),web=createWebResearch({client});
     const providers={readiness:{web_research:true,profile_image:true},webResearch:web.research,readProfileImage:web.readProfileImage};

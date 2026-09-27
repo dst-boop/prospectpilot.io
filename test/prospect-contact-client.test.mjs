@@ -6,7 +6,7 @@ import {readFileSync} from 'node:fs';
 function client(){
  const elements=new Map(),pending=[];
  const create=id=>{const value={textContent:'',innerHTML:'',disabled:false,open:false,value:'Reviewed source',dataset:{},
-  insertAdjacentHTML(){},append(element){this.lastChild=element;},scrollIntoView(){this.scrolled=true;},focus(){this.focused=true;},querySelector(){return elements.get('firstField');},showModal(){this.open=true;},addEventListener(event,fn){this[event+'Handler']=fn;},close(){this.open=false;this.closeHandler?.();}};elements.set(id,value);return value;};
+  insertAdjacentHTML(){},append(element){this.lastChild=element;},scrollIntoView(){this.scrolled=true;},focus(){this.focused=true;},querySelectorAll(){return [elements.get('firstField')];},querySelector(){return elements.get('firstField');},showModal(){this.open=true;},addEventListener(event,fn){this[event+'Handler']=fn;},close(){this.open=false;this.closeHandler?.();}};elements.set(id,value);return value;};
  for(const id of ['contactTitle','contactBody','contactError','toggleSuppression','deletePerson','closeContact','correctionForm','conflictReason0','contactHistory','contactHistoryBody','editContact','reviewContactConflicts','contactConflicts','correctionPanel','firstField','retryContact'])create(id);
  const conflict=create('conflict');conflict.dataset={conflict:'0',decision:'keep'};
  const context=vm.createContext({selected:new Set(),$:id=>elements.get(id),esc:String,notice(){},load:async()=>{},
@@ -114,4 +114,14 @@ test('the screenshot reader says so when it is not configured, and never arms or
  assert.match(c.elements.get('profileImageNote').textContent,/not set up/);
  assert.ok(!read.dataset.armed,'the button is not armed');
  assert.equal(c.pending.filter(p=>String(p.url).includes('profile-image')).length,0,'nothing was sent');
+});
+
+for(const role of ['editor','viewer'])test(`shared ${role} contact controls match server permissions`,async()=>{
+ const c=client(),opened=c.open('A');c.pending[0].resolve({...record('A'),role});await opened;
+ assert.equal(c.elements.get('contactTitle').textContent,'A Example');
+ assert.equal(c.elements.get('deletePerson').disabled,true);
+ assert.equal(c.elements.get('deletePerson').hidden,true);
+ assert.equal(c.elements.get('toggleSuppression').disabled,role==='viewer');
+ assert.equal(c.elements.get('editContact').disabled,role==='viewer');
+ if(role==='viewer')assert.equal(c.elements.get('conflict').disabled,true);
 });
