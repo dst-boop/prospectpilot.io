@@ -100,3 +100,18 @@ test('reopening a contact disarms the delete button',async()=>{
  await c.elements.get('deletePerson').onclick();
  assert.equal(c.pending.length,2);
 });
+
+test('the screenshot reader says so when it is not configured, and never arms or sends',async()=>{
+ const c=client(),a=c.open('A');c.pending[0].resolve(record('A'));await a;
+ const button=c.elements.get('profileImageRead');
+ if(!button){for(const id of ['profileImageFile','profileImageRead','profileImageNote'])c.elements.set(id,{textContent:'',dataset:{},disabled:false,files:[{size:10,type:'image/png'}]});}
+ // Re-open so the handler binds to the elements now present.
+ const b=c.open('A');c.pending[1].resolve(record('A'));await b;
+ const read=c.elements.get('profileImageRead');
+ const click=read.onclick();
+ const setup=c.pending.at(-1);assert.equal(setup.url,'providers');
+ setup.resolve({providers:{profile_image:false},prices:{}});await click;
+ assert.match(c.elements.get('profileImageNote').textContent,/not set up/);
+ assert.ok(!read.dataset.armed,'the button is not armed');
+ assert.equal(c.pending.filter(p=>String(p.url).includes('profile-image')).length,0,'nothing was sent');
+});
