@@ -1386,7 +1386,7 @@ async function geocodeMarketLocation(location) {
     : `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&addressdetails=1&q=${encodeURIComponent(locationText)}`;
   const response = await fetch(url, {
     signal: AbortSignal.timeout(6_000),
-    headers: { "user-agent": `${CRAWLER_AGENT}/2.1 (https://wealth-lead-workspace.treads77.chatgpt.site)`, referer: "https://wealth-lead-workspace.treads77.chatgpt.site/", accept: "application/json", "accept-language": "en-US,en;q=0.8" },
+    headers: { "user-agent": `${CRAWLER_AGENT}/2.1 (https://prospectpilot.io)`, referer: "https://prospectpilot.io/", accept: "application/json", "accept-language": "en-US,en;q=0.8" },
   });
   if (!response.ok) { await discardResponse(response); throw new Error(`location lookup returned HTTP ${response.status}`); }
   const place = array(JSON.parse(await readLimitedResponse(response, 4 * 1024 * 1024)))[0];
@@ -1448,7 +1448,7 @@ async function nominatimBusinessSearch(area, searchTerms, maxCompanies, radiusMi
     try {
       const response = await fetch(url, {
         signal: AbortSignal.timeout(12_000),
-        headers: { "user-agent": `${CRAWLER_AGENT}/2.2 (https://wealth-lead-workspace.treads77.chatgpt.site)`, referer: "https://wealth-lead-workspace.treads77.chatgpt.site/", accept: "application/json", "accept-language": "en-US,en;q=0.8" },
+        headers: { "user-agent": `${CRAWLER_AGENT}/2.2 (https://prospectpilot.io)`, referer: "https://prospectpilot.io/", accept: "application/json", "accept-language": "en-US,en;q=0.8" },
       });
       if (!response.ok) { await discardResponse(response); throw new Error(`nearby business lookup returned HTTP ${response.status}`); }
       results.push(...array(JSON.parse(await readLimitedResponse(response, 4 * 1024 * 1024))).map(place => ({
@@ -1470,7 +1470,7 @@ async function overpassMarketSearch(area, selectors, radiusMiles) {
     try {
       const response = await fetch(endpoint, {
         method: "POST", body: new URLSearchParams({ data: query }).toString(), signal: AbortSignal.timeout(22_000),
-        headers: { "content-type": "application/x-www-form-urlencoded;charset=UTF-8", "user-agent": `${CRAWLER_AGENT}/2.1 (https://wealth-lead-workspace.treads77.chatgpt.site)`, accept: "application/json" },
+        headers: { "content-type": "application/x-www-form-urlencoded;charset=UTF-8", "user-agent": `${CRAWLER_AGENT}/2.1 (https://prospectpilot.io)`, accept: "application/json" },
       });
       if (!response.ok) { await discardResponse(response); throw new Error(`business directory returned HTTP ${response.status}`); }
       const payload = JSON.parse(await readLimitedResponse(response, 4 * 1024 * 1024));
