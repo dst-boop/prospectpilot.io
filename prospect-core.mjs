@@ -62,7 +62,7 @@ export function normalizeEvidence(input={}, {now=new Date()}={}) {
     source_url,
     observed_at:observedAt.toISOString(),
     confidence:Number(confidence.toFixed(4)),
-    status:['verified','reported','inferred','conflicting'].includes(input.status)?input.status:(source_type==='inferred'?'inferred':'reported'),
+    status:input.status==='conflicting'?'conflicting':source_type==='inferred'?'inferred':input.status==='verified'&&sourceReliability>=0.9?'verified':['reported','inferred'].includes(input.status)?input.status:'reported',
     note:text(input.note).slice(0,1000)
   };
   return normalized;
@@ -109,16 +109,18 @@ export function evidenceSummary(evidence=[]) {
     for(const item of items){const key=valueKey(item.value);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(item);}
     const ranked=[...groups.entries()].map(([key,group])=>({
       key,value:group[0].value,
-      confidence:1-group.reduce((remaining,item)=>remaining*(1-item.confidence),1),
+      // Independence is unknown. Repeated imports or copies of the same claim
+      // must not manufacture confidence or a verification badge.
+      confidence:Math.max(...group.map(item=>item.confidence)),
       newest:Math.max(...group.map(item=>Date.parse(item.observed_at))),
       sources:group
     })).sort((a,b)=>b.confidence-a.confidence||b.newest-a.newest);
     const best=ranked[0];
-    const conflict=ranked.length>1 && ranked[1].confidence>=Math.max(0.55,best.confidence-0.18);
+    const conflict=items.some(item=>item.status==='conflicting') || ranked.length>1 && ranked[1].confidence>=Math.max(0.55,best.confidence-0.18);
     resolved[field]={
       value:best?.value,
       confidence:Number((best?.confidence||0).toFixed(4)),
-      status:conflict?'conflicting':((best?.confidence||0)>=0.9?'verified':'reported'),
+      status:conflict?'conflicting':best?.sources.some(item=>item.status==='verified')?'verified':best?.sources.every(item=>item.status==='inferred')?'inferred':'reported',
       alternatives:ranked.slice(1).map(x=>({value:x.value,confidence:Number(x.confidence.toFixed(4))})),
       sources:best?.sources||[]
     };
@@ -136,15 +138,20 @@ export function addEvidence(lead,input,{now=new Date()}={}){
 export function estimateAge(lead,{asOf=new Date()}={}){
   const currentYear=asOf.getUTCFullYear();
   const {resolved}=evidenceSummary(lead.evidence||[]);
+  if(resolved.age?.status==='conflicting'){
+    const ages=[resolved.age.value,...resolved.age.alternatives.map(item=>item.value)].map(Number).filter(age=>Number.isFinite(age)&&age>=18&&age<=110);
+    return {min:ages.length?Math.floor(Math.min(...ages)):null,max:ages.length?Math.floor(Math.max(...ages)):null,confidence:0,status:'conflicting',basis:['Conflicting age evidence; review required']};
+  }
   const exact=Number(resolved.age?.value??lead.exact_age);
   if(Number.isFinite(exact)&&exact>=18&&exact<=110){
-    return {min:Math.floor(exact),max:Math.floor(exact),confidence:resolved.age?.confidence||0.98,basis:['verified age']};
+    const status=resolved.age?.status||'reported';
+    return {min:Math.floor(exact),max:Math.floor(exact),confidence:resolved.age?.confidence??0.5,status,basis:[`${status} age`]};
   }
   const ranges=[];
   const basis=[];
-  const grad=year(resolved.graduation_year?.value ?? lead.graduation_year);
+  const grad=resolved.graduation_year?.status==='conflicting'?null:year(resolved.graduation_year?.value ?? lead.graduation_year);
   if(grad){ranges.push({min:currentYear-grad+20,max:currentYear-grad+25,confidence:resolved.graduation_year?.confidence||0.65});basis.push(`graduation year ${grad}`);}
-  const career=year(resolved.career_start_year?.value ?? lead.career_start_year);
+  const career=resolved.career_start_year?.status==='conflicting'?null:year(resolved.career_start_year?.value ?? lead.career_start_year);
   if(career){ranges.push({min:currentYear-career+18,max:currentYear-career+27,confidence:resolved.career_start_year?.confidence||0.6});basis.push(`career start ${career}`);}
   for(const job of arr(lead.employment_history)){
     const start=year(job.start_year);
@@ -174,7 +181,7 @@ function yearsAtPreviousEmployer(lead){
 
 export function scoreProspect(lead,{asOf=new Date()}={}){
   const age=estimateAge(lead,{asOf});
-  const age55=age.min!==null ? (age.min>=55?1:age.max>=55?0.65:0) : 0;
+  const age55=age.status!=='conflicting'&&age.min!==null ? (age.min>=55?1:age.max>=55?0.65:0) : 0;
   const titleScore=seniorRx.test(lead.current_title)?1:0.25;
   const priorTenure=yearsAtPreviousEmployer(lead);
   const formerEmployer=arr(lead.previous_employers).length>0 || arr(lead.employment_history).some(j=>j.current!==true);
