@@ -63,3 +63,14 @@ test('legacy navigation capability is derived from verified server identity',asy
   assert.equal((await result.json()).capabilities.legacy_tools,expected);
  }
 });
+
+test('robots.txt and favicon are answered without a session, and robots keeps the workspace out of indexes',async()=>{
+ const handler=createHandler({auth:{verifySessionCookie:async()=>{throw Error();}},origins:[origin],homeHtml:'public introduction',lab:{},labPage:'private worklist'});
+ const robots=await handler(req('/robots.txt'));
+ assert.equal(robots.status,200);assert.match(robots.headers.get('content-type'),/text\/plain/);
+ const rules=await robots.text();
+ assert.match(rules,/Allow: \/about/);assert.match(rules,/Disallow: \/\n/);
+ const icon=await handler(req('/favicon.ico'));
+ assert.equal(icon.status,204,'no sign-in redirect for the browser icon request');assert.match(icon.headers.get('cache-control'),/max-age/);
+ assert.equal((await handler(new Request('https://evil.example/robots.txt'))).status,403,'still only on the ProspectPilot address');
+});

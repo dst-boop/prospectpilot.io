@@ -14,6 +14,10 @@ export function createHandler({auth,db,worker,loginHtml,loginScript,homeHtml,sit
     const mutates=!['GET','HEAD','OPTIONS'].includes(request.method);
     if(mutates&&request.headers.get('origin')!==url.origin)return responseJSON('Please submit changes from this website.',403);
     const publicPage=body=>new Response(body,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"}});
+    // Browsers ask for these on every visit and crawlers before indexing; neither
+    // is private, so they are answered here rather than bounced to sign-in.
+    if(url.pathname==='/robots.txt'&&['GET','HEAD'].includes(request.method))return new Response('User-agent: *\nAllow: /$\nAllow: /about\nAllow: /site.css\nDisallow: /\n',{headers:{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'public, max-age=3600','X-Content-Type-Options':'nosniff'}});
+    if(url.pathname==='/favicon.ico'&&['GET','HEAD'].includes(request.method))return new Response(null,{status:204,headers:{'Cache-Control':'public, max-age=86400'}});
     if(url.pathname==='/site.css'&&request.method==='GET'&&siteStyle)return new Response(siteStyle,{headers:{'Content-Type':'text/css; charset=utf-8','Cache-Control':'public, max-age=300','X-Content-Type-Options':'nosniff'}});
     if(url.pathname==='/about'&&request.method==='GET'&&homeHtml)return publicPage(homeHtml);
     if(url.pathname==='/login'&&request.method==='GET')return new Response(loginHtml,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});
