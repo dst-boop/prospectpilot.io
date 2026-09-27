@@ -431,6 +431,10 @@ $('exploreRelated').onclick=async()=>{
   try{
     const result=await request('/api/lab/leads/'+encodeURIComponent(id)+'/related');
     if(version!==leadDetailVersion)return;
+    if(result.status==='missing_context'){
+      $('relatedPeople').innerHTML='<p><strong>More profile context is needed.</strong> This record has no saved employer or job title, so a related-person search could not run. A LinkedIn URL alone does not give ProspectPilot access to this person’s network.</p><p>Import an authorized profile update with an employer or role and a matching LinkedIn URL or other stable identifier, then try again. LinkedIn connections, activity and messages have not been searched.</p>';
+      return;
+    }
     $('relatedPeople').innerHTML=result.people.length?result.people.map(p=>`<div class="source-card"><h4>${esc([p.first_name,p.last_name].filter(Boolean).join(' '))}</h4><p>${esc([p.current_title,p.company].filter(Boolean).join(' · '))}</p><p>${esc(p.reasons.join(' · '))}</p><small>${esc(p.basis)}${p.sources.length?' · '+esc(p.sources.join(', ')):''}</small><p>${esc(p.next_step)}</p><button type="button" class="secondary" data-related="${esc(p.id)}">Review & prepare next step</button></div>`).join(''):'<p>No shared employer or role was found among your eligible saved people. Use “Expand beyond saved people” below to grow your workspace.</p>';
     if(result.truncated)$('relatedPeople').innerHTML+='<p>Showing a limited set of matches. Use the directory to explore more saved people.</p>';
     document.querySelectorAll('[data-related]').forEach(button=>button.onclick=()=>openLead(button.dataset.related));
