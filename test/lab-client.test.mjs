@@ -152,6 +152,28 @@ test('an inbound row is labelled by the channel it arrived on',()=>{
 });
 
 const emptyQueue={total:0,items:[],counts:{all:0,due:0,ready:0},activity:{conversations:0,meetings:0}};
+test('closing a selected prospect removes only that prospect from the export selection',async()=>{
+  const c=client();
+  c.run("current={lead:{id:'A'}};currentWorkflow={action:{signature:'A'}};leadDetailVersion=1;workSelected.add('A');workSelected.add('B')");
+  c.element('activityOutcome').value='not_interested';
+  const save=c.element('activityForm').onsubmit({preventDefault(){}});
+  c.run("leadDetailVersion=2;current={lead:{id:'B'}}");
+  c.pending[0].respond({saved:true});await save;
+  assert.equal(c.run("workSelected.has('A')"),false);
+  assert.equal(c.run("workSelected.has('B')"),true);
+  assert.equal(c.element('workSelection').textContent,'1 selected');
+});
+test('a refreshed closed record cannot remain checked or enable the enrichment export',async()=>{
+  const c=client();c.element('workView').value='closed';
+  c.run("workSelected.add('A');loadScoreboard=async()=>{}");
+  const loading=c.run('loadWorklist()');
+  c.pending[0].respond({...emptyQueue,total:1,items:[{...lead('A'),action:{bucket:'closed',label:'Excluded',reason:'Do not contact'}}]});
+  await loading;
+  assert.equal(c.run('workSelected.size'),0);
+  assert.equal(c.element('workSelection').textContent,'0 selected');
+  assert.equal(c.element('enrichExport').disabled,true);
+  assert.doesNotMatch(c.element('workList').innerHTML,/checked/);
+});
 test('queue loading clears old cards and failure provides a working retry',async()=>{
   const c=client();c.element('workView').value='today';
   c.element('workList').innerHTML='Old prospect';c.run("workSelected.add('old');loadScoreboard=async()=>{}");
