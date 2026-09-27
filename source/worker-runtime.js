@@ -2386,7 +2386,7 @@ async function apiRoutes(request, env, path, url) {
     { name: "csv", label: "Lead files", configured: true, runnable: false, kind: "import", description: "Candidate lists, ZoomInfo ListMatch previews, and Enhance exports merge into one prospect." },
     { name: "linkedin_connections", label: "LinkedIn connections export", configured: true, runnable: false, kind: "import", description: "Imports LinkedIn's Connections.csv with profile URLs, company, position, email when supplied, and connection date." },
     { name: "linkedin_snapshot", label: "LinkedIn scraper JSON", configured: true, runnable: false, kind: "import", description: "Imports dst-boop/linkedin_scraper v3 profile JSON with roles, tenure, education, contacts, and source evidence." },
-    { name: "broad_web_search", label: "Broad web search", configured: false, runnable: false, kind: "connector", description: "Requires a search-provider connector; targeted website crawling works without one." },
+    { name: "broad_web_search", label: "Broad web search", configured: false, runnable: false, kind: "connector", description: "Not enabled in discovery. Licensed search is available separately in the Research Lab only after a Brave Search account, API key and query budget are configured. Website search and imports remain available." },
   ] });
   if (path === `${API}/source-discovery` && request.method === "POST") {
     const body = await requestJSON(request);

@@ -461,7 +461,7 @@ export function composeTouch(step, {lead = {}, advisor = {}, now = new Date(), s
   const first = named(lead.first_name), prior = priorEmployer(lead), company = named(lead.company);
   const needs = [];
   if (!first) needs.push('a first name');
-  if (!prior) needs.push('a previous employer to name');
+  if (!prior && step.id !== 'connect') needs.push('a previous employer to name');
   if (!named(advisor.name)) needs.push('your name in the advisor profile');
   if (step.channel === 'phone' && !named(advisor.phone)) needs.push('your callback number in the advisor profile');
   const draft = DRAFTS[step.id]({first: first || 'there', prior, company, sent: [...sent],
