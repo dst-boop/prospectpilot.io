@@ -98,7 +98,7 @@ export function seniority(title) {
   return {rank: 6, label: 'Individual contributor'};
 }
 
-const NON_US = /\b(india|brazil|china|japan|korea|singapore|united kingdom|uk|europe|emea|apac|asia|asia pacific|canada|mexico|germany|france|australia|latin america|latam|middle east|africa|alaska|hawaii|puerto rico)\b/i;
+const NON_US = /\b(india|brazil|china|japan|korea|singapore|united kingdom|uk|europe|emea|apac|asia|asia pacific|canada|mexico|germany|france|australia|latin america|latam|middle east|africa|alaska|hawaii|puerto rico|venezuela|pakistan|afpak|argentina|colombia|chile|peru|philippines|vietnam|indonesia|malaysia|thailand|australia|new zealand|ireland|israel|uae|saudi|egypt|nigeria|kenya|south africa)\b/i;
 function exclusion(candidate, config) {
   const companies = [candidate.company, candidate.signal?.employer].map(v => text(v).toLowerCase());
   const title = text(candidate.title).toLowerCase();
@@ -147,6 +147,16 @@ export function score(candidate, today) {
 }
 export const rankBasis = parts => `Trigger ${parts.trigger}/50 · Seniority ${parts.seniority}/25 · Data ${parts.data}/20 · Callable ${parts.callable}/5`;
 
+// ZoomInfo matches company names loosely, so a search for Cisco also returns
+// Cisco Brewers. Long tenure only counts at the employer itself: the company
+// id most of the exact-name matches share.
+const companyKey = name => text(name).toLowerCase().replace(/[.,]/g, ' ').replace(/\b(the|inc|corp|corporation|co|company|llc|ltd|plc)\b/g, ' ').replace(/\s+/g, ' ').trim();
+export function sameEmployerId(candidates, employer) {
+  const tally = new Map(), key = companyKey(employer);
+  for (const c of candidates) if (c.company_id && companyKey(c.company) === key) tally.set(c.company_id, (tally.get(c.company_id) || 0) + 1);
+  return [...tally].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+}
+
 // Rank, filter, dedupe and spread across employers. No hard cap on the day:
 // `target` is how many to hand over, and the advisor keeps what is good.
 export function select(files, {config, ledger = new Set(), today, target = config.deliver_target}) {
@@ -155,10 +165,11 @@ export function select(files, {config, ledger = new Set(), today, target = confi
   for (const f of scoopFiles) { const s = scoopSignals(f.response); for (const [id, sig] of s.byPerson) scoops.set(id, sig); for (const [n, sig] of s.byName) scoopNames.set(n, sig); s.layoffEmployers.forEach(e => layoffEmployers.add(e)); }
   const seen = new Map(), excluded = [], counts = {found: 0, already_delivered: 0, excluded: 0, duplicate: 0};
   for (const f of files.filter(f => f?.meta?.kind !== 'scoops')) {
-    for (const c of candidatesFromSearch(f, scoops, scoopNames)) {
+    const found = candidatesFromSearch(f, scoops, scoopNames), employerId = f.meta?.tier === 'C' ? sameEmployerId(found, f.meta.employer) : null;
+    for (const c of found) {
       counts.found++;
       if (ledger.has(c.person_id)) { counts.already_delivered++; continue; }
-      const reason = exclusion(c, config);
+      const reason = f.meta?.tier === 'C' && c.company_id !== employerId ? 'Different company with a similar name' : exclusion(c, config);
       if (reason) { counts.excluded++; excluded.push({person_id: c.person_id, reason}); continue; }
       c.parts = scoreParts(c, today); c.score = c.parts.trigger + c.parts.seniority + c.parts.data + c.parts.callable;
       const prior = seen.get(c.person_id);
@@ -203,7 +214,10 @@ const linkedinFrom = urls => {
   }
   return '';
 };
-const phone = value => { const d = String(value ?? '').replace(/\D/g, '').replace(/^1(?=\d{10}$)/, ''); return d.length === 10 ? `+1${d}` : ''; };
+// A number written with another country's code is not a US number, even when
+// its digits happen to be ten long (+65 9138 0756).
+const foreign = value => /^\s*\+(?!1\b|1[\s(-]|1\d{10}\b)/.test(String(value ?? ''));
+const phone = value => { if (foreign(value)) return ''; const d = String(value ?? '').replace(/\D/g, '').replace(/^1(?=\d{10}$)/, ''); return d.length === 10 ? `+1${d}` : ''; };
 
 // Years at the employer the trigger names, from the employment history, with
 // overlapping entries merged; and when the last of those roles ended.
@@ -234,6 +248,9 @@ export function whyNow(lead) {
   if (lead.tier === 'A' && s.why) return s.why;
   // A long-ago stint is history, not a recent departure: say when it was.
   if (lead.stint && !lead.stint.current && lead.tier !== 'C' && daysBetween(lead.stint.last, lead.today) > 730) return `Worked at ${s.employer} for ${lead.stint.years} years (${lead.stint.first.slice(0, 4)}–${lead.stint.last.slice(0, 4)}); now ${lead.title || 'in a new role'} at ${lead.company}. Ask whether that plan was ever moved.`;
+  // ZoomInfo lists the role as current, but the history shows the stint ended:
+  // say so rather than claim a long current tenure.
+  if (lead.tier === 'C' && lead.stint && !lead.stint.current) return `ZoomInfo lists ${lead.title ? `${lead.title} at ` : ''}${s.employer || lead.company} as the current role, but the employment history shows ${lead.stint.years} years there ending ${lead.stint.last.slice(0, 4)}. Confirm on LinkedIn before calling.`;
   if (lead.tier === 'C') return `${lead.tenure_years ? `${lead.tenure_years} years at ${s.employer || lead.company}` : `In the current role at ${s.employer || lead.company} for 10 years or more`}${lead.title ? ` as ${lead.title}` : ''}.${s.layoff ? ` ${s.employer} announced layoffs this month.` : ''} In-service or separation rollover options may apply.`;
   // Without the employment history we know they worked there, not when they left.
   if (lead.tenure_years) return `Left ${s.employer}${tenure}; now ${lead.title || 'in a new role'} at ${lead.company}. A workplace plan is likely left behind.`;
@@ -251,6 +268,8 @@ export function finalize(selected, enrichment, {today}) {
       title: text(e.jobTitle) || c.title, company: text(e.companyName) || c.company};
     lead.stint = stintAt(e.employmentHistory, c.signal?.employer, today);lead.today = today;
     lead.tenure_years = lead.stint?.years ?? null;
+    // A mobile with another country's code places the person abroad.
+    lead.abroad = foreign(e.mobilePhone);
     lead.enriched = Boolean(lead.email && lead.mobile);
     // A successful enrichment is one ZoomInfo credit, recorded with the lead.
     lead.credits = enrichment.has(c.person_id) ? 1 : 0;

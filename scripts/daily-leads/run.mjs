@@ -64,7 +64,8 @@ if (command === 'plan') {
   const dir = work(), selected = readJSON(join(dir, 'selected.json'));
   const enrichment = new Map();
   for (const f of readdirSync(dir).filter(f => f.startsWith('enrich-') && f.endsWith('.json')).sort()) for (const [id, e] of enrichmentRecords(readFileSync(join(dir, f), 'utf8'))) enrichment.set(id, e);
-  const leads = finalize(selected, enrichment, {today: day});
+  // Enrichment can show someone is based abroad; they leave the day's list.
+  const all = finalize(selected, enrichment, {today: day}), leads = all.filter(l => !l.abroad);
   const csvName = `daily-leads-${day}.csv`;
   writeFileSync(join(dir, csvName), toCSV(leads, {today: day}));
   const selectSummary = existsSync(join(dir, 'select-counts.json')) ? readJSON(join(dir, 'select-counts.json')) : null;
@@ -73,7 +74,7 @@ if (command === 'plan') {
   writeFileSync(join(dir, 'digest.html'), mail.html); writeFileSync(join(dir, 'digest.txt'), mail.text);
   writeFileSync(join(dir, 'ledger.csv'), appendLedger(ledgerText(), leads, {today: day}));
   // Counts only, kept with the day's files so spend is never lost with the scratch directory.
-  const run = {date: day, delivered: leads.length, with_mobile_and_email: leads.filter(l => l.enriched).length, credits_used: leads.reduce((n, l) => n + l.credits, 0)};
+  const run = {date: day, delivered: leads.length, with_mobile_and_email: leads.filter(l => l.enriched).length, dropped_abroad: all.length - leads.length, credits_used: all.reduce((n, l) => n + l.credits, 0)};
   writeFileSync(join(dir, `daily-leads-run-${day}.json`), JSON.stringify(run));
   console.log(JSON.stringify({...run, csv: join(dir, csvName), subject: mail.subject, tiers: ['A', 'B', 'C'].map(t => [t, leads.filter(l => l.tier === t).length])}));
 } else fail('Commands: plan, layoff-employers, scoop-ids, select, finalize.');

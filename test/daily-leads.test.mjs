@@ -30,19 +30,36 @@ test('selection joins scoops, excludes, dedupes, spreads across employers and ke
     search('A','',[person(101,'Avery','Sample','Chief Operating Officer','Beta Labs')]),
     search('B','Example Robotics',[person(102,'Blair','Test','Director of Engineering','Delta Systems'),person(103,'Casey','Equity','Manager','Equitable Holdings'),person(104,'Drew','Advice','Financial Advisor','Wealth Co'),
       person(105,'Emery','NoPhone','Director','Epsilon',{hasMobilePhone:false}),person(101,'Avery','Sample','Chief Operating Officer','Beta Labs')]),
-    search('C','Gamma Foods',Array.from({length:14},(_,i)=>person(200+i,'Pat'+i,'Long','Director, Plant '+i,'Gamma Foods')))];
+    // One employer shares one company id; a look-alike name is another company.
+    search('C','Gamma Foods',[...Array.from({length:14},(_,i)=>person(200+i,'Pat'+i,'Long','Director, Plant '+i,'Gamma Foods',{company:{id:902,name:'Gamma Foods'}})),
+      person(250,'Quinn','Lookalike','Chief Executive Officer','Gamma Foods Brewing',{company:{id:950,name:'Gamma Foods Brewing'}})])];
   const ledger=new Set(['213']);
   const {selected,counts,excluded,layoff_employers}=select(files,{config,ledger,today});
   const avery=selected.find(c=>c.person_id==='101');
   assert.equal(avery.tier,'A','the scoop names the departure');assert.match(avery.signal.why,/22 years/);assert.equal(avery.signal.url,'https://news.example.com/avery');
   assert.equal(selected[0].person_id,'101','a named, dated departure ranks first');
   assert.equal(counts.already_delivered,1,'nobody arrives twice');
-  assert.deepEqual(excluded.map(e=>e.reason).sort(),['Equitable or affiliate','Works in financial advice','ZoomInfo holds no mobile or no email']);
+  assert.deepEqual(excluded.map(e=>e.reason).sort(),['Different company with a similar name','Equitable or affiliate','Works in financial advice','ZoomInfo holds no mobile or no email']);
   assert.equal(selected.filter(c=>c.signal.employer==='Gamma Foods').length,config.per_employer_cap,'one employer never fills the day');
   assert.equal(counts.held_by_employer_cap,13-config.per_employer_cap);
   assert.equal(counts.duplicate,1);assert.deepEqual(layoff_employers,['Gamma Foods']);
   assert.deepEqual(selected.map(c=>c.rank),selected.map((_,i)=>i+1));
   assert.equal(select(files,{config,ledger,today,target:3}).selected.length,3,'the target is a setting');
+});
+
+test('a foreign mobile marks the lead abroad and never becomes a US number',()=>{
+  const sel=[{person_id:'1',first_name:'A',last_name:'B',tier:'B',signal:{employer:'X'}}];
+  const [sg]=finalize(sel,new Map([['1',{mobilePhone:'+65 9138 0756',email:'a@x.example'}]]),{today});
+  assert.equal(sg.mobile,'');assert.equal(sg.abroad,true);
+  const [us]=finalize(sel,new Map([['1',{mobilePhone:'(212) 555-0100',email:'a@x.example'}]]),{today});
+  assert.equal(us.mobile,'+12125550100');assert.equal(us.abroad,false);
+});
+
+test('long tenure is not claimed when the history shows the stint ended',()=>{
+  const sel=[{person_id:'1',first_name:'A',last_name:'B',title:'CFO',tier:'C',signal:{type:'Long tenure',employer:'Gamma Foods'}}];
+  const history=[{company:{companyName:'Gamma Foods'},fromDate:'2005-01-01',toDate:'2011-06-01'}];
+  const [lead]=finalize(sel,new Map([['1',{employmentHistory:history}]]),{today});
+  assert.match(lead.why_now,/ending 2011\. Confirm on LinkedIn/);assert.doesNotMatch(lead.why_now,/10 years or more/);
 });
 
 test('enrichment merges whatever envelope arrives; missing numbers are left for the advisor',()=>{
