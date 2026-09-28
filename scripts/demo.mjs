@@ -24,6 +24,13 @@ const prospectJobs=createProspectJobs({pool,providers:demoProviders,config:{dail
 const prospect=createProspectWorkspace({pool,jobs:prospectJobs});
 await prospect.importCSV(user,{source:'Synthetic workflow fixtures',csv:'First Name,Last Name,Company,Title,Email,Phone,Country,State,City,Industry,Seniority\nJamie,Rivera,Example Manufacturing,Operations Director,jamie@example.com,2125551234,US,NY,Albany,Manufacturing,Director\nMorgan,Chen,Example Services,Engineering Manager,morgan@example.com,,US,CA,San Diego,Technology,Manager\nCasey,Ellis,Example Systems,VP of Sales,casey@example.com,,US,TX,Austin,Software,VP'});
 await prospect.createList(user,{name:'My first prospect list'});
+// A synthetic daily delivery, so the Daily review has something to show.
+{const {toCSV}=await import('./daily-leads/engine.mjs'),day=new Date().toISOString().slice(0,10),rows=[['Riley','Fiction','Chief Financial Officer','Sample Holdings','riley@sample.example','+12125550150','Left Example Robotics after 21 years; now Chief Financial Officer at Sample Holdings. A workplace plan is likely left behind.','A'],
+ ['Quinn','Madeup','Director of Operations','Demo Logistics','','','Left Fictional Foods; now Director of Operations at Demo Logistics. A workplace plan is likely left behind.','B'],
+ ['Harper','Invented','VP Engineering','Imaginary Systems','harper@imaginary.example','+12125550152','18 years at Imaginary Systems, which is cutting staff.','C']];
+ const leads=rows.map(([first_name,last_name,title,company,email,mobile,why_now,tier],i)=>({first_name,last_name,title,company,email,mobile,direct:'',linkedin_url:'',person_id:String(9000+i),company_id:'',accuracy:95,mobile_dnc:i===2,direct_dnc:false,tier,signal:{employer:'Synthetic employer',url:tier==='A'?'https://example.com/synthetic-news':''},why_now,linkedin_search:'https://www.linkedin.com/search/results/people/?keywords='+encodeURIComponent(first_name+' '+last_name),rank:i+1}));
+ const list=await prospect.createList(user,{name:'Daily leads — '+day});
+ await prospect.importCSV(user,{csv:toCSV(leads,{today:day}),format:'zoominfo',source:'Synthetic daily leads',list_id:list.id});}
 const demoCompanies=['Example Electric Co.','Sample Wiring Services','Fictional Power Contractors'];
 const lab=createResearchLab({pool,sources:{readiness:{},quote:()=>0,run:async()=>({status:'skipped',errors:['Synthetic demo: no external provider calls.'],candidates:[]}),
   // Synthetic companies so a campaign by place shows its company step without calling the directory.

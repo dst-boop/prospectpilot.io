@@ -20,6 +20,19 @@ See [the advisor workflow release](ADVISOR-WORKFLOW-RELEASE.md) for the short us
 
 **Evidence that never overwrites.** For title, employer, location, reported age, email, phones, LinkedIn and company website, every value a source reports is kept on the research record with its source and when it was first and last seen. The working value is the strongest source's (licensed export or reviewed, then regulatory filing, imported list, company website, news, web search), the newest among equals. When sources disagree, the lead shows **Where sources disagree** with each value, its source and dates; nothing is resolved behind the advisor's back, and "Delete this person" removes the history with the record.
 
+## Daily leads and the Daily review
+
+Each weekday morning a scheduled Claude routine runs `.claude/skills/daily-leads`. By 8:00 a.m. ET it delivers about 80 likely-rollover prospects: a ProspectPilot CSV in the Lead Qualifier shared drive and a digest email.
+
+- **Sources.** People come from ZoomInfo: named departures in the news, long tenure at large employers, and former staff of large employers in new roles. Every person has a mobile and an email on file in ZoomInfo.
+- **Engine.** Ranking, exclusions and the per-employer cap are in `scripts/daily-leads/`. Targeting is set in `config.json`.
+- **Review.** Drop the CSV onto Contacts and the Daily review opens. For each person you:
+  - open their LinkedIn profile;
+  - confirm or add the mobile and email;
+  - keep or pass them.
+- **Goal.** A lead counts toward the goal of 50 only once it is kept and has both a mobile and an email. The goal is a number to reach, not a limit on what arrives.
+- **Caveat.** Leads are likely rollovers, never verified balances. Nothing is sent to anyone.
+
 ## Outreach pacing and the next touch
 
 The qualification gates decide whether someone may be approached. This decides

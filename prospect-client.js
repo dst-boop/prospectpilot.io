@@ -63,13 +63,15 @@ function renderImportReport(r,{archived=false}={}){
 // ZoomInfo API or login is involved; the export is ZoomInfo's own.
 const NEW_LIST='__new__';let newListName='',autoList='';
 const ZOOMINFO_HEADERS=/(^|,)"?(ZoomInfo Contact ID|ZoomInfo Company ID|Contact Accuracy Score)"?(,|$)/i;
-function fileListName(file){return file.name.replace(/\.csv$/i,'').replace(/[_]+/g,' ').replace(/\s+/g,' ').trim().slice(0,100)||'Imported contacts';}
+let dailyImport=false;
+function fileListName(file){const day=file.name.match(/^daily-leads-(\d{4}-\d{2}-\d{2})(?:\s*\(\d+\))?\.csv$/i);if(day)return 'Daily leads — '+day[1];return file.name.replace(/\.csv$/i,'').replace(/[_]+/g,' ').replace(/\s+/g,' ').trim().slice(0,100)||'Imported contacts';}
 async function prepareImportFile(file){
  if(!file)return;
  if(!/\.csv$/i.test(file.name)&&file.type!=='text/csv'){$('importResult').textContent='Choose a CSV file. In ZoomInfo, export your list or search results as CSV.';return;}
  $('importInputMode').value='file';$('csvFileLabel').hidden=false;$('csvTextLabel').hidden=true;
  const header=(await file.slice(0,8000).text()).replace(/^\uFEFF/,'').split(/\r?\n/)[0]||'',zoominfo=ZOOMINFO_HEADERS.test(header);
- $('importFormat').value=zoominfo?'zoominfo':'generic';$('source').value=zoominfo?'ZoomInfo CSV export':$('source').value==='ZoomInfo CSV export'?'':$('source').value;
+ dailyImport=/(^|,)"?Why Now"?(,|$)/i.test(header);
+ $('importFormat').value=zoominfo?'zoominfo':'generic';$('source').value=dailyImport?'ProspectPilot daily leads (ZoomInfo)':zoominfo?'ZoomInfo CSV export':['ZoomInfo CSV export','ProspectPilot daily leads (ZoomInfo)'].includes($('source').value)?'':$('source').value;
  // A list the advisor picked for this file is kept; one generated for an
  // earlier file (or the list that import created) is replaced.
  if(!$('importList').value||$('importList').value===NEW_LIST||$('importList').value===autoList){
@@ -110,7 +112,8 @@ function clearPreview(){$('continueImport').hidden=true;importRevision++;lastImp
 $('importInputMode').onchange=()=>{$('csvFileLabel').hidden=$('importInputMode').value==='paste';$('csvTextLabel').hidden=$('importInputMode').value!=='paste';clearPreview();};
 for(const id of ['csvFile','csvText','source','sourceURL','sourceObservedAt','importList','importFormat'])$(id).addEventListener('input',clearPreview);
 $('previewImport').onclick=async()=>{const button=$('previewImport'),version=importRevision;button.disabled=true;try{const r=await api('import/preview',await importInput());if(version===importRevision)renderImportReport(r);}catch(e){if(version===importRevision)$('importResult').textContent=e.message;}finally{button.disabled=false;}};
-$('importForm').onsubmit=e=>submit(e,'importResult',async()=>{const version=importRevision,input=await importInput(true),r=await api('import',input);await loadLists();if(input.list_id){$('importList').value=input.list_id;if(input.list_id===createdList)autoList=input.list_id;}offset=0;selected.clear();await load();if(version===importRevision)renderImportReport(r);notice(importMessage(r));});
+$('importForm').onsubmit=e=>submit(e,'importResult',async()=>{const version=importRevision,input=await importInput(true),r=await api('import',input);await loadLists();if(input.list_id){$('importList').value=input.list_id;if(input.list_id===createdList)autoList=input.list_id;}offset=0;selected.clear();await load();if(version===importRevision)renderImportReport(r);notice(importMessage(r));
+ if(dailyImport&&input.list_id&&(r.added||r.duplicates)){dailyImport=false;$('importDialog').close();$('dailyDialog').showModal();loadDaily(input.list_id);}});
 function downloadCSV(name,rows){const cell=value=>'"'+String(value??'').replace(/^[\s]*[=+@\-\t\r]/,"'$&").replaceAll('"','""')+'"';const blob=new Blob(['\uFEFF'+rows.map(row=>row.map(cell).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 function downloadReport(report){downloadCSV('prospectpilot-import-report.csv',[['Source line','Contact','Result','Message','Review notes'],...(report.rows||[]).map(row=>[row.row,row.name,row.status,row.message,(row.issues||[]).map(issue=>issue.message).join(' ')])]);}
 $('continueImport').onclick=()=>{$('importDialog').close();$('filters').reset();$('listFilter').value=$('importList').value;offset=0;selected.clear();load();$('resultTitle').scrollIntoView({behavior:'smooth',block:'start'});notice('Select the contacts you want to work, then choose Add & open worklist.');};
@@ -258,3 +261,117 @@ $('sendToWorklist').onclick=async()=>{
  try{const response=await fetch('/api/lab/contact-import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:[...selected]})});const result=await response.json();if(!response.ok)throw Error(result.detail||'Could not add contacts to the worklist.');notice((result.replayed?'This contact selection was already processed.':`${result.linked} contacts linked to the advisor worklist; ${result.suppressed} suppressed contacts omitted; ${result.result?.rejected||0} rejected; ${result.result?.ambiguous||0} ambiguous matches. Imported details still need evidence review.`)+(result.restriction_links?` Restrictions also applied to ${result.restriction_links} existing worklist record${result.restriction_links===1?'':'s'}.`:''));if(result.lead_ids?.length)location.assign('/lab?lead='+encodeURIComponent(result.lead_ids[0]));}
  catch(e){notice(e.message,true);}finally{selection();}
 };
+
+// Daily review: the day's delivered leads, one card at a time. Review the
+// LinkedIn profile, make sure a mobile and an email are on file, then keep or
+// pass. The goal counts kept leads with both; nothing caps what arrives.
+let daily={list:null,items:[],counts:null,goal:50},dailyIndex=0,dailyBusy=false;
+async function dailyApi(path,body,method=body?'POST':'GET'){
+ const r=await fetch('/api/prospect/'+path,{method,headers:{'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
+ if(r.status===401){location.href='/login?next='+encodeURIComponent(location.pathname+location.search);throw Error('Sign in to continue.');}
+ let data;try{data=await r.json();}catch{}if(!r.ok)throw Error(data?.detail||'Request failed.');return data;
+}
+const dailyVisible=()=>daily.items.filter(i=>{const v=$('dailyView').value,s=i.review?.status;return v==='all'||(v==='pending'?!s:v==='kept'?s==='kept':s==='passed');});
+async function loadDaily(listId){
+ $('dailyStatus').textContent='Loading today’s leads…';
+ try{
+  daily=await dailyApi('daily-review'+(listId?'?list_id='+encodeURIComponent(listId):''));
+  $('dailyList').innerHTML=daily.lists.map(l=>`<option value="${esc(l.id)}">${esc(l.name)} · ${esc(l.contacts)}</option>`).join('');
+  if(daily.list)$('dailyList').value=daily.list.id;
+  $('dailyStatus').textContent='';dailyIndex=0;renderDaily();
+ }catch(e){$('dailyStatus').textContent='Daily review could not load. '+e.message;}
+}
+function renderDailyProgress(){
+ const c=daily.counts||{total:0,pending:0,kept:0,passed:0,quality:0,kept_missing_contact:0};
+ $('dailyGoal').textContent=daily.goal;$('dailyBar').max=daily.goal;$('dailyBar').value=Math.min(c.quality,daily.goal);$('dailyQuality').textContent=c.quality;
+ $('dailyCounts').textContent=`${c.total} delivered · ${c.pending} to review · ${c.kept} kept · ${c.passed} not a fit`;
+ $('dailyEnrich').hidden=!c.kept_missing_contact;$('dailyMissing').textContent=c.kept_missing_contact;
+ $('dailyBadge').hidden=!c.pending;$('dailyBadge').textContent=c.pending;
+}
+function renderDaily(){
+ renderDailyProgress();
+ const visible=dailyVisible();
+ if(!daily.list||!visible.length){
+  $('dailyCard').hidden=true;$('dailyEmpty').hidden=false;
+  $('dailyEmpty').innerHTML=!daily.list?'<h2>No delivery yet</h2><p>Your daily leads arrive by 8:00 a.m. ET as a CSV in the Lead Qualifier drive. Drop it anywhere on this page to import it; the review opens by itself.</p>'
+   :$('dailyView').value==='pending'?`<h2>All reviewed</h2><p>${daily.counts.quality>=daily.goal?'Goal reached. ':''}${esc(daily.counts.quality)} quality leads kept from this delivery.</p>`:'<h2>Nothing here</h2><p>Choose another view.</p>';
+  return;
+ }
+ dailyIndex=Math.max(0,Math.min(dailyIndex,visible.length-1));
+ const i=visible[dailyIndex];$('dailyCard').hidden=false;$('dailyEmpty').hidden=true;
+ $('dailyRank').textContent=i.signal?.rank?'#'+i.signal.rank:'Delivered';
+ $('dailyType').textContent=i.signal?.type||'Daily lead';
+ $('dailyState').textContent=i.quality?'Quality lead':i.review?.status==='kept'?'Kept · needs mobile or email':i.review?.status==='passed'?'Not a fit':'To review';
+ $('dailyState').className='chip '+(i.quality?'good':i.review?.status==='passed'?'muted-chip':'');
+ $('dailyName').textContent=`${i.first_name} ${i.last_name}`;
+ $('dailyRole').textContent=[i.title,i.company,i.location].filter(Boolean).join(' · ');
+ $('dailyWhy').textContent=i.signal?.why||'Delivered in today’s leads.';$('dailyBasis').textContent=i.signal?.basis?'Ranked by '+i.signal.basis:'';
+ const profile=i.linkedin_url||i.signal?.linkedin_search||'https://www.linkedin.com/search/results/people/?keywords='+encodeURIComponent(`${i.first_name} ${i.last_name} ${i.company}`);
+ $('dailyLinkedIn').href=profile;$('dailyLinkedIn').textContent=i.linkedin_url?'Review LinkedIn profile ↗':'Find on LinkedIn ↗';
+ $('dailySource').hidden=!i.signal?.url;if(i.signal?.url)$('dailySource').href=i.signal.url;
+ $('dailyMobile').value=i.mobile_phone;$('dailyEmail').value=i.email;$('dailySave').hidden=true;
+ $('dailyDnc').hidden=!i.mobile_do_not_call;
+ $('dailyKeep').disabled=dailyBusy||i.suppressed;$('dailyPass').disabled=dailyBusy;$('dailyUndo').hidden=!i.review;$('dailyReason').value=i.review?.reason||'';
+ $('dailyPosition').textContent=`${dailyIndex+1} of ${visible.length}`;$('dailyPrev').disabled=dailyIndex===0;$('dailyNext').disabled=dailyIndex>=visible.length-1;
+ $('dailyNext').textContent=i.review?'Next →':'Skip →';
+}
+function replaceDaily(item){
+ daily.items=daily.items.map(x=>x.id===item.id?item:x);
+ const c={total:daily.items.length,pending:0,kept:0,passed:0,quality:0,kept_missing_contact:0};
+ for(const x of daily.items){if(!x.review)c.pending++;else if(x.review.status==='kept'){c.kept++;if(x.quality)c.quality++;else c.kept_missing_contact++;}else c.passed++;}
+ daily.counts=c;
+}
+const dailyTyped=()=>({mobile:$('dailyMobile').value.trim(),email:$('dailyEmail').value.trim()});
+async function decideDaily(decision){
+ const i=dailyVisible()[dailyIndex];if(!i||dailyBusy)return;
+ const reason=$('dailyReason').value;if(decision==='pass'&&!reason){$('dailyStatus').textContent='Choose why this lead is not a fit.';$('dailyReason').focus();return;}
+ // Read what was typed before the card redraws, so a kept lead keeps it.
+ const typed=dailyTyped();
+ dailyBusy=true;renderDaily();$('dailyMobile').value=typed.mobile;$('dailyEmail').value=typed.email;
+ try{
+  if(decision==='keep')await saveDailyContact(i,typed);
+  const item=await dailyApi(`contacts/${encodeURIComponent(i.id)}/review`,{list_id:daily.list.id,decision,...(decision==='pass'?{reason}:{})});
+  replaceDaily(item);
+  $('dailyStatus').textContent=decision==='keep'?(item.quality?`Kept ${i.first_name} ${i.last_name} as a quality lead.`:`Kept ${i.first_name} ${i.last_name}. Add a mobile and email to count toward the goal.`):decision==='pass'?'Marked not a fit.':'Decision cleared.';
+  // The reviewed card leaves the To review view; the next one takes its place.
+  if($('dailyView').value!=='pending'&&decision!=='reset')dailyIndex++;
+ }catch(e){$('dailyStatus').textContent=e.message;dailyBusy=false;renderDaily();$('dailyMobile').value=typed.mobile;$('dailyEmail').value=typed.email;$('dailyMobile').dispatchEvent(new Event('input'));return;}
+ dailyBusy=false;renderDaily();
+}
+async function saveDailyContact(i,{mobile,email}=dailyTyped()){
+ const fields={};
+ if(mobile!==i.mobile_phone)fields.mobile_phone=mobile;if(email!==i.email)fields.email=email;
+ if(!Object.keys(fields).length)return;
+ await dailyApi(`contacts/${encodeURIComponent(i.id)}`,{fields,revision:i.revision,reason:'Added from ZoomInfo during daily review'},'PATCH');
+ await loadDailyItem(i.id);
+}
+async function loadDailyItem(id){
+ const fresh=await dailyApi('daily-review?list_id='+encodeURIComponent(daily.list.id));
+ const item=fresh.items.find(x=>x.id===id);if(item)replaceDaily(item);
+}
+$('dailyOpen').onclick=()=>{$('dailyDialog').showModal();loadDaily($('dailyList').value||'');};
+$('dailyList').onchange=()=>loadDaily($('dailyList').value);
+$('dailyView').onchange=()=>{dailyIndex=0;$('dailyStatus').textContent='';renderDaily();};
+$('dailyKeep').onclick=()=>decideDaily('keep');
+$('dailyPass').onclick=()=>decideDaily('pass');
+$('dailyUndo').onclick=()=>decideDaily('reset');
+$('dailyPrev').onclick=()=>{dailyIndex--;$('dailyStatus').textContent='';renderDaily();};
+$('dailyNext').onclick=()=>{dailyIndex++;$('dailyStatus').textContent='';renderDaily();};
+for(const id of ['dailyMobile','dailyEmail'])$(id).addEventListener('input',()=>{const i=dailyVisible()[dailyIndex];$('dailySave').hidden=!i||($('dailyMobile').value.trim()===i.mobile_phone&&$('dailyEmail').value.trim()===i.email);});
+$('dailyContact').onsubmit=async e=>{e.preventDefault();const i=dailyVisible()[dailyIndex];if(!i||dailyBusy)return;const typed=dailyTyped();dailyBusy=true;
+ try{await saveDailyContact(i,typed);$('dailyStatus').textContent='Contact details saved with their source: added during daily review.';}catch(err){$('dailyStatus').textContent=err.message;}finally{dailyBusy=false;renderDaily();}};
+$('dailyDialog').addEventListener('keydown',e=>{
+ if(e.target.closest('input,select,textarea')||e.metaKey||e.ctrlKey||e.altKey)return;
+ const key=e.key.toLowerCase();
+ if(key==='k'){e.preventDefault();decideDaily('keep');}
+ else if(key==='n'){e.preventDefault();if($('dailyReason').value)decideDaily('pass');else $('dailyReason').focus();}
+ else if(key==='arrowright'&&!$('dailyNext').disabled){dailyIndex++;renderDaily();}
+ else if(key==='arrowleft'&&!$('dailyPrev').disabled){dailyIndex--;renderDaily();}
+});
+// Kept leads without both routes, as ZoomInfo contact IDs for its enrichment.
+$('dailyDownload').onclick=()=>{const rows=daily.items.filter(i=>i.review?.status==='kept'&&!i.quality);
+ downloadCSV(`${(daily.list?.name||'daily-leads').replace(/[^\w -]+/g,'').trim()} - for ZoomInfo.csv`,[['ZoomInfo Contact ID','First Name','Last Name','Company Name','Job Title'],...rows.map(i=>[i.zoominfo_id,i.first_name,i.last_name,i.company,i.title])]);
+ $('dailyStatus').textContent=`Downloaded ${rows.length}. Upload it to ZoomInfo, export with mobile and email, then choose Import ZoomInfo export.`;};
+$('dailyImportExport').onclick=()=>{$('dailyDialog').close();if(daily.list){$('importList').value=daily.list.id;autoList='';}$('importDialog').showModal();};
+// The badge shows today’s unreviewed leads without opening the review.
+dailyApi('daily-review').then(d=>{daily=d;renderDailyProgress();}).catch(()=>{});
