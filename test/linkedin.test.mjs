@@ -9,11 +9,11 @@ const config={clientId:'client',clientSecret:'secret',redirectUri:origin+'/auth/
 async function fixture(){
  const db=new PGlite();await db.exec(readFileSync(new URL('../migrations/003-linkedin.sql',import.meta.url),'utf8'));
  const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
- let fail=false,calls=0;
- const linkedin=createLinkedIn({pool,page:'page',script:'script',origins:[origin],config,fetcher:async url=>{calls++;if(fail)throw Error('secret-sensitive-provider-error');return Response.json(url.endsWith('accessToken')?{access_token:'TOP-SECRET-TOKEN',expires_in:3600}:{sub:'member-id',name:'Jane Smith'});}});
+ let fail=false,calls=0,override=null;const requests=[];
+ const linkedin=createLinkedIn({pool,page:'page',script:'script',origins:[origin],config,fetcher:async (url,init)=>{calls++;requests.push({url,init});if(override)return override(url,init);if(fail)throw Error('secret-sensitive-provider-error');return Response.json(url.endsWith('accessToken')?{access_token:'TOP-SECRET-TOKEN',expires_in:3600}:{sub:'member-id',name:'Jane Smith'});}});
  const request=(path,method='GET',who=uid,sess=session)=>linkedin(new Request(origin+path,{method}),{uid:who},sess);
  const start=async()=>new URL((await (await request('/api/linkedin/connect','POST')).json()).url).searchParams.get('state');
- return {db,pool,request,start,calls:()=>calls,fail:()=>{fail=true;}};
+ return {db,pool,request,start,calls:()=>calls,fail:()=>{fail=true;},requests,respond:fn=>{override=fn;}};
 }
 test('OAuth encrypted storage, status redaction, replay protection and disconnect',async()=>{
  const f=await fixture();try{
@@ -62,4 +62,35 @@ test('LinkedIn routes require approved sessions and same-origin writes; missing 
  assert.equal((await (await noConfig(new Request(origin+'/api/linkedin/status'),{uid},session)).json()).configured,false);
  assert.equal((await noConfig(new Request(origin+'/api/linkedin/connect',{method:'POST'}),{uid},session)).status,503);
  assert.throws(()=>createLinkedIn({origins:[origin],config:{...config,redirectUri:'https://evil.example/auth/linkedin/callback'}}));
+});
+
+
+test('authorization requests only own-profile scopes and newest state supersedes old grants',async()=>{
+ const f=await fixture();try{
+  const response=await f.request('/api/linkedin/connect','POST'),url=new URL((await response.json()).url),state=url.searchParams.get('state');
+  assert.equal(url.origin,'https://www.linkedin.com');assert.equal(url.pathname,'/oauth/v2/authorization');
+  assert.equal(url.searchParams.get('scope'),'openid profile');assert.equal(url.searchParams.get('redirect_uri'),config.redirectUri);
+  assert.match(response.headers.get('cache-control'),/no-store/);
+  const next=await f.start();assert.notEqual(next,state);
+  assert.match((await f.request('/auth/linkedin/callback?state='+state+'&code=ok')).headers.get('location'),/failed/);assert.equal(f.calls(),0);
+  assert.match((await f.request('/auth/linkedin/callback?state='+next+'&code=ok')).headers.get('location'),/connected/);
+  assert.ok(f.requests.every(r=>r.init.redirect==='error'&&r.init.signal instanceof AbortSignal));
+  assert.deepEqual(f.requests.map(r=>r.url),['https://www.linkedin.com/oauth/v2/accessToken','https://api.linkedin.com/v2/userinfo']);
+ }finally{await f.db.close();}
+});
+
+test('malformed, oversized and failed provider responses preserve an existing token without leaking errors',async()=>{
+ const f=await fixture();try{
+  let state=await f.start();await f.request('/auth/linkedin/callback?state='+state+'&code=ok');
+  const saved=(await f.db.query('SELECT token_ciphertext FROM linkedin_connections')).rows[0].token_ciphertext;
+  const invalid=[()=>new Response('SECRET_ERROR',{status:429}),()=>new Response('not JSON'),()=>new Response('x'.repeat(65537)),()=>Response.json({access_token:'',expires_in:3600}),()=>Response.json({access_token:'token',expires_in:-1}),()=>Response.json({access_token:'token',expires_in:1.5}),()=>Response.json({access_token:'x'.repeat(16385),expires_in:3600}),()=>{throw new DOMException('timeout','TimeoutError');}];
+  for(const reply of invalid){f.respond(reply);state=await f.start();const result=await f.request('/auth/linkedin/callback?state='+state+'&code=ok');assert.equal(result.headers.get('location'),'/settings/linkedin?result=failed');assert.equal(await result.text(),'');assert.equal((await f.db.query('SELECT token_ciphertext FROM linkedin_connections')).rows[0].token_ciphertext,saved);assert.equal((await f.db.query('SELECT * FROM linkedin_oauth_states')).rows.length,0);}
+  f.respond(url=>Response.json(url.endsWith('accessToken')?{access_token:'new',expires_in:3600}:{name:'Missing identifier'}));state=await f.start();assert.match((await f.request('/auth/linkedin/callback?state='+state+'&code=ok')).headers.get('location'),/failed/);
+  assert.equal((await f.db.query('SELECT token_ciphertext FROM linkedin_connections')).rows[0].token_ciphertext,saved);
+ }finally{await f.db.close();}
+});
+
+test('unsafe callback configuration is rejected before authorization',()=>{
+ for(const redirectUri of ['http://prospectpilot.io/auth/linkedin/callback',origin+'/wrong',origin+'/auth/linkedin/callback?extra=1',origin+'/auth/linkedin/callback#hash','https://user:pass@prospectpilot.io/auth/linkedin/callback'])assert.throws(()=>createLinkedIn({origins:[origin],config:{...config,redirectUri}}));
+ assert.throws(()=>createLinkedIn({origins:[origin],config:{...config,encryptionKey:Buffer.alloc(16).toString('base64')}}));
 });
