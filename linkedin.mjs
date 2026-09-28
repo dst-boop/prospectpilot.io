@@ -31,7 +31,7 @@ export function createLinkedIn({pool,page,script,origins,config={},fetcher=fetch
   }
   return async(request,claims,session)=>{
     const url=new URL(request.url),path=url.pathname,uid=claims.uid;
-    if(path==='/settings/linkedin'&&request.method==='GET')return new Response(page,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'private, no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"}});
+    if(path==='/settings/linkedin'&&request.method==='GET')return new Response(page,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'private, no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"}});
     if(path==='/auth/linkedin/ui.js'&&request.method==='GET')return new Response(script,{headers:{'Content-Type':'text/javascript','Cache-Control':'no-store'}});
     if(path==='/api/linkedin/status'&&request.method==='GET'){
       const row=(await pool.query('SELECT member_name, expires_at, connected_at FROM linkedin_connections WHERE user_id=$1',[uid])).rows[0];

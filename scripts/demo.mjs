@@ -40,6 +40,7 @@ for(const {lead} of (await lab.list(user)).leads){
 await lab.cost(user,{run_id:imported.run.id,category:'labor',amount_micros:12000000,note:'Synthetic cost example, not actual spending',idempotency_key:'fixture-cost'});
 const assets=new Map([['/lab-client.js',['text/javascript',read('lab-client.js')]],['/lab.css',['text/css',read('lab.css')]]]);
 assets.set('/prospect-client.js',['text/javascript',read('prospect-client.js')]);assets.set('/prospect.css',['text/css',read('prospect.css')]);
+assets.set('/brand.svg',['image/svg+xml',read('brand.svg')]);assets.set('/favicon.ico',['image/svg+xml',read('brand.svg')]);
 assets.set('/prospect-jobs-client.js',['text/javascript',read('prospect-jobs-client.js')]);
 const prospectPage=read('prospect.html').replace('<body>','<body><p role="status">SYNTHETIC DEMONSTRATION — Fictional contacts only. Data resets on restart. No provider calls.</p>');
 const page=read('lab.html').replace('<body>','<body><p class="notice">SYNTHETIC DEMONSTRATION · No real leads or provider calls · Data resets when this process stops. Do not enter real personal information here.</p>').replace(/<nav aria-label="Workspace">[\s\S]*?<\/nav>/,'<nav aria-label="Workspace"><a href="/lab">Research workspace</a></nav>');

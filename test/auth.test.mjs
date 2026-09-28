@@ -73,4 +73,11 @@ test('robots.txt and favicon are answered without a session, and robots keeps th
  const icon=await handler(req('/favicon.ico'));
  assert.equal(icon.status,204,'no sign-in redirect for the browser icon request');assert.match(icon.headers.get('cache-control'),/max-age/);
  assert.equal((await handler(new Request('https://evil.example/robots.txt'))).status,403,'still only on the ProspectPilot address');
+ const branded=createHandler({auth:{verifySessionCookie:async()=>{throw Error();}},origins:[origin],brandMark:'<svg/>',lab:{}});
+ for(const path of ['/brand.svg','/favicon.ico']){
+  const logo=await branded(req(path));
+  assert.equal(logo.status,200,`${path} is served without a session`);assert.equal(logo.headers.get('content-type'),'image/svg+xml');assert.equal(await logo.text(),'<svg/>');
+  assert.equal(logo.headers.get('content-security-policy'),"default-src 'none'");
+ }
+ assert.match(await (await branded(req('/robots.txt'))).text(),/Allow: \/brand.svg/);
 });
