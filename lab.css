@@ -39,7 +39,7 @@ h2{font-size:18px;letter-spacing:-.3px;font-weight:650;color:var(--ink)}
 .metric-grid{grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px}
 .metric-grid article{padding:18px 20px;gap:4px}
 .metric-grid article span{font-size:13px;color:var(--muted);font-weight:500}
-.metric-grid article.highlight{background:var(--blue);border-color:var(--blue)}
+.metric-grid article.highlight{background:var(--navy);border-color:var(--navy)}
 .metric-grid article.highlight span,.metric-grid .highlight small{color:#d6e4fb}
 .metric-grid strong{font-size:32px;font-weight:700;color:var(--ink)}
 .metric-grid .highlight strong{color:#fff}
