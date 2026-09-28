@@ -305,7 +305,7 @@ function renderDaily(){
  $('dailyState').className='chip '+(i.quality?'good':i.review?.status==='passed'?'muted-chip':'');
  $('dailyName').textContent=`${i.first_name} ${i.last_name}`;
  $('dailyRole').textContent=[i.title,i.company,i.location].filter(Boolean).join(' · ');
- $('dailyWhy').textContent=i.signal?.why||'Delivered in today’s leads.';
+ $('dailyWhy').textContent=i.signal?.why||'Delivered in today’s leads.';$('dailyBasis').textContent=i.signal?.basis?'Ranked by '+i.signal.basis:'';
  const profile=i.linkedin_url||i.signal?.linkedin_search||'https://www.linkedin.com/search/results/people/?keywords='+encodeURIComponent(`${i.first_name} ${i.last_name} ${i.company}`);
  $('dailyLinkedIn').href=profile;$('dailyLinkedIn').textContent=i.linkedin_url?'Review LinkedIn profile ↗':'Find on LinkedIn ↗';
  $('dailySource').hidden=!i.signal?.url;if(i.signal?.url)$('dailySource').href=i.signal.url;
@@ -330,7 +330,7 @@ async function decideDaily(decision){
  dailyBusy=true;renderDaily();$('dailyMobile').value=typed.mobile;$('dailyEmail').value=typed.email;
  try{
   if(decision==='keep')await saveDailyContact(i,typed);
-  const item=await dailyApi(`contacts/${encodeURIComponent(i.id)}/review`,{decision,...(decision==='pass'?{reason}:{})});
+  const item=await dailyApi(`contacts/${encodeURIComponent(i.id)}/review`,{list_id:daily.list.id,decision,...(decision==='pass'?{reason}:{})});
   replaceDaily(item);
   $('dailyStatus').textContent=decision==='keep'?(item.quality?`Kept ${i.first_name} ${i.last_name} as a quality lead.`:`Kept ${i.first_name} ${i.last_name}. Add a mobile and email to count toward the goal.`):decision==='pass'?'Marked not a fit.':'Decision cleared.';
   // The reviewed card leaves the To review view; the next one takes its place.

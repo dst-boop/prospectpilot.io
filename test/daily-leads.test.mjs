@@ -117,30 +117,42 @@ test('the delivery imports into Contacts and drives the daily review to the goal
     assert.deepEqual(review.counts,{total:3,pending:3,kept:0,passed:0,quality:0,kept_missing_contact:0});
     const avery=review.items.find(i=>i.first_name==='Avery');
     assert.equal(review.items[0].first_name,'Avery','delivered rank order');
-    assert.equal(avery.signal.type,'Breaking: named departure');assert.equal(avery.signal.url,'https://news.example.com/avery');assert.match(avery.signal.linkedin_search,/linkedin\.com\/search/);
+    assert.equal(avery.signal.type,'Left company','the event itself, not the tier');assert.match(avery.signal.basis,/^Trigger \d+\/50 · Seniority 25\/25 · Data \d+\/20 · Callable 5\/5$/);assert.equal(avery.signal.credits,1);
+    assert.equal(review.items.find(i=>i.first_name==='Blair').signal.credits,0);assert.equal(avery.signal.url,'https://news.example.com/avery');assert.match(avery.signal.linkedin_search,/linkedin\.com\/search/);
     assert.equal(avery.mobile_phone,'+12125550100');assert.equal(avery.mobile_do_not_call,true);assert.equal(avery.linkedin_url,'https://www.linkedin.com/in/avery-sample');
     assert.equal(review.items.find(i=>i.first_name==='Casey').zoominfo_id,'-3','negative ZoomInfo IDs survive');
-    const kept=await call(user,'POST',`contacts/${avery.id}/review`,{decision:'keep'});
+    const kept=await call(user,'POST',`contacts/${avery.id}/review`,{list_id:list.id,decision:'keep'});
     assert.equal(kept.quality,true,'kept with both routes: a quality lead');
     const blair=review.items.find(i=>i.first_name==='Blair');
-    assert.equal((await call(user,'POST',`contacts/${blair.id}/review`,{decision:'keep'})).quality,false,'kept without a mobile and email does not count yet');
-    await assert.rejects(call(user,'POST',`contacts/${blair.id}/review`,{decision:'pass'}),{status:422});
-    await assert.rejects(call(other,'POST',`contacts/${blair.id}/review`,{decision:'keep'}),{status:404});
+    assert.equal((await call(user,'POST',`contacts/${blair.id}/review`,{list_id:list.id,decision:'keep'})).quality,false,'kept without a mobile and email does not count yet');
+    await assert.rejects(call(user,'POST',`contacts/${blair.id}/review`,{list_id:list.id,decision:'pass'}),{status:422});
+    await assert.rejects(call(user,'POST',`contacts/${blair.id}/review`,{decision:'keep'}),{status:422},'a decision names its delivery');
+    await assert.rejects(call(other,'POST',`contacts/${blair.id}/review`,{list_id:list.id,decision:'keep'}),{status:404});
     // The advisor adds Blair's numbers from ZoomInfo on the card.
     const fresh=(await call(user,'GET','daily-review')).items.find(i=>i.id===blair.id);
     await call(user,'PATCH',`contacts/${blair.id}`,{fields:{mobile_phone:'+1 (646) 555-0101',email:'blair@delta.example'},revision:fresh.revision,reason:'Added from ZoomInfo during daily review'});
     const casey=review.items.find(i=>i.first_name==='Casey');
-    await call(user,'POST',`contacts/${casey.id}/review`,{decision:'pass',reason:'no_rollover_likely'});
+    await call(user,'POST',`contacts/${casey.id}/review`,{list_id:list.id,decision:'pass',reason:'no_rollover_likely'});
     const after=await call(user,'GET','daily-review?list_id='+list.id);
     assert.deepEqual(after.counts,{total:3,pending:0,kept:2,passed:1,quality:2,kept_missing_contact:0});
     assert.equal(after.goal,50);
     // A ZoomInfo export dropped back in fills the numbers by ZoomInfo ID.
-    await call(user,'POST',`contacts/${casey.id}/review`,{decision:'reset'});
+    await call(user,'POST',`contacts/${casey.id}/review`,{list_id:list.id,decision:'reset'});
     const back=await call(user,'POST','import',{csv:'First Name,Last Name,Company Name,ZoomInfo Contact ID,Mobile Phone,Email Address\nCasey,Neg,Zeta Co,-3,+1 212 555 0102,casey@zeta.example',format:'zoominfo',source:'ZoomInfo CSV export',list_id:list.id});
     assert.equal(back.duplicates,1);
     const filled=(await call(user,'GET','daily-review')).items.find(i=>i.id===casey.id);
     assert.equal(filled.email,'casey@zeta.example');assert.equal(filled.mobile_phone,'+12125550102');assert.equal(filled.signal.rank,3,'the signal survives the export');
     assert.equal((await call(other,'GET','daily-review')).list,null,'another advisor sees nothing');
+    // A contact on another list for another reason stays out of that list's
+    // review; a later delivery keeps the earlier decision.
+    const other_list=await call(user,'POST','lists',{name:'Conference follow-ups'});
+    await call(user,'POST',`lists/${other_list.id}/members`,{ids:[avery.id]});
+    assert.equal((await call(user,'GET','daily-review')).lists.some(l=>l.id===other_list.id),false,'a plain list is not a delivery');
+    const later=await call(user,'POST','lists',{name:'Daily leads — 2027-04-01'});
+    const again=await call(user,'POST','import',{csv:csv.replace(/2026-09-28/g,'2027-04-01'),format:'zoominfo',source:'ProspectPilot daily leads (ZoomInfo)',list_id:later.id});
+    assert.equal(again.duplicates,3);
+    assert.deepEqual((await call(user,'GET','daily-review?list_id='+later.id)).counts,{total:3,pending:3,kept:0,passed:0,quality:0,kept_missing_contact:0},'a new delivery starts its own review');
+    assert.equal((await call(user,'GET','daily-review?list_id='+list.id)).counts.kept,2,'the earlier delivery keeps its decisions');
     // Delete this person takes the signal and the review with the contact.
     await call(user,'DELETE',`contacts/${avery.id}`);
     assert.equal((await call(user,'GET','daily-review')).counts.total,2);

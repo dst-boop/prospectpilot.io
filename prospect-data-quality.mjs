@@ -26,7 +26,7 @@ export const ZOOMINFO_ALIASES = {
 for(const [key,aliases] of Object.entries(ZOOMINFO_ALIASES))for(const alias of [...aliases,'zoominfo_'+key])CONTACT_COLUMNS.set(columnKey(alias),'zoominfo_'+key);
 // Why this person is on today's list: the daily-leads delivery carries the
 // trigger with its date and source, so the review shows why, not just who.
-export const SIGNAL_ALIASES = {why:['Why Now'], type:['Signal Type'], date:['Signal Date'], url:['Signal Source URL'], linkedin_search:['LinkedIn Search'], rank:['Daily Rank'], delivered_on:['Delivery Date']};
+export const SIGNAL_ALIASES = {why:['Why Now'], type:['Signal Type'], date:['Signal Date'], url:['Signal Source URL'], linkedin_search:['LinkedIn Search'], rank:['Daily Rank'], delivered_on:['Delivery Date'], basis:['Rank Basis'], credits:['Enrichment Credits']};
 for(const [key,aliases] of Object.entries(SIGNAL_ALIASES))for(const alias of aliases)CONTACT_COLUMNS.set(columnKey(alias),'signal_'+key);
 const publicHTTP=value=>{try{const u=new URL(value);return ['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&value.length<=1000?u.href:'';}catch{return '';}};
 function signalMetadata(mapped){
@@ -35,7 +35,8 @@ function signalMetadata(mapped){
  const warnings=[],day=value=>/^\d{4}-\d{2}-\d{2}$/.test(value)&&Number.isFinite(Date.parse(value))?value:'';
  const signal={why:raw.why.replace(/[\u0000-\u001f\u007f]/g,' ').slice(0,400),type:raw.type.slice(0,60),date:day(raw.date),url:publicHTTP(raw.url),
   linkedin_search:/^https:\/\/www\.linkedin\.com\/search\/results\/people\/\?/.test(raw.linkedin_search)?publicHTTP(raw.linkedin_search):'',
-  rank:/^\d{1,5}$/.test(raw.rank)?Number(raw.rank):null,delivered_on:day(raw.delivered_on)};
+  rank:/^\d{1,5}$/.test(raw.rank)?Number(raw.rank):null,delivered_on:day(raw.delivered_on),
+  basis:raw.basis.replace(/[\u0000-\u001f\u007f]/g,' ').slice(0,160),credits:/^\d{1,2}$/.test(raw.credits)?Number(raw.credits):0};
  for(const key of ['date','url','linkedin_search','delivered_on'])if(raw[key]&&!signal[key])warnings.push('Review signal '+key.replaceAll('_',' ')+': '+raw[key].slice(0,200));
  return {signal,warnings};
 }

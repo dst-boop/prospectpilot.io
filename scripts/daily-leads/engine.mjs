@@ -129,14 +129,23 @@ export function candidatesFromSearch(file, scoops = new Map(), scoopNames = new 
   }).filter(c => c.person_id && c.first_name && c.last_name);
 }
 
-export function score(candidate, today) {
-  let points = TIERS[candidate.tier].weight + seniority(candidate.title).rank;
-  points += Math.max(0, Math.min(15, ((candidate.accuracy || 70) - 70) / 29 * 15));
-  if (!candidate.mobile_dnc) points += 5;
-  if (candidate.updated && daysBetween(candidate.updated, today) <= 60) points += 5;
-  if (candidate.signal?.date) { const age = daysBetween(candidate.signal.date, today); points += age <= 7 ? 10 : age <= 30 ? 5 : 0; }
-  return Math.round(points);
+// Four parts, kept apart so the review shows why a lead ranked where it did:
+// the trigger (tier and how recent), seniority, data quality (accuracy and
+// freshness) and whether the mobile can be called. Only the sort adds them.
+export function scoreParts(candidate, today) {
+  const age = candidate.signal?.date ? daysBetween(candidate.signal.date, today) : Infinity;
+  return {
+    trigger: TIERS[candidate.tier].weight + (age <= 7 ? 10 : age <= 30 ? 5 : 0),
+    seniority: seniority(candidate.title).rank,
+    data: Math.round(Math.max(0, Math.min(15, ((candidate.accuracy || 70) - 70) / 29 * 15)) + (candidate.updated && daysBetween(candidate.updated, today) <= 60 ? 5 : 0)),
+    callable: candidate.mobile_dnc ? 0 : 5,
+  };
 }
+export function score(candidate, today) {
+  const parts = scoreParts(candidate, today);
+  return parts.trigger + parts.seniority + parts.data + parts.callable;
+}
+export const rankBasis = parts => `Trigger ${parts.trigger}/50 · Seniority ${parts.seniority}/25 · Data ${parts.data}/20 · Callable ${parts.callable}/5`;
 
 // Rank, filter, dedupe and spread across employers. No hard cap on the day:
 // `target` is how many to hand over, and the advisor keeps what is good.
@@ -151,7 +160,7 @@ export function select(files, {config, ledger = new Set(), today, target = confi
       if (ledger.has(c.person_id)) { counts.already_delivered++; continue; }
       const reason = exclusion(c, config);
       if (reason) { counts.excluded++; excluded.push({person_id: c.person_id, reason}); continue; }
-      c.score = score(c, today);
+      c.parts = scoreParts(c, today); c.score = c.parts.trigger + c.parts.seniority + c.parts.data + c.parts.callable;
       const prior = seen.get(c.person_id);
       if (prior) { counts.duplicate++; if (c.score <= prior.score) continue; }
       seen.set(c.person_id, c);
@@ -243,6 +252,8 @@ export function finalize(selected, enrichment, {today}) {
     lead.stint = stintAt(e.employmentHistory, c.signal?.employer, today);lead.today = today;
     lead.tenure_years = lead.stint?.years ?? null;
     lead.enriched = Boolean(lead.email && lead.mobile);
+    // A successful enrichment is one ZoomInfo credit, recorded with the lead.
+    lead.credits = enrichment.has(c.person_id) ? 1 : 0;
     lead.why_now = whyNow(lead);
     lead.linkedin_search = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(`${lead.first_name} ${lead.last_name} ${lead.company}`)}`;
     return lead;
@@ -260,12 +271,12 @@ export function csvCell(value) {
 // export, plus the signal columns it keeps with the contact.
 export const CSV_HEADERS = ['First Name', 'Last Name', 'Job Title', 'Company Name', 'Email Address', 'Mobile Phone', 'Direct Phone Number', 'LinkedIn Contact Profile URL', 'Country',
   'ZoomInfo Contact ID', 'ZoomInfo Company ID', 'Contact Accuracy Score', 'Mobile Phone Do Not Call', 'Direct Phone Do Not Call', 'Previous Company Name',
-  'Why Now', 'Signal Type', 'Signal Date', 'Signal Source URL', 'LinkedIn Search', 'Daily Rank', 'Delivery Date'];
+  'Why Now', 'Signal Type', 'Signal Date', 'Signal Source URL', 'LinkedIn Search', 'Daily Rank', 'Delivery Date', 'Rank Basis', 'Enrichment Credits'];
 
 export function toCSV(leads, {today}) {
   const rows = leads.map(l => [l.first_name, l.last_name, l.title, l.company, l.email, l.mobile, l.direct, l.linkedin_url, 'United States',
     l.person_id, l.company_id, l.accuracy || '', l.mobile_dnc ? 'true' : 'false', l.direct_dnc ? 'true' : 'false', l.tier === 'C' ? '' : l.signal?.employer || '',
-    l.why_now, TIERS[l.tier].label, l.signal?.date || '', l.signal?.url || '', l.linkedin_search, l.rank, today]);
+    l.why_now, l.tier === 'A' && l.signal?.type ? l.signal.type : TIERS[l.tier].label, l.signal?.date || '', l.signal?.url || '', l.linkedin_search, l.rank, today, l.parts ? rankBasis(l.parts) : '', l.credits || 0]);
   return '﻿' + [CSV_HEADERS, ...rows].map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
 }
 

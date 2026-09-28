@@ -84,6 +84,9 @@ directory such as `W=$(mktemp -d)/daily-leads-$D`, then `mkdir -p $W`.
       `contentMimeType: text/csv` and `disableConversionToGoogleType: true`,
       titled `daily-leads-$D.csv`.
     - Upload `$W/ledger.csv` as `daily-leads-ledger-$D.csv` in the same folder.
+    - Upload `$W/daily-leads-run-$D.json` (counts and credits used, no names)
+      as `daily-leads-run-$D.json` in the same folder. Each lead's own row also
+      carries its credits into ProspectPilot, so spend survives this session.
     - Re-run `finalize` with `--csv-url <the CSV's viewUrl>` so the digest
       links to the file.
     - Send the digest to `DIGEST_TO`: subject from finalize's output, `htmlBody`
@@ -93,9 +96,15 @@ directory such as `W=$(mktemp -d)/daily-leads-$D`, then `mkdir -p $W`.
 
 ## If something fails
 
-- **ZoomInfo searches fail entirely.** Send the advisor a short email saying
-  today's list could not be built and why. Never send an empty or partial list
-  presented as complete.
+- **ZoomInfo searches fail entirely.** Wait 10 minutes and try the plan's
+  searches once more; the run starts at 7:10 so there is time.
+  - If they still fail, email the advisor that today's list could not be built
+    and why. Point them to *Find new prospects* in ProspectPilot, whose public
+    sources keep working without ZoomInfo.
+  - Do not substitute public-source names into this list. The daily list
+    promises a mobile and an email on file for everyone, and only ZoomInfo
+    supplies both.
+  - Never send an empty or partial list presented as complete.
 - **Drive upload fails.** Keep the digest, but say in it that the CSV could not
   be saved and must be re-run. Do not attach lead data to the email instead.
 - **Fewer than 50 delivered.** Deliver what you have and say so in the digest's
