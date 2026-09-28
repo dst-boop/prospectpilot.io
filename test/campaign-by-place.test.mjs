@@ -7,7 +7,7 @@ import {createResearchLab,labConfiguration,titleMatches} from '../research-lab.m
 // A campaign by place: companies near a ZIP first, then people on each
 // company's own pages, keeping only the titles asked for. The business
 // directory and the pages are stubs; nothing leaves the test.
-const migrations=['006-research-lab','017-forget','012-plan-catalog-summary','007-quality-v2','008-prospect-workspace','013-advisor-workflow','014-outreach-cadence','015-dial-budget','016-inbound-contact','021-lab-companies'];
+const migrations=['006-research-lab','017-forget','012-plan-catalog-summary','007-quality-v2','008-prospect-workspace','013-advisor-workflow','014-outreach-cadence','015-dial-budget','016-inbound-contact','021-lab-companies','022-identity-reviews'];
 async function fixture({companies,people={},marketFails=false,quote=()=>0,unmatched=[],marketStatus='completed',marketErrors=[]}={}) {
   const db=new PGlite();
   await db.exec(readFileSync(new URL('../generated/schema.sql',import.meta.url),'utf8'));

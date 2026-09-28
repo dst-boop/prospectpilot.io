@@ -52,7 +52,7 @@ function renderRuns(data){runs=data.runs;$('runs').innerHTML=runs.length?runs.ma
 }
 async function refresh(showNotice=true){
   if(busy)return;busy=true;clearTimeout(pollTimer);$('refresh').disabled=true;
-  const sections=[['Summary',()=>request('/api/lab/summary').then(renderSummary)],['Run history',()=>request('/api/lab/runs').then(renderRuns)],['Lead results',loadLeads],['Next actions',loadWorklist]];
+  const sections=[['Summary',()=>request('/api/lab/summary').then(renderSummary)],['Run history',()=>request('/api/lab/runs').then(renderRuns)],['Lead results',loadLeads],['Next actions',loadWorklist],['Possible duplicates',loadIdentityReviews]];
   try{
     const results=await Promise.allSettled(sections.map(([,load])=>load()));
     const failures=results.flatMap((r,i)=>r.status==='rejected'?[sections[i][0]+': '+r.reason.message]:[]);
@@ -179,6 +179,34 @@ function loadingWorklist(){
   $('workList').innerHTML='<div class="work-empty" role="status">Loading prospects…</div>';
   $('workPageInfo').textContent='Loading…';selectionLabel();
 }
+// Records that may be the same person, held for the advisor to decide.
+function personCard(p,label){
+  const lines=[[p.title,p.company].filter(Boolean).join(' · '),p.location,p.email,p.phone].filter(Boolean);
+  return `<div class="identity-person"><p class="eyebrow">${esc(label)}</p><b>${esc(p.name||'Unnamed')}</b>${lines.map(l=>`<span>${esc(l)}</span>`).join('')}${p.sources?.length?`<small class="muted">From ${esc(p.sources.join(', '))}</small>`:''}</div>`;
+}
+function identityItem(r){
+  const probable=r.kind==='probable';
+  const matches=r.matches.map(m=>`<div class="identity-match">${personCard(m,'Existing record')}<button data-review="${esc(r.id)}" data-decision="${probable?'same':'merge'}" data-target="${esc(m.id)}">${probable?'Same person — combine':'Add to this record'}</button></div>`).join('');
+  const others=r.held_elsewhere?`<p class="muted">${num(r.held_elsewhere)} matching record${r.held_elsewhere===1?' is':'s are'} held by another advisor.</p>`:'';
+  const rest=probable?`<button class="secondary" data-review="${esc(r.id)}" data-decision="separate">Different people — keep both</button>`
+    :`<button class="secondary" data-review="${esc(r.id)}" data-decision="save_new">Save as a new person</button><button class="secondary" data-review="${esc(r.id)}" data-decision="discard">Discard this arrival</button>`;
+  return `<li class="identity-item"><p><b>${esc(r.reason)}</b></p><div class="identity-compare">${personCard(r.arrival,probable?'Newer record':'Arriving')}<div class="identity-matches">${matches}${others}</div></div><div class="actions">${rest}</div></li>`;
+}
+async function loadIdentityReviews(){
+  const {total,reviews}=await request('/api/lab/identity-reviews');
+  $('identityPanel').hidden=!total;
+  $('identityCount').textContent=total>reviews.length?`Showing the newest ${num(reviews.length)} of ${num(total)}.`:'';
+  $('identityList').innerHTML=reviews.map(identityItem).join('');
+}
+$('identityList').onclick=async event=>{
+  const button=event.target.closest('button[data-review]');if(!button)return;
+  const buttons=button.closest('li').querySelectorAll('button');buttons.forEach(b=>b.disabled=true);
+  try{
+    await request('/api/lab/identity-reviews/'+encodeURIComponent(button.dataset.review),{method:'POST',body:JSON.stringify({decision:button.dataset.decision,target_id:button.dataset.target||''})});
+    notice({merge:'Added to the existing record.',same:'Combined into one record.',save_new:'Saved as a new person.',separate:'Kept as two people.',discard:'Discarded.'}[button.dataset.decision]);
+    await Promise.all([loadIdentityReviews(),loadWorklist(),loadLeads()]);
+  }catch(e){notice(e.message,true);buttons.forEach(b=>b.disabled=false);}
+};
 async function loadWorklist(){
   const serial=++workRequest;loadingWorklist();
   try{

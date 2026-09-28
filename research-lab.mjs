@@ -99,7 +99,7 @@ export function runFunnel({tasks=[],companies=[],statuses={}}={}) {
     {key:'pages_read',label:'Pages read',count:pages,lost:tally(pageLosses),note:'Losses count companies, once per reason.'},
     {key:'people_found',label:'People found',count:kept+offTarget},
     {key:'people_kept',label:'Matched the titles',count:kept,lost:tally([['Other titles, not kept',offTarget]])},
-    {key:'people_saved',label:'Saved to your records',count:saved,detail:`${Math.min(added,saved)} new · ${onFile} already on file`,lost:tally([['Missing a full name, Equitable, or previously deleted',rejected],['Matched more than one existing record',ambiguous],['Already held by another advisor',heldElsewhere]])},
+    {key:'people_saved',label:'Saved to your records',count:saved,detail:`${Math.min(added,saved)} new · ${onFile} already on file`,lost:tally([['Missing a full name, Equitable, or previously deleted',rejected],['Matched more than one record · held in Possible duplicates',ambiguous],['Already held by another advisor',heldElsewhere]])},
     {key:'promising',label:'Promising or better',count:promising,lost:tally([['Excluded by a qualification check',status('excluded')],['Conflicting identifiers to resolve',status('identity_review')],['Evidence still needed',status('incomplete')+status('unassessed')]])},
     {key:'qualified',label:'All five checks confirmed',count:status('verified'),lost:tally([['Promising, evidence still to review',status('promising')]])}]};
 }
@@ -170,6 +170,21 @@ export function mergeWithHistory(existing,incoming,seenAt,reported=incoming) {
   const seeded=reconciled(existing,seenAt);
   const history=recordValues(seeded.field_values,reported,incoming.source_names?.[0],seenAt),chosen={...incoming};
   // Choose first, then merge, so everything the merge derives uses the working values.
+  for(const field of TRACKED_FIELDS){const list=history[field];if(list?.length)chosen[field]=workingValue(field,list);}
+  const merged=mergeLead(seeded,chosen);merged.field_values=history;
+  return merged;
+}
+// First name, last name and company: the same person unless proved otherwise,
+// but not proof, so a match on this alone is put to the advisor.
+export const personKey=lead=>{const parts=[lead.first_name,lead.last_name,lead.company].map(v=>nameKey(v||'').replace(/[^a-z0-9 ]/g,'').trim());return parts.every(Boolean)?parts.join('|'):'';};
+// Folds one stored record into another when the advisor says they are the
+// same person: every report keeps its own source and date, and the working
+// values are chosen again from the combined history.
+export function absorbRecord(existing,incoming,seenAt) {
+  const seeded=reconciled(existing,seenAt);let history=seeded.field_values;
+  for(const [field,list] of Object.entries(reconciled(incoming,seenAt).field_values||{}))
+    for(const v of list)history=recordValues(history,{[field]:v.value},v.source,v.last_seen||seenAt);
+  const chosen={...incoming};
   for(const field of TRACKED_FIELDS){const list=history[field];if(list?.length)chosen[field]=workingValue(field,list);}
   const merged=mergeLead(seeded,chosen);merged.field_values=history;
   return merged;
@@ -280,7 +295,12 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     const rows=(await client.query('SELECT id,payload,owner_user_id,owner_email FROM discovery_leads WHERE team=$1',[TEAM])).rows;
     const index=new Map();
     for(const r of rows)for(const key of candidateKeys(parse(r.payload))){if(!index.has(key))index.set(key,[]);index.get(key).push(r);}
-    let added=0,duplicates=0,rejected=0,ambiguous=0;
+    // Same name at the same company, whatever the location: the probable-match index.
+    const people=new Map();
+    for(const r of rows){const key=personKey(parse(r.payload));if(key){if(!people.has(key))people.set(key,[]);people.get(key).push(r);}}
+    const admin=(await client.query("SELECT 1 FROM discovery_users WHERE user_id=$1 AND role='admin'",[user.uid])).rows.length>0;
+    const writable=row=>row.owner_user_id===user.uid||String(row.owner_email||'').toLowerCase()===String(user.email||'').toLowerCase()||admin;
+    let added=0,duplicates=0,rejected=0,ambiguous=0,probable=0;
     for(const raw of candidates.slice(0,5000)) {
       const lead=normalizeLead(mapResearchRow(raw),{source:raw.source_names?.[0]||source,owner_email:user.email});
       if(!lead.first_name||!lead.last_name||!isUsableStoredLead(lead)||nameKey(lead.company).includes('equitable')) {rejected++;continue;}
@@ -289,25 +309,122 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       // run finds them again.
       if((await forgottenKeys(client,user.uid,keys)).size){rejected++;continue;}
       const matches=[...new Map(keys.flatMap(key=>index.get(key)||[]).map(r=>[r.id,r])).values()];
-      if(matches.length>1){ambiguous++;continue;}
+      // More than one record claims this arrival: hold it for the advisor
+      // instead of guessing or dropping it.
+      if(matches.length>1){ambiguous++;await queueReview(client,user,run,'unresolved',{lead,reported:reportedFields(raw,lead)},keys,matches.map(m=>m.id),null);continue;}
       let saved=lead,isNew=!matches.length;
       if(matches.length) {
         const existing=matches[0];
         // An advisor cannot overwrite another advisor's record through import deduplication.
-        const admin=(await client.query("SELECT 1 FROM discovery_users WHERE user_id=$1 AND role='admin'",[user.uid])).rows.length>0;
-        if(existing.owner_user_id!==user.uid&&existing.owner_email.toLowerCase()!==user.email.toLowerCase()&&!admin){duplicates++;continue;}
+        if(!writable(existing)){duplicates++;continue;}
         saved=mergeWithHistory(parse(existing.payload),lead,now().toISOString(),reportedFields(raw,lead));saved.id=existing.id;
         await client.query('UPDATE discovery_leads SET payload=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2',[JSON.stringify(saved),saved.id]);duplicates++;
       } else {
         saved=withFieldHistory(saved,now().toISOString(),reportedFields(raw,saved));saved.id=randomUUID();
         await client.query('INSERT INTO discovery_leads(id,team,owner_user_id,owner_email,payload) VALUES($1,$2,$3,$4,$5)',[saved.id,TEAM,user.uid,user.email,JSON.stringify(saved)]);added++;
+        // Same person at the same company but no shared identity key (another
+        // city, or none): saved, and put in front of the advisor to decide.
+        const namesakes=(people.get(personKey(saved))||[]).filter(writable);
+        if(namesakes.length){probable++;await queueReview(client,user,run,'probable',{},candidateKeys(saved),namesakes.map(r=>r.id),saved.id);}
       }
       const stored={id:saved.id,payload:JSON.stringify(saved),owner_user_id:user.uid,owner_email:user.email};
       for(const key of candidateKeys(saved))index.set(key,[stored]);
+      if(isNew&&personKey(saved)){const key=personKey(saved);people.set(key,[...(people.get(key)||[]),stored]);}
       await client.query(`INSERT INTO lab_run_leads(run_id,lead_id,is_new,source) VALUES($1,$2,$3,$4) ON CONFLICT(run_id,lead_id) DO UPDATE SET is_new=lab_run_leads.is_new OR EXCLUDED.is_new`,[run.id,saved.id,isNew,source]);
       await evaluate(user,saved,client);
     }
-    return {added,duplicates,rejected,ambiguous};
+    return {added,duplicates,rejected,ambiguous,probable};
+  }
+  async function queueReview(client,user,run,kind,candidate,keys,matchIds,leadId) {
+    const ids=[...new Set(matchIds)].sort(),hashes=[...new Set(keys)].map(hash).sort();
+    const reason=kind==='unresolved'?`Matches ${ids.length} existing records`:'Same name and company as an existing record, in another location';
+    // One open review per arrival and set of records; a re-import does not pile up copies.
+    await client.query(`INSERT INTO lab_identity_reviews(id,user_id,run_id,kind,fingerprint,candidate,key_hashes,lead_id,match_ids,reason)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (user_id,fingerprint) WHERE status='open' DO NOTHING`,
+      [randomUUID(),user.uid,run?.id||null,kind,hash(JSON.stringify([kind,hashes,ids])),JSON.stringify(candidate),hashes,leadId,ids,reason]);
+  }
+  // What the advisor needs to tell two records apart; the records are theirs.
+  const reviewSummary=(id,p)=>({id,name:[p.first_name,p.last_name].filter(Boolean).join(' '),title:p.current_title||'',company:p.company||'',
+    location:[p.city,p.state].filter(Boolean).join(', '),email:p.email||'',phone:p.phone||p.mobile_phone||'',linkedin_url:p.linkedin_url||'',sources:(p.source_names||[]).slice(0,5)});
+  async function reviewAccess(client,user) {
+    const admin=(await client.query("SELECT 1 FROM discovery_users WHERE user_id=$1 AND role='admin'",[user.uid])).rows.length>0;
+    return row=>row.owner_user_id===user.uid||String(row.owner_email||'').toLowerCase()===String(user.email||'').toLowerCase()||admin;
+  }
+  async function identityReviews(user) {
+    return transaction(pool,async client=>{
+      const writable=await reviewAccess(client,user);
+      const reviews=(await client.query("SELECT id,kind,lead_id,match_ids,reason,candidate,created_at FROM lab_identity_reviews WHERE user_id=$1 AND status='open' ORDER BY created_at DESC,id LIMIT 100",[user.uid])).rows;
+      const ids=[...new Set(reviews.flatMap(r=>[...r.match_ids,r.lead_id].filter(Boolean)))];
+      const leads=new Map((await client.query('SELECT id,payload,owner_user_id,owner_email FROM discovery_leads WHERE team=$1 AND id=ANY($2::text[])',[TEAM,ids])).rows.map(r=>[r.id,r]));
+      const total=Number((await client.query("SELECT count(*) AS n FROM lab_identity_reviews WHERE user_id=$1 AND status='open'",[user.uid])).rows[0].n);
+      return {total,reviews:reviews.map(r=>{
+        const arrival=r.kind==='probable'?leads.get(r.lead_id):null;
+        const matches=r.match_ids.map(id=>leads.get(id)).filter(Boolean);
+        // Another advisor's record is counted, never shown.
+        return {id:r.id,kind:r.kind,reason:r.reason,created_at:r.created_at,
+          arrival:arrival?reviewSummary(arrival.id,parse(arrival.payload)):reviewSummary(null,parse(r.candidate).lead||{}),
+          matches:matches.filter(writable).map(m=>reviewSummary(m.id,parse(m.payload))),held_elsewhere:matches.filter(m=>!writable(m)).length};
+      })};
+    });
+  }
+  async function resolveIdentityReview(user,id,input={}) {
+    const decision=String(input.decision||''),target=String(input.target_id||'');
+    return transaction(pool,async client=>{
+      // The same lock as imports and deletes, so nothing changes underneath.
+      await client.query('SELECT pg_advisory_xact_lock(505006)');
+      const review=(await client.query('SELECT * FROM lab_identity_reviews WHERE id=$1 AND user_id=$2 FOR UPDATE',[id,user.uid])).rows[0];
+      if(!review)throw fail(404,'Review not found.');
+      if(review.status!=='open')throw fail(409,'This review was already decided.');
+      const allowed=review.kind==='unresolved'?['merge','save_new','discard']:['same','separate'];
+      if(!allowed.includes(decision))throw fail(400,`Choose one of: ${allowed.join(', ')}.`);
+      const writable=await reviewAccess(client,user),at=now().toISOString();
+      const load=async leadId=>(await client.query('SELECT id,payload,owner_user_id,owner_email FROM discovery_leads WHERE team=$1 AND id=$2 FOR UPDATE',[TEAM,leadId])).rows[0];
+      const pickTarget=async()=>{
+        if(!review.match_ids.includes(target))throw fail(400,'Choose one of the records in this review.');
+        const row=await load(target);
+        if(!row)throw fail(409,'That record no longer exists.');
+        if(!writable(row))throw fail(403,'That record belongs to another advisor.');
+        return row;
+      };
+      const link=async leadId=>{if(review.run_id)await client.query('INSERT INTO lab_run_leads(run_id,lead_id,is_new,source) VALUES($1,$2,$3,$4) ON CONFLICT(run_id,lead_id) DO NOTHING',[review.run_id,leadId,false,'identity_review']);};
+      let status,leadId=null;
+      if(review.kind==='unresolved'&&decision!=='discard'){
+        const {lead,reported}=parse(review.candidate);
+        if(!lead)throw fail(409,'This arrival is no longer held.');
+        // A person deleted since the arrival stays deleted.
+        if((await forgottenKeys(client,user.uid,candidateKeys(lead))).size)throw fail(409,'This person was deleted from your records.');
+        let saved;
+        if(decision==='merge'){
+          const row=await pickTarget();
+          saved={...mergeWithHistory(parse(row.payload),lead,at,reported||lead),id:row.id};
+          await client.query('UPDATE discovery_leads SET payload=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2',[JSON.stringify(saved),saved.id]);status='merged';
+        } else {
+          saved={...withFieldHistory(lead,at,reported||lead),id:randomUUID()};
+          await client.query('INSERT INTO discovery_leads(id,team,owner_user_id,owner_email,payload) VALUES($1,$2,$3,$4,$5)',[saved.id,TEAM,user.uid,user.email,JSON.stringify(saved)]);status='saved';
+        }
+        await link(saved.id);await evaluate(user,saved,client);leadId=saved.id;
+      } else if(decision==='same'){
+        const row=await pickTarget(),arrival=await load(review.lead_id);
+        if(!arrival)throw fail(409,'The newer record no longer exists.');
+        if(!writable(arrival))throw fail(403,'The newer record belongs to another advisor.');
+        // Work already done on the newer record is never discarded by a merge.
+        const work=(await client.query(`SELECT (SELECT count(*) FROM lab_observations WHERE lead_id=$1)+(SELECT count(*) FROM advisor_activities WHERE lead_id=$1)
+          +(SELECT count(*) FROM advisor_contact_links WHERE lead_id=$1)+(SELECT count(*) FROM advisor_rest_periods WHERE lead_id=$1) AS n`,[arrival.id])).rows[0];
+        if(Number(work.n))throw fail(409,'The newer record already has evidence, activity or a linked contact. Open both and combine them by hand.');
+        const saved={...absorbRecord(parse(row.payload),parse(arrival.payload),at),id:row.id};
+        await client.query('UPDATE discovery_leads SET payload=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2',[JSON.stringify(saved),saved.id]);
+        await client.query('INSERT INTO lab_run_leads(run_id,lead_id,is_new,source) SELECT run_id,$2,false,source FROM lab_run_leads WHERE lead_id=$1 ON CONFLICT(run_id,lead_id) DO NOTHING',[arrival.id,saved.id]);
+        // Other open reviews about the newer record now point at the kept one.
+        await client.query('UPDATE lab_identity_reviews SET match_ids=ARRAY(SELECT DISTINCT CASE WHEN m=$1 THEN $2 ELSE m END FROM unnest(match_ids) m) WHERE $1=ANY(match_ids)',[arrival.id,saved.id]);
+        await client.query('DELETE FROM lab_identity_reviews WHERE lead_id=$1 AND id<>$2',[arrival.id,review.id]);
+        await client.query('UPDATE lab_identity_reviews SET lead_id=NULL WHERE id=$1',[review.id]);
+        await client.query('DELETE FROM discovery_leads WHERE id=$1',[arrival.id]);
+        await evaluate(user,saved,client);status='merged';leadId=saved.id;
+      } else status=decision==='separate'?'separate':'discarded';
+      // Decided: the held copy of the person is no longer needed.
+      await client.query("UPDATE lab_identity_reviews SET status=$2,resolved_at=now(),candidate='{}'::jsonb,key_hashes='{}' WHERE id=$1",[review.id,status]);
+      return {status,lead_id:leadId};
+    });
   }
   async function settings(user,input) {
     if(input) {
@@ -633,6 +750,9 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       const rows=[];for(const id of ids){const row=await detail(user,id);if(row.quality.status!=='excluded'&&(!input.verified_only||row.quality.status==='verified'))rows.push(row);}
       return new Response(researchCSV(rows),{headers:{'content-type':'text/csv; charset=utf-8','content-disposition':'attachment; filename="prospectpilot-research.csv"'}});
     }
+    if(path==='/api/lab/identity-reviews'&&request.method==='GET')return identityReviews(user);
+    const identityMatch=path.match(/^\/api\/lab\/identity-reviews\/([^/]+)$/);
+    if(identityMatch&&request.method==='POST')return resolveIdentityReview(user,decodeURIComponent(identityMatch[1]),await body());
     const leadMatch=path.match(/^\/api\/lab\/leads\/([^/]+)(?:\/(review))?$/);
     if(leadMatch&&request.method==='GET'&&!leadMatch[2])return detail(user,decodeURIComponent(leadMatch[1]));
     if(leadMatch&&request.method==='DELETE'&&!leadMatch[2])return transaction(pool,client=>forgetPerson(client,user,{leadId:decodeURIComponent(leadMatch[1])},{contactKeys:identityLookupKeys}));
@@ -641,5 +761,5 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     if(runMatch&&request.method==='GET')return runDetail(user,decodeURIComponent(runMatch[1]));
     throw fail(404,'Research endpoint not found.');
   }
-  return {relatedPeople,importContacts,advisor,route,tick,scheduleDue,enqueue,importCSV,detail,list,review,metrics,settings,cost,runDetail};
+  return {relatedPeople,importContacts,advisor,route,identityReviews,resolveIdentityReview,tick,scheduleDue,enqueue,importCSV,detail,list,review,metrics,settings,cost,runDetail};
 }
