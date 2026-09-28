@@ -37,6 +37,8 @@ for(const {lead} of (await lab.list(user)).leads){
     await lab.review(user,lead.id,{field,value:field==='age'?{min:Number(lead.estimated_age_range),max:Number(lead.estimated_age_range)}:value,verdict:'confirmed',source:'Synthetic fixture — not a real disclosure',note:'Fictional information used only to demonstrate the workflow.',observed_at:new Date().toISOString(),identity_signature:detail.quality.identity_signature});
   }
 }
+// A fictional namesake in another state, so the duplicate review has something to show.
+await lab.importCSV(user,{source:'Synthetic fixtures',csv:'First Name,Last Name,Company,Title,City,State,Country\nJamie,Rivera,Example Manufacturing,Vice President,San Diego,CA,US'});
 await lab.cost(user,{run_id:imported.run.id,category:'labor',amount_micros:12000000,note:'Synthetic cost example, not actual spending',idempotency_key:'fixture-cost'});
 const assets=new Map([['/lab-client.js',['text/javascript',read('lab-client.js')]],['/lab.css',['text/css',read('lab.css')]]]);
 assets.set('/prospect-client.js',['text/javascript',read('prospect-client.js')]);assets.set('/prospect.css',['text/css',read('prospect.css')]);

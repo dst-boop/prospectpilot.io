@@ -7,7 +7,7 @@ test('migrations apply once and history queries can use an index',async()=>{
  const pool={connect:async()=>({query:async(sql,values)=>sql.includes(';')?(await db.exec(sql)).at(-1):db.query(sql,values),release(){}}),end:async()=>{}};
  try{
   await migrate(pool);await migrate(pool);
-  assert.equal((await db.query('SELECT count(*)::int AS count FROM prospectpilot_migrations')).rows[0].count,21);
+  assert.equal((await db.query('SELECT count(*)::int AS count FROM prospectpilot_migrations')).rows[0].count,22);
   assert.deepEqual((await db.query("SELECT id FROM prospectpilot_migrations WHERE id IN ('020','021') ORDER BY id")).rows.map(row=>row.id),['020','021']);
   assert.equal((await db.query("SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('prospect_list_shares','lab_companies')")).rows.length,2);
   assert.equal((await db.query("SELECT indexname FROM pg_indexes WHERE indexname='employer_plan_latest_filing'")).rows.length,1);

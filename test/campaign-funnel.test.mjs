@@ -50,7 +50,7 @@ test('a run with nothing found still says where it stopped, and zero losses are 
   assert.equal(saved.count,0);assert.equal(lost(saved,'Already held by another advisor'),2);assert.match(saved.detail,/0 new · 0 already on file/);
 });
 
-const migrations=['006-research-lab','017-forget','012-plan-catalog-summary','007-quality-v2','008-prospect-workspace','013-advisor-workflow','014-outreach-cadence','015-dial-budget','016-inbound-contact','021-lab-companies'];
+const migrations=['006-research-lab','017-forget','012-plan-catalog-summary','007-quality-v2','008-prospect-workspace','013-advisor-workflow','014-outreach-cadence','015-dial-budget','016-inbound-contact','021-lab-companies','022-identity-reviews'];
 test('run details carry the funnel for a discovery run, built from the stored results',async()=>{
   const db=new PGlite();
   try{

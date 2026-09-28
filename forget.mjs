@@ -17,7 +17,7 @@
 // Ported from Lead Qualifier's /api/leads/forget (dst-boop/lead-qualifier,
 // ADR and LEARNINGS "There was no way to delete one person").
 import {createHash,createHmac} from 'node:crypto';
-import {candidateKeys} from './lead-quality.mjs';
+import {candidateKeys,hash} from './lead-quality.mjs';
 
 export const LEAD_TEAM='wealth-management';
 // Who may see (and so delete) a Research Lab lead: its owner, or an admin.
@@ -100,6 +100,15 @@ export async function forgetPerson(client,user,{contactId='',leadId=''},{contact
     if(event?.import_id&&Number.isSafeInteger(event.row))provenance.set(event.import_id,[...(provenance.get(event.import_id)||[]),event.row]);
   for(const [importId,rows] of provenance)
     await client.query(`UPDATE prospect_imports SET result=jsonb_set(result,'{rows}',(SELECT COALESCE(jsonb_agg(CASE WHEN (r->>'row')::int=ANY($3::int[]) THEN r-'name'-'issues' ELSE r END ORDER BY i),'[]'::jsonb) FROM jsonb_array_elements(result->'rows') WITH ORDINALITY AS t(r,i))) WHERE user_id=$1 AND id=$2 AND jsonb_typeof(result->'rows')='array'`,[user.uid,importId,rows]);
+  // Identity reviews: an arrival held for review carries the person's
+  // details, so it goes for everyone now blocking them; a review loses a
+  // deleted record, and one left comparing against nothing goes too. A
+  // review whose newer record is deleted goes with it (cascade).
+  if(keys.length)await client.query('DELETE FROM lab_identity_reviews WHERE user_id=ANY($1::text[]) AND key_hashes && $2::text[]',[holders,keys.map(hash)]);
+  if(leadIds.length){
+    await client.query('UPDATE lab_identity_reviews SET match_ids=ARRAY(SELECT m FROM unnest(match_ids) m WHERE NOT m=ANY($1::text[])) WHERE match_ids && $1::text[]',[leadIds]);
+    await client.query("DELETE FROM lab_identity_reviews WHERE cardinality(match_ids)=0");
+  }
   if(leadIds.length){
     await client.query('DELETE FROM research_jobs WHERE lead_id=ANY($1::text[])',[leadIds]);
     await client.query('DELETE FROM lead_call_records WHERE lead_id=ANY($1::text[])',[leadIds]);

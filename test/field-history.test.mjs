@@ -73,7 +73,7 @@ test('research runs keep both values on the saved lead and the detail shows the 
   const db=new PGlite();
   try{
     await db.exec(readFileSync(new URL('../generated/schema.sql',import.meta.url),'utf8'));
-    for(const name of ['006-research-lab','017-forget','012-plan-catalog-summary','007-quality-v2','008-prospect-workspace','013-advisor-workflow','014-outreach-cadence','015-dial-budget','016-inbound-contact','021-lab-companies'])
+    for(const name of ['006-research-lab','017-forget','012-plan-catalog-summary','007-quality-v2','008-prospect-workspace','013-advisor-workflow','014-outreach-cadence','015-dial-budget','016-inbound-contact','021-lab-companies','022-identity-reviews'])
       await db.exec(readFileSync(new URL(`../migrations/${name}.sql`,import.meta.url),'utf8'));
     const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>pool.query(...a),release(){}})};
     const results={public_web:{status:'completed',candidates:[{name:'Jamie Rivera',company:'Example Manufacturing',current_title:'Director',email:'jamie@example.com',country:'US',source_names:['Public website']}]},
