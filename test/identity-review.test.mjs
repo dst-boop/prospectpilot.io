@@ -38,8 +38,10 @@ test('an arrival matching two records is held for review, once, and merged where
     const result=await lab.importCSV(owner,{csv:unclear});
     assert.equal(result.result.ambiguous,1);assert.equal(result.result.added,0);
     assert.equal(await openReviews(db),1,'held, not dropped');
-    await lab.importCSV(owner,{csv:unclear+'\n'},);
+    await lab.importCSV(owner,{csv:unclear.replace('Chief Financial Officer','Treasurer')});
     assert.equal(await openReviews(db),1,'the same arrival again does not add a copy');
+    const held=(await db.query("SELECT candidate FROM lab_identity_reviews WHERE status='open'")).rows[0].candidate.lead;
+    assert.deepEqual(held.field_values.current_title.map(v=>v.value),['Chief Financial Officer','Treasurer'],'what the later arrival reported is added, not dropped');
     const {total,reviews}=await call(owner,'GET','/api/lab/identity-reviews');
     assert.equal(total,1);
     const [review]=reviews;
@@ -52,7 +54,7 @@ test('an arrival matching two records is held for review, once, and merged where
     const [pat]=await leadId('Pat');
     assert.deepEqual(await call(owner,'POST','/api/lab/identity-reviews/'+review.id,{decision:'merge',target_id:pat}),{status:'merged',lead_id:pat});
     const saved=JSON.parse((await db.query('SELECT payload FROM discovery_leads WHERE id=$1',[pat])).rows[0].payload);
-    assert.deepEqual(saved.field_values.current_title.map(v=>v.value),['Controller','Chief Financial Officer'],'both titles kept with their sources');
+    assert.deepEqual(saved.field_values.current_title.map(v=>v.value),['Controller','Chief Financial Officer','Treasurer'],'every title kept with its source');
     const row=(await db.query('SELECT status,candidate,key_hashes FROM lab_identity_reviews WHERE id=$1',[review.id])).rows[0];
     assert.equal(row.status,'merged');assert.deepEqual(row.candidate,{});assert.deepEqual(row.key_hashes,[],'the held copy is dropped once decided');
     await assert.rejects(call(owner,'POST','/api/lab/identity-reviews/'+review.id,{decision:'discard'}),{status:409});
@@ -102,6 +104,11 @@ test('"same person" never throws away work on the newer record; "separate" keeps
     await db.query("INSERT INTO lab_observations(lead_id,user_id,field,payload) VALUES($1,'owner','age','{}')",[ids[1]]);
     await assert.rejects(call(owner,'POST','/api/lab/identity-reviews/'+review.id,{decision:'same',target_id:ids[0]}),{status:409});
     assert.equal((await leadId('Jamie')).length,2);
+    // Saved research on the newer record blocks the merge the same way.
+    await db.query('DELETE FROM lab_observations WHERE lead_id=$1',[ids[1]]);
+    const payload=JSON.parse((await db.query('SELECT payload FROM discovery_leads WHERE id=$1',[ids[1]])).rows[0].payload);
+    await db.query('UPDATE discovery_leads SET payload=$2 WHERE id=$1',[ids[1],JSON.stringify({...payload,research_records:[{source:'Company website',status:'confirmed'}]})]);
+    await assert.rejects(call(owner,'POST','/api/lab/identity-reviews/'+review.id,{decision:'same',target_id:ids[0]}),{status:409});
     assert.equal((await call(owner,'POST','/api/lab/identity-reviews/'+review.id,{decision:'separate'})).status,'separate');
     assert.equal((await leadId('Jamie')).length,2);assert.equal(await openReviews(db),0);
   }finally{await db.close();}

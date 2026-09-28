@@ -336,12 +336,22 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     return {added,duplicates,rejected,ambiguous,probable};
   }
   async function queueReview(client,user,run,kind,candidate,keys,matchIds,leadId) {
-    const ids=[...new Set(matchIds)].sort(),hashes=[...new Set(keys)].map(hash).sort();
+    const ids=[...new Set(matchIds)].sort(),hashes=[...new Set(keys)].map(hash).sort(),fingerprint=hash(JSON.stringify([kind,hashes,ids])),at=now().toISOString();
     const reason=kind==='unresolved'?`Matches ${ids.length} existing records`:'Same name and company as an existing record, in another location';
-    // One open review per arrival and set of records; a re-import does not pile up copies.
+    // The arrival is held with its field history, so each report keeps its source.
+    const held=candidate.lead?{lead:withFieldHistory(candidate.lead,at,candidate.reported||candidate.lead)}:{};
+    // One open review per arrival and set of records. The same person arriving
+    // again adds what that source reported to the held copy; nothing is dropped.
+    // Callers hold lock 505006, so the read and the write cannot interleave.
+    const open=(await client.query("SELECT id,candidate FROM lab_identity_reviews WHERE user_id=$1 AND fingerprint=$2 AND status='open' FOR UPDATE",[user.uid,fingerprint])).rows[0];
+    if(open){
+      const prior=parse(open.candidate).lead;
+      if(prior&&candidate.lead)await client.query('UPDATE lab_identity_reviews SET candidate=$2 WHERE id=$1',[open.id,JSON.stringify({lead:mergeWithHistory(prior,candidate.lead,at,candidate.reported||candidate.lead)})]);
+      return;
+    }
     await client.query(`INSERT INTO lab_identity_reviews(id,user_id,run_id,kind,fingerprint,candidate,key_hashes,lead_id,match_ids,reason)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (user_id,fingerprint) WHERE status='open' DO NOTHING`,
-      [randomUUID(),user.uid,run?.id||null,kind,hash(JSON.stringify([kind,hashes,ids])),JSON.stringify(candidate),hashes,leadId,ids,reason]);
+      [randomUUID(),user.uid,run?.id||null,kind,fingerprint,JSON.stringify(held),hashes,leadId,ids,reason]);
   }
   // What the advisor needs to tell two records apart; the records are theirs.
   const reviewSummary=(id,p)=>({id,name:[p.first_name,p.last_name].filter(Boolean).join(' '),title:p.current_title||'',company:p.company||'',
@@ -389,17 +399,17 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       const link=async leadId=>{if(review.run_id)await client.query('INSERT INTO lab_run_leads(run_id,lead_id,is_new,source) VALUES($1,$2,$3,$4) ON CONFLICT(run_id,lead_id) DO NOTHING',[review.run_id,leadId,false,'identity_review']);};
       let status,leadId=null;
       if(review.kind==='unresolved'&&decision!=='discard'){
-        const {lead,reported}=parse(review.candidate);
+        const {lead}=parse(review.candidate);
         if(!lead)throw fail(409,'This arrival is no longer held.');
         // A person deleted since the arrival stays deleted.
         if((await forgottenKeys(client,user.uid,candidateKeys(lead))).size)throw fail(409,'This person was deleted from your records.');
         let saved;
         if(decision==='merge'){
           const row=await pickTarget();
-          saved={...mergeWithHistory(parse(row.payload),lead,at,reported||lead),id:row.id};
+          saved={...absorbRecord(parse(row.payload),lead,at),id:row.id};
           await client.query('UPDATE discovery_leads SET payload=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2',[JSON.stringify(saved),saved.id]);status='merged';
         } else {
-          saved={...withFieldHistory(lead,at,reported||lead),id:randomUUID()};
+          saved={...lead,id:randomUUID()};
           await client.query('INSERT INTO discovery_leads(id,team,owner_user_id,owner_email,payload) VALUES($1,$2,$3,$4,$5)',[saved.id,TEAM,user.uid,user.email,JSON.stringify(saved)]);status='saved';
         }
         await link(saved.id);await evaluate(user,saved,client);leadId=saved.id;
@@ -409,9 +419,12 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
         if(!writable(arrival))throw fail(403,'The newer record belongs to another advisor.');
         // Work already done on the newer record is never discarded by a merge.
         const work=(await client.query(`SELECT (SELECT count(*) FROM lab_observations WHERE lead_id=$1)+(SELECT count(*) FROM advisor_activities WHERE lead_id=$1)
-          +(SELECT count(*) FROM advisor_contact_links WHERE lead_id=$1)+(SELECT count(*) FROM advisor_rest_periods WHERE lead_id=$1) AS n`,[arrival.id])).rows[0];
-        if(Number(work.n))throw fail(409,'The newer record already has evidence, activity or a linked contact. Open both and combine them by hand.');
-        const saved={...absorbRecord(parse(row.payload),parse(arrival.payload),at),id:row.id};
+          +(SELECT count(*) FROM advisor_contact_links WHERE lead_id=$1)+(SELECT count(*) FROM advisor_rest_periods WHERE lead_id=$1)
+          +(SELECT count(*) FROM research_jobs WHERE lead_id=$1)+(SELECT count(*) FROM lead_call_records WHERE lead_id=$1) AS n`,[arrival.id])).rows[0];
+        const arrived=parse(arrival.payload);
+        if(Number(work.n)||(Array.isArray(arrived.research_records)&&arrived.research_records.length))
+          throw fail(409,'The newer record already has evidence, research, calls, activity or a linked contact. Open both and combine them by hand.');
+        const saved={...absorbRecord(parse(row.payload),arrived,at),id:row.id};
         await client.query('UPDATE discovery_leads SET payload=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2',[JSON.stringify(saved),saved.id]);
         await client.query('INSERT INTO lab_run_leads(run_id,lead_id,is_new,source) SELECT run_id,$2,false,source FROM lab_run_leads WHERE lead_id=$1 ON CONFLICT(run_id,lead_id) DO NOTHING',[arrival.id,saved.id]);
         // Other open reviews about the newer record now point at the kept one.
