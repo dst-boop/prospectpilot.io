@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
-import {createResearchLab,mergeWithHistory,withFieldHistory,fieldConflicts,sourceStrength} from '../research-lab.mjs';
+import {createResearchLab,mergeWithHistory,withFieldHistory,fieldConflicts,sourceStrength,reportedFields,reconciled} from '../research-lab.mjs';
 
 // A second source never silently erases the first: every reported value is
 // kept with its source, the strongest source's value is the working one, and
@@ -38,6 +38,35 @@ test('records saved before this change are seeded from what they already hold',(
   assert.equal(merged.current_title,'Owner','an imported list outranks a company page');
   assert.deepEqual(merged.field_values.current_title.map(v=>[v.value,v.source,v.first_seen]),[['Owner','Research CSV','2025-01-01T00:00:00Z'],['Founder','Public website','2026-09-01T00:00:00Z']]);
   assert.equal(sourceStrength('ZoomInfo CSV').label,'Licensed export');assert.equal(sourceStrength('Acme company page').label,'Company website');assert.equal(sourceStrength('Something').rank,0);
+});
+
+test('the history bound never evicts the strongest source or the working value',()=>{
+  let lead=withFieldHistory({...base,current_title:'Chief Executive Officer',source_names:['ZoomInfo CSV']},'2026-01-01T00:00:00Z');
+  for(let i=0;i<25;i++)lead=mergeWithHistory(lead,{...base,current_title:`Title ${i}`,source_names:['News article']},`2026-02-${String(i+1).padStart(2,'0')}T00:00:00Z`);
+  assert.equal(lead.current_title,'Chief Executive Officer');
+  assert.ok(lead.field_values.current_title.length<=20);
+  assert.equal(lead.field_values.current_title[0].source,'ZoomInfo CSV','the licensed value is still there');
+  assert.equal(lead.field_values.current_title.at(-1).value,'Title 24','the newest weaker report is kept');
+});
+
+test('only what the source supplied is recorded, never the importer\'s defaults or inferences',()=>{
+  const raw={'First Name':'Jamie','Last Name':'Rivera',Company:'Example Manufacturing',Title:'Director'};
+  const lead={...base,current_title:'Director',country:'US',estimated_age_range:'55-60',source_names:['Research CSV']};
+  const saved=withFieldHistory(lead,'2026-09-01T00:00:00Z',reportedFields(raw,lead));
+  assert.equal(saved.field_values.country,undefined,'country US was a default');
+  assert.equal(saved.field_values.estimated_age_range,undefined,'an inferred age is not a report');
+  assert.equal(saved.field_values.current_title[0].value,'Director');
+  const withAge=reportedFields({...raw,Country:'United States','Age Range':'60-64'},lead);
+  assert.equal(withAge.country,'US');assert.equal(withAge.estimated_age_range,'55-60');
+});
+
+test('a value written without history is credited to that record rather than lost',()=>{
+  const tracked=withFieldHistory({...base,current_title:'Director'},'2026-09-01T00:00:00Z');
+  // The owner-only legacy tool rewrote the title without touching the history.
+  const drifted={...tracked,current_title:'Managing Director',source_names:['Public website','Legacy campaign'],updated_at:'2026-09-05T00:00:00Z'};
+  assert.deepEqual(fieldConflicts(reconciled(drifted,'2026-09-06T00:00:00Z')).map(c=>c.field),['current_title']);
+  const merged=mergeWithHistory(drifted,{...base,current_title:'Director',source_names:['Public website']},'2026-09-10T00:00:00Z');
+  assert.deepEqual(merged.field_values.current_title.map(v=>[v.value,v.source]),[['Director','Public website'],['Managing Director','Legacy campaign']]);
 });
 
 test('research runs keep both values on the saved lead and the detail shows the disagreement',async()=>{
