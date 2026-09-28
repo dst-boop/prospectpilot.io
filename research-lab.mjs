@@ -103,6 +103,77 @@ export function runFunnel({tasks=[],companies=[],statuses={}}={}) {
     {key:'promising',label:'Promising or better',count:promising,lost:tally([['Excluded by a qualification check',status('excluded')],['Conflicting identifiers to resolve',status('identity_review')],['Evidence still needed',status('incomplete')+status('unassessed')]])},
     {key:'qualified',label:'All five checks confirmed',count:status('verified'),lost:tally([['Promising, evidence still to review',status('promising')]])}]};
 }
+// Every value a source reported for these fields is kept with its source and
+// when it was seen, so a second source never silently erases the first. The
+// working value is the strongest source's, the newest among equals; when
+// sources disagree the record says so and keeps both.
+export const TRACKED_FIELDS=['current_title','company','city','state','country','estimated_age_range','email','phone','mobile_phone','linkedin_url','company_website'];
+const SOURCE_STRENGTH=[[/zoominfo/i,6,'Licensed export'],[/review/i,6,'Reviewed'],[/sec proxy|sec filing|edgar/i,5,'Regulatory filing'],[/csv|import|export/i,4,'Imported list'],
+  [/public website|company (site|page)|biograph/i,3,'Company website'],[/news/i,2,'News article'],[/search/i,1,'Web search']];
+export function sourceStrength(source){const hit=SOURCE_STRENGTH.find(([pattern])=>pattern.test(String(source||'')));return hit?{rank:hit[1],label:hit[2]}:{rank:0,label:'Other source'};}
+const fieldKey=(field,value)=>{const v=String(value??'').trim();if(!v)return '';if(['phone','mobile_phone'].includes(field))return v.replace(/\D/g,'').replace(/^1(?=\d{10}$)/,'');
+  if(['email','linkedin_url','company_website'].includes(field))return v.toLowerCase().replace(/^https?:\/\/(www\.)?/,'').replace(/\/+$/,'');return nameKey(v).replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim();};
+function recordValues(history,record,source,seenAt) {
+  const out={...(history||{})};
+  for(const field of TRACKED_FIELDS){
+    const value=record[field],key=fieldKey(field,value);if(!key)continue;
+    const list=[...(out[field]||[])],at=list.findIndex(v=>fieldKey(field,v.value)===key&&v.source===source);
+    if(at>=0)list[at]={...list[at],last_seen:seenAt};else list.push({value:String(value).slice(0,300),source:String(source||'Unknown source').slice(0,100),first_seen:seenAt,last_seen:seenAt});
+    out[field]=bounded(field,list);
+  }
+  return out;
+}
+// A size bound for the record, never a way to lose the answer: the strongest
+// source's entries and the working value are never evicted; the oldest of the
+// weaker, superseded reports go first.
+const HISTORY_LIMIT=20;
+function bounded(field,list){
+  const out=[...list],top=Math.max(...out.map(v=>sourceStrength(v.source).rank)),working=workingValue(field,out);
+  while(out.length>HISTORY_LIMIT){
+    const drop=out.findIndex(v=>sourceStrength(v.source).rank<top&&fieldKey(field,v.value)!==fieldKey(field,working));
+    if(drop<0)break;out.splice(drop,1);
+  }
+  // A hard ceiling for equally strong reports; the working value's entries stay.
+  while(out.length>HISTORY_LIMIT*2){const drop=out.findIndex(v=>fieldKey(field,v.value)!==fieldKey(field,working));if(drop<0)break;out.splice(drop,1);}
+  return out;
+}
+// Only what the source itself supplied is recorded. The importer fills in
+// defaults (country US) and infers age from graduation dates; neither is a
+// source's report.
+export function reportedFields(raw,lead){
+  const out={...lead},keys=Object.entries(raw||{}).filter(([,v])=>v!==undefined&&v!==null&&String(v).trim()!=='').map(([k])=>nameKey(k).replace(/[^a-z]/g,''));
+  if(!keys.some(k=>k.includes('country')))delete out.country;
+  if(!String(mapResearchRow(raw||{}).estimated_age_range??'').trim())delete out.estimated_age_range;
+  return out;
+}
+function workingValue(field,list){
+  return [...list].sort((a,b)=>sourceStrength(b.source).rank-sourceStrength(a.source).rank||String(b.last_seen).localeCompare(String(a.last_seen)))[0]?.value;
+}
+export function fieldConflicts(lead){
+  return Object.entries(lead.field_values||{}).map(([field,list])=>{const distinct=[...new Map(list.map(v=>[fieldKey(field,v.value),v])).values()];return distinct.length>1?{field,working:lead[field]??'',values:list.map(v=>({...v,strength:sourceStrength(v.source).label}))}:null;}).filter(Boolean);
+}
+export function withFieldHistory(lead,seenAt,reported=lead){
+  return {...lead,field_values:recordValues(lead.field_values,reported,lead.source_names?.[0],seenAt)};
+}
+// A record written without history (saved before this change, or by the
+// owner-only legacy tool) keeps any value it holds that the history lacks,
+// credited to that record's own source, so no working value is ever
+// unexplained and none is lost by the next merge.
+export function reconciled(lead,seenAt){
+  const at=lead.updated_at||lead.created_at||seenAt,source=lead.source_names?.at?.(-1)||'Earlier record';
+  const history=recordValues(lead.field_values,Object.fromEntries(TRACKED_FIELDS.filter(f=>{const k=fieldKey(f,lead[f]);return k&&!(lead.field_values?.[f]||[]).some(v=>fieldKey(f,v.value)===k);}).map(f=>[f,lead[f]])),source,at);
+  return {...lead,field_values:history};
+}
+// The legacy merge still decides workflow fields, evidence and flags; the
+// tracked fields it receives are already the strongest reported values.
+export function mergeWithHistory(existing,incoming,seenAt,reported=incoming) {
+  const seeded=reconciled(existing,seenAt);
+  const history=recordValues(seeded.field_values,reported,incoming.source_names?.[0],seenAt),chosen={...incoming};
+  // Choose first, then merge, so everything the merge derives uses the working values.
+  for(const field of TRACKED_FIELDS){const list=history[field];if(list?.length)chosen[field]=workingValue(field,list);}
+  const merged=mergeLead(seeded,chosen);merged.field_values=history;
+  return merged;
+}
 export async function assessInventory(ids,assess,{clock=()=>performance.now(),budgetMs=60000}={}) {
   const started=clock();let assessed=0,failed=0,skipped=0;
   for(const id of ids){
@@ -139,7 +210,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       }
       // Serialize persisted assessments with evidence reviews and lead edits.
       const {lead}=await accessible(user,id,client,true);
-      return {lead,quality:await evaluate(user,lead,client),observations:await observations(user,id,client)};
+      return {lead:{...lead,field_conflicts:fieldConflicts(reconciled(lead,now().toISOString()))},quality:await evaluate(user,lead,client),observations:await observations(user,id,client)};
     });
   }
   async function review(user,id,input) {
@@ -225,10 +296,10 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
         // An advisor cannot overwrite another advisor's record through import deduplication.
         const admin=(await client.query("SELECT 1 FROM discovery_users WHERE user_id=$1 AND role='admin'",[user.uid])).rows.length>0;
         if(existing.owner_user_id!==user.uid&&existing.owner_email.toLowerCase()!==user.email.toLowerCase()&&!admin){duplicates++;continue;}
-        saved=mergeLead(parse(existing.payload),lead);saved.id=existing.id;
+        saved=mergeWithHistory(parse(existing.payload),lead,now().toISOString(),reportedFields(raw,lead));saved.id=existing.id;
         await client.query('UPDATE discovery_leads SET payload=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2',[JSON.stringify(saved),saved.id]);duplicates++;
       } else {
-        saved.id=randomUUID();
+        saved=withFieldHistory(saved,now().toISOString(),reportedFields(raw,saved));saved.id=randomUUID();
         await client.query('INSERT INTO discovery_leads(id,team,owner_user_id,owner_email,payload) VALUES($1,$2,$3,$4,$5)',[saved.id,TEAM,user.uid,user.email,JSON.stringify(saved)]);added++;
       }
       const stored={id:saved.id,payload:JSON.stringify(saved),owner_user_id:user.uid,owner_email:user.email};
