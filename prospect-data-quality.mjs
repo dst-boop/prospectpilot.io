@@ -24,6 +24,21 @@ export const ZOOMINFO_ALIASES = {
  direct_do_not_call:['Direct Phone Do Not Call','Direct Phone DoNotCall','Direct Do Not Call'], mobile_do_not_call:['Mobile Phone Do Not Call','Mobile Phone DoNotCall','Mobile Do Not Call'],
 };
 for(const [key,aliases] of Object.entries(ZOOMINFO_ALIASES))for(const alias of [...aliases,'zoominfo_'+key])CONTACT_COLUMNS.set(columnKey(alias),'zoominfo_'+key);
+// Why this person is on today's list: the daily-leads delivery carries the
+// trigger with its date and source, so the review shows why, not just who.
+export const SIGNAL_ALIASES = {why:['Why Now'], type:['Signal Type'], date:['Signal Date'], url:['Signal Source URL'], linkedin_search:['LinkedIn Search'], rank:['Daily Rank'], delivered_on:['Delivery Date']};
+for(const [key,aliases] of Object.entries(SIGNAL_ALIASES))for(const alias of aliases)CONTACT_COLUMNS.set(columnKey(alias),'signal_'+key);
+const publicHTTP=value=>{try{const u=new URL(value);return ['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&value.length<=1000?u.href:'';}catch{return '';}};
+function signalMetadata(mapped){
+ const raw=Object.fromEntries(Object.keys(SIGNAL_ALIASES).map(key=>[key,String(mapped['signal_'+key]??'').normalize('NFKC').trim()]));
+ if(!Object.values(raw).some(Boolean))return {signal:null,warnings:[]};
+ const warnings=[],day=value=>/^\d{4}-\d{2}-\d{2}$/.test(value)&&Number.isFinite(Date.parse(value))?value:'';
+ const signal={why:raw.why.replace(/[\u0000-\u001f\u007f]/g,' ').slice(0,400),type:raw.type.slice(0,60),date:day(raw.date),url:publicHTTP(raw.url),
+  linkedin_search:/^https:\/\/www\.linkedin\.com\/search\/results\/people\/\?/.test(raw.linkedin_search)?publicHTTP(raw.linkedin_search):'',
+  rank:/^\d{1,5}$/.test(raw.rank)?Number(raw.rank):null,delivered_on:day(raw.delivered_on)};
+ for(const key of ['date','url','linkedin_search','delivered_on'])if(raw[key]&&!signal[key])warnings.push('Review signal '+key.replaceAll('_',' ')+': '+raw[key].slice(0,200));
+ return {signal,warnings};
+}
 function providerMetadata(mapped){
  const data={},warnings=[];
  for(const key of Object.keys(ZOOMINFO_ALIASES)){
@@ -101,6 +116,7 @@ export function normalizeContact(raw, source, {importing=false}={}) {
    const {data,warnings}=providerMetadata(mapped);contact.zoominfo=data;contact.import_warnings=warnings;
    contact.phone_import={};for(const [key,value,normalized] of [['direct',rawPhone,contactPhone(rawPhone,contact.country)],['mobile',rawMobile,contact.mobile_phone]])if(value&&!optionalBlank(value))contact.phone_import[key]={raw:value,status:normalized?'normalized':'needs_review'};
    contact.phone_restrictions={direct:data.direct_do_not_call??null,mobile:data.mobile_do_not_call??null};
+   const {signal,warnings:signalWarnings}=signalMetadata(mapped);if(signal)contact.signal=signal;contact.import_warnings.push(...signalWarnings);
   }
   const rawLinkedIn = contact.linkedin_url;
   contact.linkedin_url = linkedinURL(rawLinkedIn && !/^https?:/i.test(rawLinkedIn) ? 'https://' + rawLinkedIn : rawLinkedIn);

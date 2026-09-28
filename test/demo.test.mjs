@@ -25,7 +25,9 @@ test('synthetic demo starts with current migrations and serves its contact fixtu
   const response=await fetch(`http://127.0.0.1:${port}/api/prospect/contacts`,{signal:AbortSignal.timeout(10000)});
   assert.equal(response.status,200);
   const data=await response.json();
-  assert.equal(data.total,3);
+  assert.equal(data.total,6,'three workflow fixtures and three synthetic daily leads');
+  const review=await (await fetch(`http://127.0.0.1:${port}/api/prospect/daily-review`,{signal:AbortSignal.timeout(10000)})).json();
+  assert.equal(review.counts.total,3,'the Daily review has a synthetic delivery to show');
  }finally{
   clearTimeout(timer);child.kill();await closed;
  }

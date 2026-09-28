@@ -1,0 +1,74 @@
+{
+  "comment": "Daily rollover-lead sourcing. Targeting is data, not code: edit here, never in engine.mjs.",
+  "deliver_target": 80,
+  "kept_goal": 50,
+  "enrich_credit_cap": 80,
+  "per_employer_cap": 10,
+  "ledger_days": 180,
+  "tenure_years_min": 10,
+  "job_change_days": 90,
+  "scoop_days": 3,
+  "scoop_types": [
+    "Left Company",
+    "Executive Move",
+    "New Hire",
+    "Management Move"
+  ],
+  "management_levels": [
+    "C Level Exec",
+    "VP Level Exec",
+    "Director",
+    "Manager"
+  ],
+  "required_fields": [
+    "mobilePhone",
+    "email"
+  ],
+  "states": "AL,AZ,AR,CA,CO,CT,DE,DC,FL,GA,ID,IL,IN,IA,KS,KY,LA,ME,MD,MA,MI,MN,MS,MO,MT,NE,NV,NH,NJ,NM,NY,NC,ND,OH,OK,OR,PA,RI,SC,SD,TN,TX,UT,VT,VA,WA,WV,WI,WY",
+  "exclude_companies": [
+    "Equitable",
+    "AXA"
+  ],
+  "exclude_titles": [
+    "financial advisor",
+    "financial planner",
+    "wealth manag",
+    "wealth advisor",
+    "registered representative",
+    "investment advisor",
+    "insurance agent"
+  ],
+  "layoff_employers": [
+    "Oracle",
+    "Microsoft",
+    "Intel",
+    "Meta",
+    "Block",
+    "Expedia",
+    "Bristol Myers Squibb",
+    "CarMax",
+    "Starbucks",
+    "Epic Games",
+    "Salesforce",
+    "Dell Technologies",
+    "Cisco",
+    "IBM",
+    "UPS",
+    "Boeing",
+    "Lockheed Martin",
+    "Nike",
+    "Procter & Gamble",
+    "Walgreens",
+    "Verizon",
+    "AT&T",
+    "Chevron",
+    "ExxonMobil",
+    "Johnson & Johnson",
+    "Pfizer",
+    "Merck",
+    "3M",
+    "General Motors",
+    "Ford"
+  ],
+  "employers_per_day": 8
+}

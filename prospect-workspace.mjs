@@ -185,6 +185,8 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
      if(!strong&&newIdentity){result.conflicts++;report(record.row,'conflict','Name and company match only; a new contact identifier needs review to avoid merging namesakes.',contact);continue;}
      const merged={...old};for(const [k,v] of Object.entries(contact))if(!merged[k]&&v&&k!=='source_kind')merged[k]=v;
      merged.zoominfo={...contact.zoominfo,...old.zoominfo};
+     // A newer delivery brings a new reason to call, and a fresh review.
+     if(contact.signal&&(!old.signal||String(contact.signal.delivered_on||'')>String(old.signal.delivered_on||''))){merged.signal=contact.signal;delete merged.daily_review;}
      merged.phone_import={...old.phone_import};for(const [route,entry] of Object.entries(contact.phone_import||{}))if(!merged.phone_import[route]||entry.status==='needs_review')merged.phone_import[route]=entry;
      merged.import_warnings=[...new Set([...(old.import_warnings||[]),...(contact.import_warnings||[])])];
      merged.phone_restrictions={};for(const route of ['direct','mobile'])merged.phone_restrictions[route]=old.phone_restrictions?.[route]===true||contact.phone_restrictions?.[route]===true?true:old.phone_restrictions?.[route]??contact.phone_restrictions?.[route]??null;
@@ -253,6 +255,43 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
    next.source_history=[...history,evidence].slice(-20);
    await c.query('UPDATE prospect_contacts SET payload=$1::jsonb,identity_keys=$2::jsonb,updated_at=now() WHERE id=$3 AND user_id=$4',[JSON.stringify(next),JSON.stringify(identities(next)),id,user.uid]);
    return {id,changed:true};
+  });
+ }
+ // Daily review: the day's delivered prospects, reviewed one by one. The goal
+ // is a count of quality leads kept, never a cap on what arrives: a lead
+ // counts once it is kept and has both a mobile and an email.
+ const DAILY_GOAL=50,PASS_REASONS=['not_a_fit','wrong_person','already_client','no_rollover_likely','other'];
+ const reviewItem=row=>{const p=row.payload,review=p.daily_review||null;return {id:row.id,revision:hash(JSON.stringify(p)),first_name:p.first_name,last_name:p.last_name,title:p.title||'',company:p.company||'',
+  location:[p.city,p.state].filter(Boolean).join(', '),email:p.email||'',mobile_phone:p.mobile_phone||'',linkedin_url:p.linkedin_url||'',mobile_do_not_call:p.phone_restrictions?.mobile===true,
+  suppressed:p.suppressed===true,zoominfo_id:p.zoominfo?.contact_id||'',signal:p.signal||null,review,quality:review?.status==='kept'&&!!p.email&&!!p.mobile_phone&&p.suppressed!==true};};
+ async function dailyReview(user,input={}){
+  if(scope)throw fail(403,'Daily review is available on your own lists.');
+  const days=(await pool.query(`SELECT l.id,l.name,l.created_at,count(*)::int AS contacts FROM prospect_lists l JOIN prospect_list_members m ON m.list_id=l.id
+   JOIN prospect_contacts c ON c.id=m.contact_id AND c.user_id=l.user_id WHERE l.user_id=$1 AND c.payload ? 'signal' GROUP BY l.id ORDER BY l.created_at DESC,l.id LIMIT 30`,[user.uid])).rows;
+  const listId=text(input.list_id,100)||days[0]?.id||'';
+  if(!listId)return {lists:[],list:null,goal:DAILY_GOAL,counts:{total:0,pending:0,kept:0,passed:0,quality:0,kept_missing_contact:0},items:[]};
+  const list=days.find(d=>d.id===listId)||(await pool.query('SELECT id,name,created_at FROM prospect_lists WHERE id=$1 AND user_id=$2',[listId,user.uid])).rows[0];
+  if(!list)throw fail(404,'List not found.');
+  const rows=(await pool.query('SELECT c.id,c.payload FROM prospect_list_members m JOIN prospect_contacts c ON c.id=m.contact_id AND c.user_id=$1 WHERE m.list_id=$2 LIMIT 1000',[user.uid,list.id])).rows;
+  const order=item=>item.review?.status==='kept'?1:item.review?.status==='passed'?2:0;
+  const items=rows.map(reviewItem).sort((a,b)=>order(a)-order(b)||(a.signal?.rank??1e9)-(b.signal?.rank??1e9)||a.id.localeCompare(b.id));
+  const counts={total:items.length,pending:items.filter(i=>!i.review).length,kept:items.filter(i=>i.review?.status==='kept').length,passed:items.filter(i=>i.review?.status==='passed').length,
+   quality:items.filter(i=>i.quality).length,kept_missing_contact:items.filter(i=>i.review?.status==='kept'&&!i.quality).length};
+  return {lists:days.map(d=>({id:d.id,name:d.name,created_at:d.created_at,contacts:d.contacts})),list:{id:list.id,name:list.name},goal:DAILY_GOAL,counts,items};
+ }
+ async function reviewContact(user,id,input){
+  if(scope)throw fail(403,'Daily review is available on your own lists.');
+  if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!['decision','reason'].includes(k)))throw fail(422,'Provide a review decision.');
+  if(!['keep','pass','reset'].includes(input.decision))throw fail(422,'Choose keep, pass or reset.');
+  if(input.decision==='pass'&&!PASS_REASONS.includes(input.reason))throw fail(422,'Choose why this lead is not a fit.');
+  return tx(pool,async c=>{
+   await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`prospect:${user.uid}`]);
+   const row=(await c.query('SELECT id,payload FROM prospect_contacts WHERE id=$1 AND user_id=$2 FOR UPDATE',[id,user.uid])).rows[0];if(!row)throw fail(404,'Contact not found.');
+   const next={...row.payload};
+   if(input.decision==='reset')delete next.daily_review;
+   else next.daily_review={status:input.decision==='keep'?'kept':'passed',reason:input.decision==='pass'?input.reason:null,reviewed_at:new Date().toISOString()};
+   await c.query('UPDATE prospect_contacts SET payload=$1::jsonb,updated_at=now() WHERE id=$2 AND user_id=$3',[JSON.stringify(next),id,user.uid]);
+   return reviewItem({id,payload:next});
   });
  }
  async function prepareContact(user,id,input){
@@ -335,6 +374,9 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
    const row=(await pool.query('SELECT id,source,created_at,result FROM prospect_imports WHERE id=$1 AND user_id=$2',[importReport[1],user.uid])).rows[0];
    if(!row)throw fail(404,'Import report not found.');return row;
   }
+  if(path==='/api/prospect/daily-review'&&method==='GET')return dailyReview(user,Object.fromEntries(url.searchParams));
+  const reviewed=path.match(/^\/api\/prospect\/contacts\/([^/]+)\/review$/);
+  if(reviewed&&method==='POST')return reviewContact(user,decodeURIComponent(reviewed[1]),await body());
   const contact=path.match(/^\/api\/prospect\/contacts\/([^/]+)$/);
   const prepare=path.match(/^\/api\/prospect\/contacts\/([^/]+)\/prepare$/);
   if(prepare&&method==='POST')return prepareContact(user,prepare[1],await body());

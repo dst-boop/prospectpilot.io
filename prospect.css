@@ -93,3 +93,24 @@ dialog input[type=file]{border-style:dashed;background:var(--soft);cursor:pointe
 
 a{color:var(--blue)}
 body.dropping::after{content:"Drop a CSV to import contacts";position:fixed;inset:12px;z-index:50;display:grid;place-items:center;border:3px dashed var(--blue);border-radius:16px;background:#ffffffe6;color:var(--blue);font-size:22px;font-weight:600;pointer-events:none}
+
+/* Daily review */
+.count-badge{display:inline-grid;place-items:center;min-width:22px;height:22px;margin-left:8px;padding:0 6px;border-radius:11px;background:var(--blue);color:#fff;font-size:12px;font-weight:700}
+.daily-dialog{width:min(760px,96vw)}
+.daily-top{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px}.daily-top .inline{flex:1 1 220px}
+.daily-progress p{margin:0 0 6px}.daily-progress strong{font-size:22px;color:var(--ink)}
+.daily-progress progress{display:block;width:100%;height:10px;border:0;border-radius:6px;background:#e8eef6;appearance:none;-webkit-appearance:none}
+.daily-progress progress::-webkit-progress-bar{background:#e8eef6;border-radius:6px}.daily-progress progress::-webkit-progress-value{background:var(--blue);border-radius:6px}.daily-progress progress::-moz-progress-bar{background:var(--blue);border-radius:6px}
+.daily-enrich{border:1px solid #f1d49a;background:#fff8e8;border-radius:10px;padding:12px 14px;margin:12px 0}.daily-enrich p{margin:0 0 10px}
+.daily-card{border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:12px 0;background:#fff}
+.daily-card h3{font-size:22px;letter-spacing:-.3px;margin:8px 0 2px;color:var(--ink)}
+.daily-meta{display:flex;gap:6px;flex-wrap:wrap}.chip{display:inline-block;border-radius:12px;padding:3px 9px;font-size:12px;font-weight:600;background:#e8f0fe;color:#1d4fa8}.chip.good{background:#dcf4e6;color:#126342}.chip.muted-chip{background:#edf1f7;color:#536780}
+.daily-why{font-size:15px;line-height:1.55;margin:10px 0;padding:10px 12px;border-left:3px solid var(--blue);background:#f5f8fe;border-radius:0 8px 8px 0}
+.daily-links{display:flex;gap:18px;flex-wrap:wrap;font-weight:600}
+.daily-contact{display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end;margin:14px 0 4px}.daily-contact label{margin:0}.daily-contact button{min-height:42px}
+.daily-dnc{color:#982522;font-size:14px;font-weight:600;margin:6px 0}
+.daily-actions{display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin-top:14px}.daily-actions .inline{min-width:190px}
+kbd{display:inline-block;margin-left:6px;padding:0 5px;border:1px solid currentColor;border-radius:4px;font:600 11px/16px system-ui;opacity:.75}
+.daily-nav{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
+.fine{font-size:12px}
+@media(max-width:700px){.daily-contact{grid-template-columns:1fr}.daily-actions{flex-direction:column;align-items:stretch}.daily-actions .inline{min-width:0}.heading-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}}
