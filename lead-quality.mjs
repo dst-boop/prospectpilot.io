@@ -165,17 +165,21 @@ export function leadScores(lead,quality,{now=new Date(),weights=DEFAULT_SCORE_WE
   // Data confidence: how well the record is anchored, sourced, agreed and current.
   const anchor=linkedinURL(lead.linkedin_url)||(emailAddress(lead.email)&&!/^(info|contact|office|admin|sales|support|hello|team|reception|service)@/.test(emailAddress(lead.email)));
   const reports=Object.values(lead.field_values||{}).flat();
-  const sources=[...reports.map(v=>v.source),...(lead.source_names||[])];
+  // Evidence the advisor reviewed counts too: it is the strongest and often the newest.
+  const reviewed=Object.values(g).map(x=>x.evidence).filter(Boolean);
+  const sources=[...reports.map(v=>v.source),...(lead.source_names||[]),...reviewed.map(()=>'Reviewed evidence')];
   const strongest=sources.map(sourceStrength).sort((a,b)=>b.rank-a.rank)[0]||{rank:0,label:'No source recorded'};
   const conflicts=Object.entries(lead.field_values||{}).filter(([field,list])=>new Set(list.map(v=>fieldKey(field,v.value)).filter(Boolean)).size>1).map(([field])=>field);
-  const seen=[...reports.map(v=>v.last_seen),lead.updated_at,lead.created_at].map(d=>Date.parse(d||'')).filter(Number.isFinite).sort((a,b)=>b-a)[0];
+  const seen=[...reports.map(v=>v.last_seen),...reviewed.map(e=>e.observed_at),lead.updated_at,lead.created_at].map(d=>Date.parse(d||'')).filter(Number.isFinite).sort((a,b)=>b-a)[0];
   const age=seen?(now-seen)/DAY:Infinity;
   const confidence=[factor('Identified by LinkedIn or a personal email',anchor?25:0,25),
     factor('Strongest source',[0,4,8,12,18,22,25][strongest.rank]||0,25,strongest.label),
     factor('Sources agree',Math.max(0,25-10*conflicts.length),25,conflicts.length?`Disagreement on ${conflicts.join(', ').replaceAll('_',' ')}.`:''),
     factor('Recently seen',age<=180?25:age<=365?12:0,25,seen?`Last seen ${new Date(seen).toISOString().slice(0,10)}.`:'No date recorded.')];
   // Contactability: routes on file, and a reviewed one; a restriction ends it.
-  const email=emailAddress(lead.email),phones=[lead.phone,lead.business_phone,lead.mobile_phone].map(phoneNumber).filter(Boolean),linked=linkedinURL(lead.linkedin_url);
+  // A route confirmed through review is on file even if the record never held it.
+  const route=g.contact.state==='confirmed'?g.contact.evidence?.value:null;
+  const email=emailAddress(lead.email)||(route?.channel==='email'&&route.address),phones=[lead.phone,lead.business_phone,lead.mobile_phone].map(phoneNumber).filter(Boolean).concat(route?.channel==='phone'?[route.address]:[]),linked=linkedinURL(lead.linkedin_url)||(route?.channel==='linkedin'&&route.address);
   const contactability=g.contact.state==='failed'?[factor('Contact restricted',0,100,g.contact.reason)]:[factor('Contact route confirmed',g.contact.state==='confirmed'?40:0,40),
     factor('Email on file',email?20:0,20),factor('Phone on file',phones.length?20:0,20,phoneNumber(lead.mobile_phone)?'Mobile numbers carry stricter calling rules.':''),factor('LinkedIn profile on file',linked?20:0,20)];
   const scores={

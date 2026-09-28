@@ -108,3 +108,13 @@ test('within a worklist group the advisor\'s formula decides the order',async()=
     assert.deepEqual(Object.keys(item.scores),['priority','qualification','opportunity','confidence','contactability']);
   }finally{await db.close();}
 });
+
+test('reviewed evidence counts toward confidence and contactability',()=>{
+  const lead={...base,updated_at:'2023-01-01T00:00:00Z',source_names:['Web search']};
+  const evidence={source:'Participant call',observed_at:'2026-09-20T00:00:00Z',value:{channel:'email',address:'jamie@example.com',identity_confirmed:true}};
+  const q=confirmed(lead,{contact:gate('confirmed',{evidence})});
+  const s=leadScores(lead,q,{now});
+  const by=Object.fromEntries(s.confidence.factors.map(f=>[f.label,f]));
+  assert.equal(by['Strongest source'].detail,'Reviewed');assert.equal(by['Recently seen'].points,25,'the review date is recent');
+  assert.equal(s.contactability.factors.find(f=>f.label==='Email on file').points,20,'the reviewed email is on file');
+});
