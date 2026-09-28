@@ -133,6 +133,62 @@ export function assessLead(lead, observations = [], {now = new Date(), plans = [
   return {version: QUALITY_VERSION, status, identity_signature: identity, score: excluded ? 0 : confirmed * 20 + candidates * 5, score_basis: 'Evidence completeness, not a calibrated probability or wealth estimate.', gates, channels, warnings, plans, gaps: QUALITY_FIELDS.filter(f => gates[f].state !== 'confirmed'), evaluated_at: now.toISOString()};
 }
 
+export const SOURCE_STRENGTH=[[/zoominfo/i,6,'Licensed export'],[/review/i,6,'Reviewed'],[/sec proxy|sec filing|edgar/i,5,'Regulatory filing'],[/csv|import|export/i,4,'Imported list'],
+  [/public website|company (site|page)|biograph/i,3,'Company website'],[/news/i,2,'News article'],[/search/i,1,'Web search']];
+export function sourceStrength(source){const hit=SOURCE_STRENGTH.find(([pattern])=>pattern.test(String(source||'')));return hit?{rank:hit[1],label:hit[2]}:{rank:0,label:'Other source'};}
+export const fieldKey=(field,value)=>{const v=String(value??'').trim();if(!v)return '';if(['phone','mobile_phone'].includes(field))return v.replace(/\D/g,'').replace(/^1(?=\d{10}$)/,'');
+  if(['email','linkedin_url','company_website'].includes(field))return v.toLowerCase().replace(/^https?:\/\/(www\.)?/,'').replace(/\/+$/,'');return nameKey(v).replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim();};
+
+// Four scores, each 0-100 and each made of named factors, so the number on
+// the screen can always be read back to what earned it. None of them is a
+// prediction of wealth or of anyone's willingness to buy.
+export const SCORE_NAMES={qualification:'Qualification',opportunity:'Opportunity',confidence:'Data confidence',contactability:'Contactability'};
+export const DEFAULT_SCORE_WEIGHTS={qualification:4,opportunity:3,confidence:1,contactability:2};
+export function scoreWeights(input){
+  const out={};for(const key of Object.keys(DEFAULT_SCORE_WEIGHTS)){const n=Number(input?.[key]);out[key]=Number.isInteger(n)&&n>=0&&n<=10?n:DEFAULT_SCORE_WEIGHTS[key];}
+  return Object.values(out).some(Boolean)?out:{...DEFAULT_SCORE_WEIGHTS};
+}
+const GATE_LABELS={age:'Age 45–73',residence:'US residence',retirement:'Retirement assets and transfer eligibility',contact:'Contact route',net_worth:'Net worth of at least $250,000, home excluded'};
+const factor=(label,points,max,detail='')=>({label,points,max,detail});
+const total=factors=>Math.max(0,Math.min(100,Math.round(factors.reduce((sum,f)=>sum+f.points,0))));
+const DAY=86400000;
+export function leadScores(lead,quality,{now=new Date(),weights=DEFAULT_SCORE_WEIGHTS}={}){
+  const g=quality.gates,excluded=quality.status==='excluded';
+  const exclusion=excluded?(quality.warnings.find(w=>/Equitable/.test(w))||Object.values(g).find(x=>x.state==='failed')?.reason||'Excluded.'):'';
+  // Qualification: how far the five gates have got.
+  const qualification=QUALITY_FIELDS.map(field=>factor(GATE_LABELS[field],g[field].state==='confirmed'?20:g[field].state==='candidate'?5:0,20,`${g[field].state}: ${g[field].reason}`));
+  // Opportunity: only reviewed, disclosed evidence counts.
+  const r=g.retirement.state==='confirmed'?g.retirement.evidence?.value:null;
+  const routeNow=r&&(r.route==='trustee_transfer'||['separated','plan_termination','other_confirmed'].includes(r.route)||(r.route==='in_service'&&r.plan_permission===true));
+  const opportunity=[factor('Retirement assets and transfer eligibility confirmed',r?40:0,40),factor('Net worth of at least $250,000 confirmed',g.net_worth.state==='confirmed'?30:0,30),
+    factor('Age confirmed within 45–73',g.age.state==='confirmed'?20:0,20),factor('A transfer route is open now',routeNow?10:0,10,r&&!routeNow?'In-service transfer needs plan permission.':'')];
+  // Data confidence: how well the record is anchored, sourced, agreed and current.
+  const anchor=linkedinURL(lead.linkedin_url)||(emailAddress(lead.email)&&!/^(info|contact|office|admin|sales|support|hello|team|reception|service)@/.test(emailAddress(lead.email)));
+  const reports=Object.values(lead.field_values||{}).flat();
+  const sources=[...reports.map(v=>v.source),...(lead.source_names||[])];
+  const strongest=sources.map(sourceStrength).sort((a,b)=>b.rank-a.rank)[0]||{rank:0,label:'No source recorded'};
+  const conflicts=Object.entries(lead.field_values||{}).filter(([field,list])=>new Set(list.map(v=>fieldKey(field,v.value)).filter(Boolean)).size>1).map(([field])=>field);
+  const seen=[...reports.map(v=>v.last_seen),lead.updated_at,lead.created_at].map(d=>Date.parse(d||'')).filter(Number.isFinite).sort((a,b)=>b-a)[0];
+  const age=seen?(now-seen)/DAY:Infinity;
+  const confidence=[factor('Identified by LinkedIn or a personal email',anchor?25:0,25),
+    factor('Strongest source',[0,4,8,12,18,22,25][strongest.rank]||0,25,strongest.label),
+    factor('Sources agree',Math.max(0,25-10*conflicts.length),25,conflicts.length?`Disagreement on ${conflicts.join(', ').replaceAll('_',' ')}.`:''),
+    factor('Recently seen',age<=180?25:age<=365?12:0,25,seen?`Last seen ${new Date(seen).toISOString().slice(0,10)}.`:'No date recorded.')];
+  // Contactability: routes on file, and a reviewed one; a restriction ends it.
+  const email=emailAddress(lead.email),phones=[lead.phone,lead.business_phone,lead.mobile_phone].map(phoneNumber).filter(Boolean),linked=linkedinURL(lead.linkedin_url);
+  const contactability=g.contact.state==='failed'?[factor('Contact restricted',0,100,g.contact.reason)]:[factor('Contact route confirmed',g.contact.state==='confirmed'?40:0,40),
+    factor('Email on file',email?20:0,20),factor('Phone on file',phones.length?20:0,20,phoneNumber(lead.mobile_phone)?'Mobile numbers carry stricter calling rules.':''),factor('LinkedIn profile on file',linked?20:0,20)];
+  const scores={
+    qualification:{score:excluded?0:total(qualification),factors:qualification,basis:'Five gates: 20 points each when confirmed, 5 when there is a lead to check.'},
+    opportunity:{score:excluded?0:total(opportunity),factors:opportunity,basis:'Reviewed, disclosed evidence only. Employer plan data, titles, graduation years and property values never count.'},
+    confidence:{score:quality.status==='identity_review'?Math.min(40,total(confidence)):total(confidence),factors:confidence,basis:quality.status==='identity_review'?'Held at 40 until conflicting identifiers are resolved.':'How well the record is identified, sourced, agreed and current.'},
+    contactability:{score:total(contactability),factors:contactability,basis:'Routes on file and a reviewed route. Nothing here authorizes outreach.'}};
+  if(excluded)for(const key of ['qualification','opportunity'])scores[key].basis=`Excluded: ${exclusion}`;
+  const w=scoreWeights(weights),sum=Object.values(w).reduce((a,b)=>a+b,0);
+  const priority=excluded?0:Math.round(Object.keys(w).reduce((acc,key)=>acc+w[key]*scores[key].score,0)/sum);
+  return {...scores,priority:{score:priority,weights:w,formula:`(${Object.keys(w).filter(k=>w[k]).map(k=>`${w[k]}×${SCORE_NAMES[k]}`).join(' + ')}) ÷ ${sum}`}};
+}
+
 export function csvCell(value) {
   let s = typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value ?? '');
   if (/^[\s]*[=+@\-\t\r]/.test(s)) s = `'${s}`;

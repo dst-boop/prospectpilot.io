@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {assessLead, leadIdentity, hash, csvCell} from './lead-quality.mjs';
+import {assessLead, leadIdentity, hash, csvCell, leadScores} from './lead-quality.mjs';
 import {cadenceState, admitTouch, restPeriod, nextFollowUp, composeTouch, firstTouchSLA, dialBudget, TOUCH_OUTCOMES, INBOUND_OUTCOMES} from './outreach-cadence.mjs';
 import {phoneReadiness} from './prospect-data-quality.mjs';
 
@@ -206,12 +206,18 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const resting=new Map(rests.map(r=>[r.lead_id,r]));
     // One budget for the whole page: the limit is per line, not per prospect.
     const dials=await dialsToday(user);
+    // The advisor's own priority formula orders prospects within each group.
+    const weights=(await pool.query('SELECT configuration FROM lab_settings WHERE user_id=$1',[user.uid])).rows[0]?.configuration?.score_weights;
     // Directory restrictions are applied before anything is assessed or paced,
     // so a phone that became do-not-call in the directory is refused here too.
     const all=rows.map(r=>{const lead=withDirectoryRestrictions({...parse(r.payload),id:r.id},r.linked_contacts),quality=assessLead(lead,observations.get(r.id)||[],{now:now()});
       const cadence=cadenceState({activities:history.get(r.id)||[],lead,quality,rest:resting.get(r.id)||null,now:now(),dials});
-      return {lead:{id:lead.id,first_name:lead.first_name,last_name:lead.last_name,company:lead.company,current_title:lead.current_title,location:lead.location||[lead.city,lead.state].filter(Boolean).join(', '),notes:lead.notes||''},quality,action:nextAction(lead,quality,now(),cadence)};});
-    all.sort((a,b)=>a.action.rank-b.action.rank||(a.action.due_at||'').localeCompare(b.action.due_at||'')||b.quality.score-a.quality.score||a.lead.id.localeCompare(b.lead.id));
+      const s=leadScores(lead,quality,{now:now(),weights});
+      const scores={priority:s.priority,qualification:s.qualification.score,opportunity:s.opportunity.score,confidence:s.confidence.score,contactability:s.contactability.score};
+      return {lead:{id:lead.id,first_name:lead.first_name,last_name:lead.last_name,company:lead.company,current_title:lead.current_title,location:lead.location||[lead.city,lead.state].filter(Boolean).join(', '),notes:lead.notes||''},quality,scores,action:nextAction(lead,quality,now(),cadence)};});
+    // Review and enrich share one group; the advisor's priority orders it.
+    const group=action=>action.rank>=30&&action.rank<=40?30:action.rank;
+    all.sort((a,b)=>group(a.action)-group(b.action)||(a.action.due_at||'').localeCompare(b.action.due_at||'')||b.scores.priority.score-a.scores.priority.score||b.quality.score-a.quality.score||a.lead.id.localeCompare(b.lead.id));
     const counts={today:0,ready:0,due:0,review:0,enrich:0,scheduled:0,meetings:0,resting:0,clients:0,closed:0,all:all.length};
     for(const r of all){counts[r.action.bucket]++;if(['due','ready','review','enrich'].includes(r.action.bucket))counts.today++;}
     const filtered=all.filter(r=>view==='all'||(view==='today'?['due','ready','review','enrich'].includes(r.action.bucket):r.action.bucket===view));

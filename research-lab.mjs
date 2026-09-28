@@ -1,7 +1,8 @@
 import {createAdvisorWorkflow,withDirectoryRestrictions} from './advisor-workflow.mjs';
 import {randomUUID} from 'node:crypto';
 import {normalizeLead, mergeLead, isUsableStoredLead} from './generated/worker.mjs';
-import {assessLead, candidateKeys, leadIdentity, validateObservation, nameKey, US_STATES, researchCSV, hash, QUALITY_VERSION} from './lead-quality.mjs';
+import {assessLead, candidateKeys, leadIdentity, validateObservation, nameKey, US_STATES, researchCSV, hash, QUALITY_VERSION, sourceStrength, fieldKey, leadScores, scoreWeights} from './lead-quality.mjs';
+export {sourceStrength};
 import {matchPlans, selectEmployers, catalogSummary} from './plan-catalog.mjs';
 import {SOURCE_CATALOG} from './source-catalog.mjs';
 import {LEAD_TEAM,LEAD_VISIBLE_SQL,forgetPerson,forgottenKeys} from './forget.mjs';
@@ -33,7 +34,9 @@ export function labConfiguration(input={}) {
   if(Boolean(location)!==Boolean(industries.length))throw fail(422,'A campaign by place needs both a place and at least one business type.');
   return {states,employers:cleanList(input.employers,50),sources,max_companies:integer(input.max_companies,1,50,10),
     websites:(Array.isArray(input.websites)?input.websites:[]).slice(0,50).map(v=>String(v).trim().slice(0,500)),daily_budget_micros:integer(input.daily_budget_micros,0,100000000,0),
-    location,radius_miles:integer(input.radius_miles,1,100,25),industries,titles:cleanList(input.titles,30).map(v=>v.slice(0,80))};
+    location,radius_miles:integer(input.radius_miles,1,100,25),industries,titles:cleanList(input.titles,30).map(v=>v.slice(0,80)),
+    // How the four scores combine into priority: the advisor's formula, not code.
+    score_weights:scoreWeights(input.score_weights)};
 }
 // Title terms match whole words, with the common abbreviations read both ways,
 // so "VP" keeps a Vice President and "Owner" does not keep an Ownership Analyst.
@@ -108,11 +111,6 @@ export function runFunnel({tasks=[],companies=[],statuses={}}={}) {
 // working value is the strongest source's, the newest among equals; when
 // sources disagree the record says so and keeps both.
 export const TRACKED_FIELDS=['current_title','company','city','state','country','estimated_age_range','email','phone','mobile_phone','linkedin_url','company_website'];
-const SOURCE_STRENGTH=[[/zoominfo/i,6,'Licensed export'],[/review/i,6,'Reviewed'],[/sec proxy|sec filing|edgar/i,5,'Regulatory filing'],[/csv|import|export/i,4,'Imported list'],
-  [/public website|company (site|page)|biograph/i,3,'Company website'],[/news/i,2,'News article'],[/search/i,1,'Web search']];
-export function sourceStrength(source){const hit=SOURCE_STRENGTH.find(([pattern])=>pattern.test(String(source||'')));return hit?{rank:hit[1],label:hit[2]}:{rank:0,label:'Other source'};}
-const fieldKey=(field,value)=>{const v=String(value??'').trim();if(!v)return '';if(['phone','mobile_phone'].includes(field))return v.replace(/\D/g,'').replace(/^1(?=\d{10}$)/,'');
-  if(['email','linkedin_url','company_website'].includes(field))return v.toLowerCase().replace(/^https?:\/\/(www\.)?/,'').replace(/\/+$/,'');return nameKey(v).replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim();};
 function recordValues(history,record,source,seenAt) {
   const out={...(history||{})};
   for(const field of TRACKED_FIELDS){
@@ -225,7 +223,9 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       }
       // Serialize persisted assessments with evidence reviews and lead edits.
       const {lead}=await accessible(user,id,client,true);
-      return {lead:{...lead,field_conflicts:fieldConflicts(reconciled(lead,now().toISOString()))},quality:await evaluate(user,lead,client),observations:await observations(user,id,client)};
+      const quality=await evaluate(user,lead,client);
+      const weights=(await client.query('SELECT configuration FROM lab_settings WHERE user_id=$1',[user.uid])).rows[0]?.configuration?.score_weights;
+      return {lead:{...lead,field_conflicts:fieldConflicts(reconciled(lead,now().toISOString()))},quality,scores:leadScores(lead,quality,{now:now(),weights}),observations:await observations(user,id,client)};
     });
   }
   async function review(user,id,input) {
