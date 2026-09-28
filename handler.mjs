@@ -3,7 +3,7 @@ import {QUALITY_VERSION} from './lead-quality.mjs';
 import {CADENCE_VERSION} from './outreach-cadence.mjs';
 import {randomUUID} from 'node:crypto';
 const responseJSON=(detail,status)=>Response.json({detail},{status,headers:{'Cache-Control':'no-store'}});
-export function createHandler({auth,db,worker,loginHtml,loginScript,homeHtml,siteStyle,ownerEmail,origins,providerKey='',linkedin,nativeResearch,warn,warnPage,warnScript,researchJobs,lab,labPage,labScript,labStyle,prospect,prospectPage,prospectScript,prospectJobsScript,prospectStyle,releaseId=''}) {
+export function createHandler({auth,db,worker,loginHtml,loginScript,homeHtml,siteStyle,brandMark,ownerEmail,origins,providerKey='',linkedin,nativeResearch,warn,warnPage,warnScript,researchJobs,lab,labPage,labScript,labStyle,prospect,prospectPage,prospectScript,prospectJobsScript,prospectStyle,releaseId=''}) {
   const allowed=new Set(origins);
   const authorized=claims=>typeof claims.uid==='string'&&claims.uid.length>0&&claims.email_verified===true&&typeof claims.email==='string'&&claims.email.includes('@')&&['google.com','password'].includes(claims.firebase?.sign_in_provider);
   return async request=>{
@@ -16,8 +16,12 @@ export function createHandler({auth,db,worker,loginHtml,loginScript,homeHtml,sit
     const publicPage=body=>new Response(body,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"}});
     // Browsers ask for these on every visit and crawlers before indexing; neither
     // is private, so they are answered here rather than bounced to sign-in.
-    if(url.pathname==='/robots.txt'&&['GET','HEAD'].includes(request.method))return new Response('User-agent: *\nAllow: /$\nAllow: /about\nAllow: /site.css\nDisallow: /\n',{headers:{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'public, max-age=3600','X-Content-Type-Options':'nosniff'}});
-    if(url.pathname==='/favicon.ico'&&['GET','HEAD'].includes(request.method))return new Response(null,{status:204,headers:{'Cache-Control':'public, max-age=86400'}});
+    if(url.pathname==='/robots.txt'&&['GET','HEAD'].includes(request.method))return new Response('User-agent: *\nAllow: /$\nAllow: /about\nAllow: /site.css\nAllow: /brand.svg\nDisallow: /\n',{headers:{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'public, max-age=3600','X-Content-Type-Options':'nosniff'}});
+    // The logo is the browser icon too; it is static, so it needs no session.
+    if(['/brand.svg','/favicon.ico'].includes(url.pathname)&&['GET','HEAD'].includes(request.method)){
+      if(!brandMark)return new Response(null,{status:url.pathname==='/favicon.ico'?204:404,headers:{'Cache-Control':'public, max-age=86400'}});
+      return new Response(request.method==='HEAD'?null:brandMark,{headers:{'Content-Type':'image/svg+xml','Cache-Control':'public, max-age=86400','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'none'"}});
+    }
     if(url.pathname==='/site.css'&&request.method==='GET'&&siteStyle)return new Response(siteStyle,{headers:{'Content-Type':'text/css; charset=utf-8','Cache-Control':'public, max-age=300','X-Content-Type-Options':'nosniff'}});
     if(url.pathname==='/about'&&request.method==='GET'&&homeHtml)return publicPage(homeHtml);
     if(url.pathname==='/login'&&request.method==='GET')return new Response(loginHtml,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});
