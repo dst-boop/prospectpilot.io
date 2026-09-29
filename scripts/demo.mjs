@@ -52,7 +52,7 @@ assets.set('/prospect-client.js',['text/javascript',read('prospect-client.js')])
 assets.set('/brand.svg',['image/svg+xml',read('brand.svg')]);assets.set('/favicon.ico',['image/svg+xml',read('brand.svg')]);
 assets.set('/prospect-jobs-client.js',['text/javascript',read('prospect-jobs-client.js')]);
 const prospectPage=read('prospect.html').replace('<body>','<body><p role="status">SYNTHETIC DEMONSTRATION — Fictional contacts only. Data resets on restart. No provider calls.</p>');
-const page=read('lab.html').replace('<body>','<body><p class="notice">SYNTHETIC DEMONSTRATION · No real leads or provider calls · Data resets when this process stops. Do not enter real personal information here.</p>').replace(/<nav aria-label="Workspace">[\s\S]*?<\/nav>/,'<nav aria-label="Workspace"><a href="/lab">Research workspace</a></nav>');
+const page=read('lab.html').replace('<body>','<body><p class="notice">SYNTHETIC DEMONSTRATION · No real leads or provider calls · Data resets when this process stops. Do not enter real personal information here.</p>').replace(/<a href="\/(?:settings\/linkedin|warn|logout)">[^<]*<\/a>/g,'');
 let queue=Promise.resolve();
 const handle=async request=>{
   const url=new URL(request.url);

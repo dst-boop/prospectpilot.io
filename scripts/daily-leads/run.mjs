@@ -8,6 +8,7 @@
 //   node scripts/daily-leads/run.mjs select    --work DIR --date D [--ledger FILE]
 //   node scripts/daily-leads/run.mjs finalize  --work DIR --date D [--ledger FILE] [--csv-url U] [--app-url U]
 import {readFileSync, writeFileSync, readdirSync, existsSync} from 'node:fs';
+import {fileURLToPath} from 'node:url';
 import {join, resolve} from 'node:path';
 import {select, finalize, toCSV, digest, readLedger, appendLedger, enrichmentRecords, scoopSignals} from './engine.mjs';
 
@@ -19,7 +20,7 @@ const day = args.date || new Date().toISOString().slice(0, 10);
 if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) fail('Use --date YYYY-MM-DD.');
 const minus = (days, from = day) => new Date(Date.parse(from) - days * 86400000).toISOString().slice(0, 10);
 const readJSON = file => JSON.parse(readFileSync(file, 'utf8'));
-const work = () => { if (!args.work || !existsSync(args.work)) fail('Use --work with an existing scratch directory.'); if (resolve(args.work).startsWith(resolve(new URL('../..', import.meta.url).pathname))) fail('Keep work files outside the repository: lead data is never committed.'); return args.work; };
+const work = () => { if (!args.work || !existsSync(args.work)) fail('Use --work with an existing scratch directory.'); if (resolve(args.work).startsWith(resolve(fileURLToPath(new URL('../..', import.meta.url))))) fail('Keep work files outside the repository: lead data is never committed.'); return args.work; };
 const files = (dir, prefix) => readdirSync(dir).filter(f => f.startsWith(prefix) && f.endsWith('.json')).sort().map(f => readJSON(join(dir, f)));
 const ledgerText = () => args.ledger && existsSync(args.ledger) ? readFileSync(args.ledger, 'utf8') : '';
 
