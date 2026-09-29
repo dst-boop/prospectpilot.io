@@ -1,3 +1,4 @@
+import {fileURLToPath} from 'node:url';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {PGlite} from '@electric-sql/pglite';
@@ -98,19 +99,19 @@ test('the ledger keeps a person out for the configured window',()=>{
 });
 
 test('the command line keeps work files out of the repository and writes the day',()=>{
-  const cli=new URL('../scripts/daily-leads/run.mjs',import.meta.url).pathname;
-  assert.throws(()=>execFileSync('node',[cli,'select','--work',new URL('..',import.meta.url).pathname,'--date',today],{stdio:'pipe'}),/outside the repository/);
-  const plan=JSON.parse(execFileSync('node',[cli,'plan','--date',today,'--extra','Gamma Foods']).toString());
+  const cli=fileURLToPath(new URL('../scripts/daily-leads/run.mjs',import.meta.url));
+  assert.throws(()=>execFileSync(process.execPath,[cli,'select','--work',fileURLToPath(new URL('..',import.meta.url)),'--date',today],{stdio:'pipe'}),/outside the repository/);
+  const plan=JSON.parse(execFileSync(process.execPath,[cli,'plan','--date',today,'--extra','Gamma Foods']).toString());
   assert.equal(plan.employers[0],'Gamma Foods');assert.equal(plan.credit_cap,80);
   assert.ok(plan.queries.every(q=>q.tool==='search_scoops'||(q.params.requiredFieldsList.join()==='mobilePhone,email'&&q.params.state.length<=500)),'every contact search requires a mobile and an email');
   assert.ok(!/\b(AK|HI)\b/.test(plan.queries[2].params.state),'contiguous US only');
   const dir=mkdtempSync(join(tmpdir(),'daily-leads-'));
   writeFileSync(join(dir,'scoops-moves.json'),JSON.stringify(scoops));
   writeFileSync(join(dir,'search-a-0.json'),JSON.stringify(search('A','',[person(101,'Avery','Sample','Chief Operating Officer','Beta Labs')])));
-  const chosen=JSON.parse(execFileSync('node',[cli,'select','--work',dir,'--date',today]).toString());
+  const chosen=JSON.parse(execFileSync(process.execPath,[cli,'select','--work',dir,'--date',today]).toString());
   assert.deepEqual(chosen.enrich_batches,[['101']]);assert.equal(chosen.counts.selected,1);
   writeFileSync(join(dir,'enrich-0.json'),JSON.stringify({contact_1:{success:true,data:{id:101,email:'a@b.example',mobilePhone:'2125550100'}}}));
-  const done=JSON.parse(execFileSync('node',[cli,'finalize','--work',dir,'--date',today]).toString());
+  const done=JSON.parse(execFileSync(process.execPath,[cli,'finalize','--work',dir,'--date',today]).toString());
   assert.equal(done.delivered,1);assert.equal(done.with_mobile_and_email,1);
   assert.ok(existsSync(join(dir,`daily-leads-${today}.csv`))&&existsSync(join(dir,'digest.html'))&&existsSync(join(dir,'ledger.csv')));
 });

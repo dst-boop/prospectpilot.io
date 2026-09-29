@@ -436,8 +436,6 @@ $('activityForm').onsubmit=async e=>{e.preventDefault();if(!current||!currentWor
   const result=await request('/api/lab/leads/'+encodeURIComponent(current.lead.id)+'/activity',{method:'POST',body:JSON.stringify({outcome:$('activityOutcome').value,channel:$('activityChannel').disabled?null:$('activityChannel').value,note:$('activityNote').value,next_at:$('activityNext').disabled||!$('activityNext').value?null:new Date($('activityNext').value).toISOString(),direction:$('activityInbound').checked&&!$('inboundField').hidden?'inbound':'outbound',signature:currentWorkflow.action.signature,idempotency_key:activityKey})});
   if(result.saved){if(['not_interested','do_not_contact','became_client'].includes(outcome)){workSelected.delete(id);selectionLabel();}if(version===leadDetailVersion)$('detail').close();notice('Outcome saved. Your follow-up and worklist are updated.');await refresh(false);}
 }catch(err){if(version===leadDetailVersion){if(err.status===409)activityConflict(current.lead.id,version);else $('activityError').textContent=err.message;}else notice(err.message,true);}finally{activitySaving=false;$('saveActivity').disabled=false;}};
-$('startImport').onclick=()=>$('quickImport').click();
-document.querySelectorAll('[data-queue]').forEach(button=>button.onclick=()=>{$('workView').value=button.dataset.queue;$('workSearch').value='';workOffset=0;loadWorklist().catch(e=>notice(e.message,true));});
 $('quickImport').onclick=()=>location.assign('/prospect?import=1');
 $('findProspects').onclick=()=>{$('researchTools').open=true;$('runForm').scrollIntoView({behavior:'smooth',block:'start'});$('employers').focus({preventScroll:true});};
 $('workView').onchange=()=>{workOffset=0;loadWorklist().catch(e=>notice(e.message,true));};let workSearchTimer;
