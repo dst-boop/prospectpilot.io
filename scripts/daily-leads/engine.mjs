@@ -1,3 +1,4 @@
+import {assessRollover} from './rollover.mjs';
 // Daily rollover leads: the deterministic half of the morning run.
 //
 // The morning routine asks ZoomInfo (search is free) for people with a
@@ -12,6 +13,9 @@
 // A named, dated departure first; then long tenure at a large employer, the
 // surest sign of a sizeable plan; then a past employer with no departure date.
 export const TIERS = {
+  D: {weight:20,label:'Reported retirement account'},
+  E: {weight:5,label:'Preferred alumni audience'},
+  F: {weight:15,label:'In-service review'},
   A: {weight: 40, label: 'Breaking: named departure'},
   C: {weight: 32, label: 'Long tenure at a large employer'},
   B: {weight: 26, label: 'Former large-employer staff, new role'},
@@ -116,15 +120,15 @@ export function candidatesFromSearch(file, scoops = new Map(), scoopNames = new 
   const meta = file?.meta || {};
   return contactRecords(file?.response).map(r => {
     // ZoomInfo sometimes answers with a newer profile id than the scoop names;
-    // for the people a scoop check returns, the name ties them back.
-    const id = personId(r.id), scoop = scoops.get(id) || (meta.tier === 'A' ? scoopNames.get(nameKey(r.firstName, r.lastName)) || scoopNames.get(nameKey(r.firstName, String(r.lastName || '').split(' ').pop())) : null);
-    const signal = scoop || {type: meta.signal_type || (meta.tier === 'C' ? 'Long tenure' : 'Former employer'), employer: text(meta.employer), why: text(meta.why), date: isoDay(meta.date), url: safeURL(meta.url), layoff: meta.layoff === true};
+    // An unmatched id must be reviewed; a matching name cannot join a scoop.
+    const id = personId(r.id), scoop = scoops.get(id);
+    const signal = scoop || {type: meta.signal_type || (TIERS[meta.tier]?.label || 'Former employer'), employer: text(meta.employer), why: text(meta.why), date: isoDay(meta.date), url: safeURL(meta.url), layoff: meta.layoff === true};
     return {
       person_id: id, first_name: text(r.firstName), last_name: text(r.lastName), title: text(r.jobTitle),
       company: text(r.company?.name), company_id: personId(r.company?.id), accuracy: Number(r.contactAccuracyScore) || 0,
       has_mobile: r.hasMobilePhone === true, has_email: r.hasEmail === true,
       mobile_dnc: r.mobilePhoneDoNotCall === true, direct_dnc: r.directPhoneDoNotCall === true,
-      updated: isoDay(r.lastUpdatedDate), tier: scoop ? 'A' : (TIERS[meta.tier] ? meta.tier : 'B'), signal,
+      updated: isoDay(r.lastUpdatedDate), tier: scoop ? 'A' : (meta.tier !== 'A' && TIERS[meta.tier] ? meta.tier : 'B'), signal,
     };
   }).filter(c => c.person_id && c.first_name && c.last_name);
 }
@@ -145,7 +149,7 @@ export function score(candidate, today) {
   const parts = scoreParts(candidate, today);
   return parts.trigger + parts.seniority + parts.data + parts.callable;
 }
-export const rankBasis = parts => `Trigger ${parts.trigger}/50 · Seniority ${parts.seniority}/25 · Data ${parts.data}/20 · Callable ${parts.callable}/5`;
+export const rankBasis = parts => `Trigger ${parts.trigger}/50 · Seniority ${parts.seniority}/25 · Data ${parts.data}/20 · Callable ${parts.callable}/5${parts.rollover?` · Rollover evidence ${parts.rollover}/100`:""}`;
 
 // ZoomInfo matches company names loosely, so a search for Cisco also returns
 // Cisco Brewers. Long tenure only counts at the employer itself: the company
@@ -164,14 +168,17 @@ export function select(files, {config, ledger = new Set(), today, target = confi
   const scoops = new Map(), scoopNames = new Map(), layoffEmployers = new Set();
   for (const f of scoopFiles) { const s = scoopSignals(f.response); for (const [id, sig] of s.byPerson) scoops.set(id, sig); for (const [n, sig] of s.byName) scoopNames.set(n, sig); s.layoffEmployers.forEach(e => layoffEmployers.add(e)); }
   const seen = new Map(), excluded = [], counts = {found: 0, already_delivered: 0, excluded: 0, duplicate: 0};
-  for (const f of files.filter(f => f?.meta?.kind !== 'scoops')) {
+  const evidenceById=new Map();
+  for(const f of files.filter(f=>f?.meta?.kind==='rollover_evidence')) for(const e of Array.isArray(f.evidence)?f.evidence:[]){const id=personId(e.person_id);if(id)evidenceById.set(id,[...(evidenceById.get(id)||[]),e]);}
+  for (const f of files.filter(f => !['scoops','rollover_evidence'].includes(f?.meta?.kind))) {
     const found = candidatesFromSearch(f, scoops, scoopNames), employerId = f.meta?.tier === 'C' ? sameEmployerId(found, f.meta.employer) : null;
     for (const c of found) {
       counts.found++;
       if (ledger.has(c.person_id)) { counts.already_delivered++; continue; }
-      const reason = f.meta?.tier === 'C' && c.company_id !== employerId ? 'Different company with a similar name' : exclusion(c, config);
+      const reason = f.meta?.tier === 'A' && c.tier !== 'A' ? 'Departure identity requires review' : f.meta?.tier === 'C' && c.company_id !== employerId ? 'Different company with a similar name' : exclusion(c, config);
       if (reason) { counts.excluded++; excluded.push({person_id: c.person_id, reason}); continue; }
-      c.parts = scoreParts(c, today); c.score = c.parts.trigger + c.parts.seniority + c.parts.data + c.parts.callable;
+      c.rollover_evidence=evidenceById.get(c.person_id)||[]; c.rollover=assessRollover(c,{today,target:config.rollover_target});
+      c.parts = {...scoreParts(c, today),rollover:c.rollover.score}; c.score = c.parts.trigger + c.parts.seniority + c.parts.data + c.parts.callable + c.rollover.score;
       const prior = seen.get(c.person_id);
       if (prior) { counts.duplicate++; if (c.score <= prior.score) continue; }
       seen.set(c.person_id, c);
@@ -245,6 +252,7 @@ export function stintAt(history, employer, today) {
 
 export function whyNow(lead) {
   const s = lead.signal || {}, tenure = lead.tenure_years ? ` after ${lead.tenure_years} years` : '';
+  if (['D','E','F'].includes(lead.tier)) return lead.rollover?.signals.map(s=>s.label).join(' ') || 'Review account and opportunity evidence before proceeding.';
   if (lead.tier === 'A' && s.why) return s.why;
   // A long-ago stint is history, not a recent departure: say when it was.
   if (lead.stint && !lead.stint.current && lead.tier !== 'C' && daysBetween(lead.stint.last, lead.today) > 730) return `Worked at ${s.employer} for ${lead.stint.years} years (${lead.stint.first.slice(0, 4)}–${lead.stint.last.slice(0, 4)}); now ${lead.title || 'in a new role'} at ${lead.company}. Ask whether that plan was ever moved.`;
@@ -253,7 +261,7 @@ export function whyNow(lead) {
   if (lead.tier === 'C' && lead.stint && !lead.stint.current) return `ZoomInfo lists ${lead.title ? `${lead.title} at ` : ''}${s.employer || lead.company} as the current role, but the employment history shows ${lead.stint.years} years there ending ${lead.stint.last.slice(0, 4)}. Confirm on LinkedIn before calling.`;
   if (lead.tier === 'C') return `${lead.tenure_years ? `${lead.tenure_years} years at ${s.employer || lead.company}` : `In the current role at ${s.employer || lead.company} for 10 years or more`}${lead.title ? ` as ${lead.title}` : ''}.${s.layoff ? ` ${s.employer} announced layoffs this month.` : ''} In-service or separation rollover options may apply.`;
   // Without the employment history we know they worked there, not when they left.
-  if (lead.tenure_years) return `Left ${s.employer}${tenure}; now ${lead.title || 'in a new role'} at ${lead.company}. A workplace plan is likely left behind.`;
+  if (lead.tenure_years) return `Left ${s.employer}${tenure}; now ${lead.title || 'in a new role'} at ${lead.company}. Confirm whether an account remains with the former employer.`;
   return `Formerly at ${s.employer || 'a large employer'}; started as ${lead.title || 'a new role'} at ${lead.company} within the last 90 days. A workplace plan may be left behind.`;
 }
 
@@ -273,7 +281,7 @@ export function finalize(selected, enrichment, {today}) {
     lead.enriched = Boolean(lead.email && lead.mobile);
     // A successful enrichment is one ZoomInfo credit, recorded with the lead.
     lead.credits = enrichment.has(c.person_id) ? 1 : 0;
-    lead.why_now = whyNow(lead);
+    lead.why_now = whyNow(lead)+(lead.rollover?' '+(lead.rollover.financial_status==='confirmed_100k_plus'?'Authorized evidence reports $100,000+ eligible to move.':'$100,000+ available to move remains unconfirmed.')+(lead.rollover.alumni_preference?' Matches the preferred 1977–1990 alumni audience.':''):'');
     lead.linkedin_search = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(`${lead.first_name} ${lead.last_name} ${lead.company}`)}`;
     return lead;
   });
@@ -327,7 +335,7 @@ export function digest(leads, {today, counts, links = {}, goal}) {
 <h2 style="margin:0 0 8px">${esc(summary)}</h2>
 <p>${links.app ? `<a href="${esc(links.app)}" style="background:#1570ef;color:#fff;padding:9px 14px;border-radius:8px;text-decoration:none">Open Daily review</a>` : ''} ${links.csv ? `&nbsp; <a href="${esc(links.csv)}">Today's CSV</a>` : ''}</p>
 <p style="color:#51607a;font-size:13px">Sourced ${counts.found} · already delivered before ${counts.already_delivered} · excluded ${counts.excluded} (Equitable, advisors, no mobile or email on file) · ${counts.employers} employers.</p>
-${['A', 'B', 'C'].map(t => section(t, byTier(t))).join('')}
+${Object.keys(TIERS).map(t => section(t, byTier(t))).join('')}
 <p style="color:#51607a;font-size:12px;margin-top:20px">Likely rollovers, not verified balances: confirm the account and amount in conversation. Nothing has been sent to anyone. Check do-not-call before phoning; mobile numbers carry stricter calling rules. Outreach templates need Equitable approval.</p></div>`;
   const plain = [summary, '', ...leads.map(l => `${l.rank}. ${l.first_name} ${l.last_name} — ${l.title}, ${l.company}. ${l.why_now}`)].join('\n');
   return {subject: `Daily leads ${today}: ${leads.length} rollover prospects (${ready} ready to call)`, html, text: plain, summary};

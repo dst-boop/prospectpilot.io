@@ -70,5 +70,21 @@
     "General Motors",
     "Ford"
   ],
-  "employers_per_day": 8
+  "employers_per_day": 8,
+  "rollover_target": {
+    "minimum_movable_usd": 100000,
+    "alumni_from": 1977,
+    "alumni_to": 1990,
+    "account_types": [
+      "401k",
+      "403b",
+      "governmental_457b",
+      "traditional_ira",
+      "rollover_ira",
+      "roth_ira",
+      "sep_ira",
+      "simple_ira"
+    ]
+  },
+  "alumni_schools": []
 }
