@@ -51,6 +51,7 @@
 !lab.css
 !lab-client.js
 !lead-quality.mjs
+!age-band.mjs
 !prospect-core.mjs
 !identity-resolution.mjs
 !campaign-engine.mjs

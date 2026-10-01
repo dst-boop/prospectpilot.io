@@ -265,7 +265,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       const lead={...parse(row.payload),id:row.id},quality=assessLead(lead,records.filter(o=>o.lead_id===row.id).map(o=>parse(o.payload)),{now:now()});
       if(compact===true||compact==='true')return {
         lead:Object.fromEntries(['id','first_name','last_name','current_title','company'].map(k=>[k,lead[k]])),
-        quality:{status:quality.status,score:quality.score,gaps:quality.gaps,gates:Object.fromEntries(Object.entries(quality.gates).map(([k,g])=>[k,{state:g.state,reason:g.reason}]))}
+        quality:{status:quality.status,score:quality.score,gaps:quality.gaps,age_band:quality.age_band,gates:Object.fromEntries(Object.entries(quality.gates).map(([k,g])=>[k,{state:g.state,reason:g.reason}]))}
       };
       return {lead,quality};
     });

@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {estimateAgeBand} from './age-band.mjs';
 
 export const QUALITY_VERSION = 'retirement-evidence-2';
 export const US_STATES = new Set('AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC'.split(' '));
@@ -93,6 +94,11 @@ export function assessLead(lead, observations = [], {now = new Date(), plans = [
   if (channels.length) gates.contact = gate('candidate', `${channels.length} contact route(s) present; ownership and freshness need review.`);
   const ageNums = ageCandidate.match(/\d+(?:\.\d+)?/g)?.map(Number) || [];
   if (ageNums.length && ageNums.every(n => n >= 45 && n <= 73)) gates.age.state = 'candidate';
+  // With no reported age, an estimate from graduation year, career start or
+  // tenure can make age a candidate, never confirm it.
+  const ageBand = estimateAgeBand(lead, {now});
+  if (!ageCandidate && ageBand.inferred && ageBand.status !== 'conflicting' && ageBand.min >= 45 && ageBand.max != null && ageBand.max <= 73)
+    gates.age = gate('candidate', `${ageBand.label} from ${ageBand.basis.join(', ').toLowerCase()}. An estimate, not proof of age.`);
   if (['US', 'USA', 'UNITED STATES', 'UNITED STATES OF AMERICA'].includes(clean(lead.country).toUpperCase()) || US_STATES.has(clean(lead.state).toUpperCase())) gates.residence.state = 'candidate';
   if (plans.length || lead.former_employers?.length) gates.retirement.state = 'candidate';
   for (const field of QUALITY_FIELDS) {
@@ -130,7 +136,7 @@ export function assessLead(lead, observations = [], {now = new Date(), plans = [
   const candidates = Object.values(gates).filter(g => g.state === 'candidate').length;
   const excluded = Object.values(gates).some(g => g.state === 'failed') || nameKey(lead.company).includes('equitable');
   const status = excluded ? 'excluded' : identityConflict ? 'identity_review' : confirmed === QUALITY_FIELDS.length ? 'verified' : confirmed + candidates >= 3 ? 'promising' : 'incomplete';
-  return {version: QUALITY_VERSION, status, identity_signature: identity, score: excluded ? 0 : confirmed * 20 + candidates * 5, score_basis: 'Evidence completeness, not a calibrated probability or wealth estimate.', gates, channels, warnings, plans, gaps: QUALITY_FIELDS.filter(f => gates[f].state !== 'confirmed'), evaluated_at: now.toISOString()};
+  return {version: QUALITY_VERSION, status, identity_signature: identity, score: excluded ? 0 : confirmed * 20 + candidates * 5, score_basis: 'Evidence completeness, not a calibrated probability or wealth estimate.', gates, channels, warnings, plans, age_band: ageBand, gaps: QUALITY_FIELDS.filter(f => gates[f].state !== 'confirmed'), evaluated_at: now.toISOString()};
 }
 
 export const SOURCE_STRENGTH=[[/zoominfo/i,6,'Licensed export'],[/review/i,6,'Reviewed'],[/sec proxy|sec filing|edgar/i,5,'Regulatory filing'],[/csv|import|export/i,4,'Imported list'],
@@ -198,7 +204,9 @@ export function csvCell(value) {
   if (/^[\s]*[=+@\-\t\r]/.test(s)) s = `'${s}`;
   return `"${s.replaceAll('"', '""')}"`;
 }
+// Age stays a research column for the advisor's own sorting; it never feeds outreach copy.
+const ageColumns = a => [a.status === 'unknown' ? '' : a.label, a.status === 'unknown' ? '' : a.confidence, a.basis.join('; '), a.class_year ?? '', a.class_basis ?? '', a.alumni_window, a.career_stage];
 export function researchCSV(rows) {
-  const header = ['First Name', 'Last Name', 'Company', 'Title', 'Email', 'Phone', 'LinkedIn URL', 'Quality Status', 'Evidence Score', 'Age 45-73', 'US Residence', 'Transfer Eligibility', 'Contact', 'Net Worth Excluding Home >=250K', 'Missing Evidence', 'Source URLs', 'Research Only'];
-  return '\uFEFF' + [header, ...rows.map(({lead, quality}) => [lead.first_name, lead.last_name, lead.company, lead.current_title, lead.email, lead.phone || lead.business_phone || lead.mobile_phone, lead.linkedin_url, quality.status, quality.score, ...QUALITY_FIELDS.map(f => quality.gates[f].state), quality.gaps.join('; '), QUALITY_FIELDS.map(f => quality.gates[f].evidence?.url).filter(Boolean).join('; '), 'Not a call list; existing suppression applies'])].map(row => row.map(csvCell).join(',')).join('\r\n');
+  const header = ['First Name', 'Last Name', 'Company', 'Title', 'Email', 'Phone', 'LinkedIn URL', 'Quality Status', 'Evidence Score', 'Age 45-73', 'US Residence', 'Transfer Eligibility', 'Contact', 'Net Worth Excluding Home >=250K', 'Missing Evidence', 'Source URLs', 'Research Only', 'Age Band (estimate unless reported)', 'Age Confidence', 'Age Basis', 'Class Year', 'Class Basis', 'Alumni 1977-1990', 'Career Stage'];
+  return '\uFEFF' + [header, ...rows.map(({lead, quality}) => [lead.first_name, lead.last_name, lead.company, lead.current_title, lead.email, lead.phone || lead.business_phone || lead.mobile_phone, lead.linkedin_url, quality.status, quality.score, ...QUALITY_FIELDS.map(f => quality.gates[f].state), quality.gaps.join('; '), QUALITY_FIELDS.map(f => quality.gates[f].evidence?.url).filter(Boolean).join('; '), 'Not a call list; existing suppression applies', ...ageColumns(quality.age_band || estimateAgeBand(lead))])].map(row => row.map(csvCell).join(',')).join('\r\n');
 }
