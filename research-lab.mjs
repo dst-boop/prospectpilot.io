@@ -4,6 +4,7 @@ import {normalizeLead, mergeLead, isUsableStoredLead} from './generated/worker.m
 import {assessLead, candidateKeys, leadIdentity, validateObservation, nameKey, US_STATES, researchCSV, hash, QUALITY_VERSION, sourceStrength, fieldKey, leadScores, scoreWeights} from './lead-quality.mjs';
 export {sourceStrength};
 import {matchPlans, selectEmployers, catalogSummary} from './plan-catalog.mjs';
+import {applyPlaybook, findPlaybook, playbookChoices, belowAgeFloor} from './rollover-playbooks.mjs';
 import {SOURCE_CATALOG} from './source-catalog.mjs';
 import {LEAD_TEAM,LEAD_VISIBLE_SQL,forgetPerson,forgottenKeys} from './forget.mjs';
 import {identityLookupKeys} from './prospect-workspace.mjs';
@@ -36,7 +37,14 @@ export function labConfiguration(input={}) {
     websites:(Array.isArray(input.websites)?input.websites:[]).slice(0,50).map(v=>String(v).trim().slice(0,500)),daily_budget_micros:integer(input.daily_budget_micros,0,100000000,0),
     location,radius_miles:integer(input.radius_miles,1,100,25),industries,titles:cleanList(input.titles,30).map(v=>v.slice(0,80)),
     // How the four scores combine into priority: the advisor's formula, not code.
-    score_weights:scoreWeights(input.score_weights)};
+    score_weights:scoreWeights(input.score_weights),
+    // Set by a rollover playbook: which plans' employers to research first.
+    playbook:findPlaybook(input.playbook)?.id||'',plan_filter:planFilter(input.plan_filter),minimum_age:integer(input.minimum_age,0,100,0)};
+}
+function planFilter(input={}) {
+  const kinds=cleanList(input?.kinds,2);
+  if(kinds.some(v=>!['401k','403b'].includes(v)))throw fail(422,'Unsupported plan type.');
+  return {kinds,min_average:integer(input?.min_average,0,10000000,0),in_service:input?.in_service===true,order:input?.order==='former_employees'?'former_employees':''};
 }
 // Title terms match whole words, with the common abbreviations read both ways,
 // so "VP" keeps a Vice President and "Owner" does not keep an Ownership Analyst.
@@ -83,7 +91,7 @@ export function runFunnel({tasks=[],companies=[],statuses={}}={}) {
   const researched=[...byCompany.values()].filter(list=>list.some(t=>['completed','partial'].includes(t.status))).length;
   const result=t=>t.result||{};
   const sum=field=>research.reduce((n,t)=>n+(Number(result(t)[field])||0),0);
-  const pages=sum('pages_checked'),kept=sum('discovered'),offTarget=sum('off_target'),added=sum('added'),known=sum('duplicates'),rejected=sum('rejected'),ambiguous=sum('ambiguous');
+  const pages=sum('pages_checked'),kept=sum('discovered'),offTarget=sum('off_target'),belowAge=sum('below_age'),added=sum('added'),known=sum('duplicates'),rejected=sum('rejected'),ambiguous=sum('ambiguous');
   const status=name=>Number(statuses[name]||0);
   // Saved means linked to this run and visible to this user; a match that
   // belongs to another advisor is counted by the task but never linked.
@@ -100,8 +108,8 @@ export function runFunnel({tasks=[],companies=[],statuses={}}={}) {
     {key:'companies_found',label:'Companies found',count:found},
     {key:'companies_researched',label:'Companies researched',count:researched,lost:tally(notResearched)},
     {key:'pages_read',label:'Pages read',count:pages,lost:tally(pageLosses),note:'Losses count companies, once per reason.'},
-    {key:'people_found',label:'People found',count:kept+offTarget},
-    {key:'people_kept',label:'Matched the titles',count:kept,lost:tally([['Other titles, not kept',offTarget]])},
+    {key:'people_found',label:'People found',count:kept+offTarget+belowAge},
+    {key:'people_kept',label:'Matched the titles',count:kept,lost:tally([['Other titles, not kept',offTarget],['Reported age below the search, not kept',belowAge]])},
     {key:'people_saved',label:'Saved to your records',count:saved,detail:`${Math.min(added,saved)} new · ${onFile} already on file`,lost:tally([['Missing a full name, Equitable, or previously deleted',rejected],['Matched more than one record · held in Possible duplicates',ambiguous],['Already held by another advisor',heldElsewhere]])},
     {key:'promising',label:'Promising or better',count:promising,lost:tally([['Excluded by a qualification check',status('excluded')],['Conflicting identifiers to resolve',status('identity_review')],['Evidence still needed',status('incomplete')+status('unassessed')]])},
     {key:'qualified',label:'All five checks confirmed',count:status('verified'),lost:tally([['Promising, evidence still to review',status('promising')]])}]};
@@ -448,7 +456,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     return (await pool.query('SELECT * FROM lab_settings WHERE user_id=$1',[user.uid])).rows[0]||{daily_enabled:false,daily_hour:13,daily_budget_micros:0,configuration:labConfiguration()};
   }
   async function enqueue(user,input={}) {
-    const config=labConfiguration(input),kind=input.kind==='inventory'?'inventory':'discovery';
+    const config=labConfiguration(input.kind==='inventory'?input:applyPlaybook(input)),kind=input.kind==='inventory'?'inventory':'discovery';
     const key=String(input.idempotency_key||randomUUID()).slice(0,160);
     const replay=(await pool.query('SELECT * FROM lab_runs WHERE user_id=$1 AND idempotency_key=$2',[user.uid,key])).rows[0];if(replay)return {...replay,replayed:true};
     let employers=[];
@@ -465,6 +473,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
         if(target)target.website=config.websites[i]||'';
         else employers.push({company,website:config.websites[i]||'',state:config.states.length===1?config.states[0]:''});
       }
+      if(!employers.length&&config.playbook&&!config.location)throw fail(422,`No employer plans matched “${findPlaybook(config.playbook).label}”${config.states.length?' in '+config.states.join(', '):''}. Add more states, or check that the DOL plan catalog is loaded.`);
       if(!employers.length&&!config.location) {
         const saved=(await pool.query(`SELECT payload FROM discovery_leads WHERE ${visibleSQL} ORDER BY updated_at DESC LIMIT 2000`,[TEAM,user.uid,user.email])).rows;
         employers=[...new Map(saved.map(r=>parse(r.payload)).filter(l=>l.company&&(!config.states.length||config.states.includes(l.state))).map(l=>[nameKey(l.company),{company:l.company,website:l.company_website||'',city:'',state:''}])).values()];
@@ -607,12 +616,19 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       const kept=result.candidates.filter(c=>titleMatches(c.current_title||c.title,config.titles));
       offTarget=result.candidates.length-kept.length;result={...result,candidates:kept};
     }
+    // A playbook's age floor drops only people whose reported age is below it.
+    let belowAge=0;
+    if(config.minimum_age&&result.candidates?.length){
+      const kept=result.candidates.filter(c=>!belowAgeFloor(c.estimated_age_range??c.age,config.minimum_age));
+      belowAge=result.candidates.length-kept.length;result={...result,candidates:kept};
+    }
     await transaction(pool,async client=>{
       const owned=(await client.query('SELECT id FROM lab_tasks WHERE id=$1 AND lease_token=$2 AND status=\'running\' FOR UPDATE',[task.id,task.lease_token])).rows[0];
       if(!owned)return;
       if(task.source==='market'){await expandMarket(client,task,user,config,result);return;}
       const counts=await saveCandidates(client,user,result.candidates||[],{id:task.run_id},task.source);
       if(offTarget)counts.off_target=offTarget;
+      if(belowAge)counts.below_age=belowAge;
       const {candidates,...summary}=result;
       const status=['completed','no_match'].includes(result.status)?'completed':result.status==='partial'?'partial':'failed';
       await client.query('UPDATE lab_tasks SET status=$1,result=$2::jsonb,completed_at=now(),lease_until=NULL,lease_token=NULL WHERE id=$3',[status,JSON.stringify({...summary,...counts,discovered:candidates?.length||0,duration_ms:Math.round(performance.now()-started)}),task.id]);
@@ -754,6 +770,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     if(path==='/api/lab/settings'&&request.method==='GET')return settings(user);
     if(path==='/api/lab/settings'&&request.method==='PUT')return settings(user,await body());
     if(path==='/api/lab/leads'&&request.method==='GET')return list(user,Object.fromEntries(url.searchParams));
+    if(path==='/api/lab/playbooks'&&request.method==='GET')return {playbooks:playbookChoices()};
     if(path==='/api/lab/runs'&&request.method==='GET')return {runs:await runs(user)};
     if(path==='/api/lab/runs'&&request.method==='POST')return enqueue(user,await body());
     if(path==='/api/lab/import'&&request.method==='POST')return importCSV(user,await body());
