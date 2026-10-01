@@ -4,6 +4,7 @@ import {normalizeLead, mergeLead, isUsableStoredLead} from './generated/worker.m
 import {assessLead, candidateKeys, leadIdentity, validateObservation, nameKey, US_STATES, researchCSV, hash, QUALITY_VERSION, sourceStrength, fieldKey, leadScores, scoreWeights} from './lead-quality.mjs';
 export {sourceStrength};
 import {matchPlans, selectEmployers, catalogSummary} from './plan-catalog.mjs';
+import {applyPlaybook, findPlaybook, playbookChoices} from './rollover-playbooks.mjs';
 import {SOURCE_CATALOG} from './source-catalog.mjs';
 import {LEAD_TEAM,LEAD_VISIBLE_SQL,forgetPerson,forgottenKeys} from './forget.mjs';
 import {identityLookupKeys} from './prospect-workspace.mjs';
@@ -36,7 +37,14 @@ export function labConfiguration(input={}) {
     websites:(Array.isArray(input.websites)?input.websites:[]).slice(0,50).map(v=>String(v).trim().slice(0,500)),daily_budget_micros:integer(input.daily_budget_micros,0,100000000,0),
     location,radius_miles:integer(input.radius_miles,1,100,25),industries,titles:cleanList(input.titles,30).map(v=>v.slice(0,80)),
     // How the four scores combine into priority: the advisor's formula, not code.
-    score_weights:scoreWeights(input.score_weights)};
+    score_weights:scoreWeights(input.score_weights),
+    // Set by a rollover playbook: which plans' employers to research first.
+    playbook:findPlaybook(input.playbook)?.id||'',plan_filter:planFilter(input.plan_filter)};
+}
+function planFilter(input={}) {
+  const kinds=cleanList(input?.kinds,2);
+  if(kinds.some(v=>!['401k','403b'].includes(v)))throw fail(422,'Unsupported plan type.');
+  return {kinds,min_average:integer(input?.min_average,0,10000000,0),in_service:input?.in_service===true,order:input?.order==='former_employees'?'former_employees':''};
 }
 // Title terms match whole words, with the common abbreviations read both ways,
 // so "VP" keeps a Vice President and "Owner" does not keep an Ownership Analyst.
@@ -448,7 +456,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     return (await pool.query('SELECT * FROM lab_settings WHERE user_id=$1',[user.uid])).rows[0]||{daily_enabled:false,daily_hour:13,daily_budget_micros:0,configuration:labConfiguration()};
   }
   async function enqueue(user,input={}) {
-    const config=labConfiguration(input),kind=input.kind==='inventory'?'inventory':'discovery';
+    const config=labConfiguration(input.kind==='inventory'?input:applyPlaybook(input)),kind=input.kind==='inventory'?'inventory':'discovery';
     const key=String(input.idempotency_key||randomUUID()).slice(0,160);
     const replay=(await pool.query('SELECT * FROM lab_runs WHERE user_id=$1 AND idempotency_key=$2',[user.uid,key])).rows[0];if(replay)return {...replay,replayed:true};
     let employers=[];
@@ -465,6 +473,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
         if(target)target.website=config.websites[i]||'';
         else employers.push({company,website:config.websites[i]||'',state:config.states.length===1?config.states[0]:''});
       }
+      if(!employers.length&&config.playbook&&!config.location)throw fail(422,`No employer plans matched “${findPlaybook(config.playbook).label}”${config.states.length?' in '+config.states.join(', '):''}. Add more states, or check that the DOL plan catalog is loaded.`);
       if(!employers.length&&!config.location) {
         const saved=(await pool.query(`SELECT payload FROM discovery_leads WHERE ${visibleSQL} ORDER BY updated_at DESC LIMIT 2000`,[TEAM,user.uid,user.email])).rows;
         employers=[...new Map(saved.map(r=>parse(r.payload)).filter(l=>l.company&&(!config.states.length||config.states.includes(l.state))).map(l=>[nameKey(l.company),{company:l.company,website:l.company_website||'',city:'',state:''}])).values()];
@@ -754,6 +763,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     if(path==='/api/lab/settings'&&request.method==='GET')return settings(user);
     if(path==='/api/lab/settings'&&request.method==='PUT')return settings(user,await body());
     if(path==='/api/lab/leads'&&request.method==='GET')return list(user,Object.fromEntries(url.searchParams));
+    if(path==='/api/lab/playbooks'&&request.method==='GET')return {playbooks:playbookChoices()};
     if(path==='/api/lab/runs'&&request.method==='GET')return {runs:await runs(user)};
     if(path==='/api/lab/runs'&&request.method==='POST')return enqueue(user,await body());
     if(path==='/api/lab/import'&&request.method==='POST')return importCSV(user,await body());

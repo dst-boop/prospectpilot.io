@@ -61,8 +61,17 @@ export async function matchPlans(pool, lead) {
     ORDER BY plan_year DESC,id LIMIT 30`, [names]);
   return result.rows.map(r => ({...r.payload, match_basis:'Exact normalized employer name; confirm entity before relying on this plan.', scope:'employer_plan'}));
 }
-export async function selectEmployers(pool, {states = [], max_companies = 10, employers = []} = {}, userId='') {
+// Form 5500 pension benefit codes: 2J is a 401(k) feature, 2L a 403(b) arrangement.
+const PLAN_CODES = {'401k': '2J', '403b': '2L'};
+export function planKinds(plan) {
+  const codes = Array.isArray(plan?.benefit_codes) ? plan.benefit_codes : [];
+  return Object.entries(PLAN_CODES).filter(([, code]) => codes.includes(code)).map(([kind]) => kind);
+}
+// plan_filter narrows which employers are researched first (a rollover
+// playbook). Its figures are employer-level and never qualify a person.
+export async function selectEmployers(pool, {states = [], max_companies = 10, employers = [], plan_filter = {}} = {}, userId='') {
   const names = employers.map(nameKey);
+  const codes = (plan_filter.kinds || []).map(k => PLAN_CODES[k]).filter(Boolean);
   const result = await pool.query(`WITH latest_plan AS (
     SELECT DISTINCT ON(payload->>'ein',payload->>'plan_number') * FROM employer_plan_catalog
     ORDER BY payload->>'ein',payload->>'plan_number',plan_year DESC,payload->>'period_start' DESC,payload->>'filed_at' DESC,id DESC
@@ -71,12 +80,18 @@ export async function selectEmployers(pool, {states = [], max_companies = 10, em
     AND COALESCE((payload->>'all_assets_distributed')::boolean,false)=false
     AND plan_year>=EXTRACT(YEAR FROM now())::int-2
     AND plan_year<=EXTRACT(YEAR FROM now())::int
+    AND ($5::text[]='{}' OR payload->'benefit_codes' ?| $5::text[])
+    AND ($6::numeric=0 OR (payload->>'average_account_balance')::numeric>=$6::numeric)
+    AND ($7::boolean=false OR COALESCE((payload->>'in_service_distributions_reported')::boolean,false))
     AND ($2::text[]<>'{}' OR NOT EXISTS(SELECT 1 FROM lab_tasks t JOIN lab_runs r ON r.id=t.run_id
       WHERE r.user_id=$3 AND r.created_at>now()-interval '7 days' AND t.payload->>'company'=p.payload->>'sponsor'))
     ORDER BY sponsor_key, plan_year DESC, (payload->>'net_assets')::numeric DESC NULLS LAST)
     SELECT payload FROM latest ORDER BY
+    -- Former employees still holding accounts, times the average account:
+    -- the size of the left-behind pool, not any one person's balance.
+    CASE WHEN $8='former_employees' THEN COALESCE((payload->>'separated_future_benefits')::numeric,0)*COALESCE((payload->>'average_account_balance')::numeric,0) END DESC NULLS LAST,
     (COALESCE((payload->>'separated_future_benefits')::bigint,0)>0) DESC,
     COALESCE((payload->>'in_service_distributions_reported')::boolean,false) DESC,
-    (payload->>'participants_with_balances')::bigint DESC NULLS LAST,payload->>'sponsor' LIMIT $4`, [states, names, userId, max_companies]);
+    (payload->>'participants_with_balances')::bigint DESC NULLS LAST,payload->>'sponsor' LIMIT $4`, [states, names, userId, max_companies, codes, Number(plan_filter.min_average) || 0, plan_filter.in_service === true, plan_filter.order || '']);
   return result.rows.map(r => r.payload);
 }

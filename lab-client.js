@@ -63,6 +63,8 @@ async function refresh(showNotice=true){
     if(!document.hidden&&runs.some(r=>['queued','running'].includes(r.status)))pollTimer=setTimeout(()=>refresh(false),8000);
   }
 }
+// Form 5500 benefit codes 2J and 2L mark a 401(k) feature and a 403(b) arrangement.
+const planType=p=>{const c=p.benefit_codes||[],t=[c.includes('2J')&&'401(k)',c.includes('2L')&&'403(b)'].filter(Boolean);return t.length?' · '+t.join(' / '):'';};
 async function openLead(id){
   const version=++leadDetailVersion;current=null;$('relatedPeople').replaceChildren();$('exploreRelated').disabled=true;clearConversation();$('saveReview').disabled=true;$('activityForm').hidden=true;$('conversationBrief').textContent='Loading the conversation brief…';$('contactActions').replaceChildren();$('activityHistory').replaceChildren();
   $('personName').textContent='Loading evidence…';$('personRole').textContent='';
@@ -87,7 +89,7 @@ function renderScores(scores){
 }
 function renderPerson(){const {lead:l,quality:q}=current;renderScores(current.scores);$('personName').textContent=[l.first_name,l.last_name].join(' ');$('personRole').textContent=[l.current_title,l.company].filter(Boolean).join(' · ');$('personGates').innerHTML=Object.entries(q.gates).map(([f,g])=>`<div class="gate-card"><strong>${esc(labels[f])}</strong> ${badge(g.state)}<p>${esc(g.reason)}</p>${g.evidence?`<small>${esc(g.evidence.source)} · ${esc(g.evidence.observed_at.slice(0,10))}</small><p>${esc(g.evidence.note)}</p>${link(g.evidence.url,'Review original source')}`:''}</div>`).join('');
   const evidence=(l.evidence||[]).filter(e=>e.source_url).slice(-8);$('personSources').innerHTML=(q.warnings.length?`<p>${esc(q.warnings.join(' '))}</p>`:'')+'<h3>Available source material</h3>'+[l.linkedin_url?`<p>${link(l.linkedin_url,'LinkedIn profile')}</p>`:'',...evidence.map(e=>`<p>${link(e.source_url,e.source||'Source')} · ${esc(e.field)}: ${esc(e.value)} <small>${esc(e.source_date||'Publication date not supplied')} · reported, not independently verified</small></p>`)].join('')+conflictView(l.field_conflicts);
-  $('personPlans').innerHTML=q.plans.length?q.plans.map(p=>`<p><strong>${esc(p.sponsor)}</strong><br>${esc(p.plan_name)} · ${esc(p.plan_year)}<br>Plan assets: ${dollars(p.net_assets)} · Accounts: ${num(p.participants_with_balances)}<br>Average per account: ${dollars(p.average_account_balance)} · Separated participants with future benefits: ${p.separated_future_benefits==null?'Unknown':num(p.separated_future_benefits)}<small>Employer-level figures; not this person’s balance. ${esc(p.match_basis)}</small>${link(p.source_url,'DOL source')}</p>`).join(''):'<p>No exact employer-plan match found. Absence is not proof that a plan does not exist.</p>';
+  $('personPlans').innerHTML=q.plans.length?q.plans.map(p=>`<p><strong>${esc(p.sponsor)}</strong><br>${esc(p.plan_name)} · ${esc(p.plan_year)}${planType(p)}<br>Plan assets: ${dollars(p.net_assets)} · Accounts: ${num(p.participants_with_balances)}<br>Average per account: ${dollars(p.average_account_balance)} · Separated participants with future benefits: ${p.separated_future_benefits==null?'Unknown':num(p.separated_future_benefits)}<small>Employer-level figures; not this person’s balance. ${esc(p.match_basis)}</small>${link(p.source_url,'DOL source')}</p>`).join(''):'<p>No exact employer-plan match found. Absence is not proof that a plan does not exist.</p>';
 }
 function reviewFields(){const field=$('reviewField').value;Object.keys(labels).forEach(f=>$(f+'Fields').hidden=f!==field||$('verdict').value!=='confirmed');}
 $('reviewField').onchange=reviewFields;$('verdict').onchange=reviewFields;
@@ -437,7 +439,25 @@ $('activityForm').onsubmit=async e=>{e.preventDefault();if(!current||!currentWor
   if(result.saved){if(['not_interested','do_not_contact','became_client'].includes(outcome)){workSelected.delete(id);selectionLabel();}if(version===leadDetailVersion)$('detail').close();notice('Outcome saved. Your follow-up and worklist are updated.');await refresh(false);}
 }catch(err){if(version===leadDetailVersion){if(err.status===409)activityConflict(current.lead.id,version);else $('activityError').textContent=err.message;}else notice(err.message,true);}finally{activitySaving=false;$('saveActivity').disabled=false;}};
 $('quickImport').onclick=()=>location.assign('/prospect?import=1');
-$('findProspects').onclick=()=>{$('researchTools').open=true;$('runForm').scrollIntoView({behavior:'smooth',block:'start'});$('employers').focus({preventScroll:true});};
+// Find new prospects starts from a rollover playbook: pick who, say where, go.
+// The full discovery form stays one click away for a custom search.
+let playbooks=null;
+function openCustomSearch(){$('researchTools').open=true;$('runForm').scrollIntoView({behavior:'smooth',block:'start'});$('employers').focus({preventScroll:true});}
+function selectedPlaybook(){const id=document.querySelector('input[name="playbook"]:checked')?.value;return (playbooks||[]).find(p=>p.id===id)||null;}
+function playbookNeeds(){const p=selectedPlaybook(),place=p?.needs==='place';$('playbookPlaceLabel').hidden=!place;$('playbookStatesLabel').hidden=place;$('playbookPlace').required=place;}
+async function openPlaybooks(){
+  $('playbookError').textContent='';$('playbookStates').value=$('states').value;$('playbookPlace').value=$('campaignLocation').value||$('profileMetro').value||'';
+  if(!$('playbookDialog').open)$('playbookDialog').showModal();
+  if(!playbooks){try{playbooks=(await request('/api/lab/playbooks')).playbooks;}catch(e){$('playbookChoices').innerHTML=`<p role="alert">${esc(e.message)}</p>`;return;}}
+  $('playbookChoices').innerHTML=playbooks.map((p,i)=>`<label class="playbook-choice"><input type="radio" name="playbook" value="${esc(p.id)}"${i?'':' checked'}><span><strong>${esc(p.label)}</strong><small>${esc(p.accounts.join(', '))} · ${esc(p.triggers.join(', '))}</small><span class="muted">${esc(p.description)}</span></span></label>`).join('');
+  document.querySelectorAll('input[name="playbook"]').forEach(e=>e.onchange=playbookNeeds);playbookNeeds();
+}
+$('findProspects').onclick=openPlaybooks;
+$('playbookCustom').onclick=()=>{$('playbookDialog').close();openCustomSearch();};
+$('playbookForm').onsubmit=async e=>{e.preventDefault();const p=selectedPlaybook();if(!p||$('playbookStart').disabled)return;$('playbookStart').disabled=true;$('playbookError').textContent='';
+  try{const result=await request('/api/lab/runs',{method:'POST',body:JSON.stringify({kind:'discovery',playbook:p.id,states:p.needs==='place'?[]:$('playbookStates').value.split(/[,;\s]+/).filter(Boolean),location:p.needs==='place'?$('playbookPlace').value.trim():'',max_companies:Number($('maxCompanies').value)||10,idempotency_key:crypto.randomUUID()})});
+    $('playbookDialog').close();notice(result.message||`${p.label}: search queued. New prospects appear in your worklist as they are found.`);await refresh(false);}
+  catch(err){$('playbookError').textContent=err.message;}finally{$('playbookStart').disabled=false;}};
 $('workView').onchange=()=>{workOffset=0;loadWorklist().catch(e=>notice(e.message,true));};let workSearchTimer;
 $('workSearch').oninput=()=>{workRequest++;loadingWorklist();clearTimeout(workSearchTimer);workSearchTimer=setTimeout(()=>{workOffset=0;loadWorklist().catch(e=>notice(e.message,true));},250);};
 $('workPrevious').onclick=()=>{workOffset=Math.max(0,workOffset-24);loadWorklist().catch(e=>notice(e.message,true));};$('workNext').onclick=()=>{workOffset+=24;loadWorklist().catch(e=>notice(e.message,true));};

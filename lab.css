@@ -95,3 +95,8 @@ a{color:var(--blue)}
 header{flex-wrap:wrap}header nav{flex-wrap:wrap;align-items:center}.workspace-menu{position:relative;margin:0}.workspace-menu summary{cursor:pointer;font-size:14px;font-weight:600;padding:8px;color:var(--ink)}.workspace-menu-items{position:absolute;right:0;top:100%;z-index:30;display:grid;gap:12px;min-width:210px;padding:18px;border:1px solid var(--line);border-radius:12px;background:#fff;box-shadow:0 8px 24px #0c21491a}.workspace-menu-items a{display:block;padding:4px 0}.workspace-menu-items button{width:100%;text-align:left}.workspace-menu:not([open])>.workspace-menu-items{display:none}@media(max-width:600px){.workspace-menu-items{right:0;left:auto;min-width:180px}}
 
 .daily-start{grid-template-columns:1fr;gap:0}.daily-start p:not(.eyebrow){color:var(--muted)}
+#playbookDialog{max-width:640px;width:calc(100% - 32px)}
+.playbook-choices{display:grid;gap:10px}
+.playbook-choice{display:flex;align-items:flex-start;gap:10px;font-weight:400;border:1px solid #d8dee9;border-radius:12px;padding:12px;margin:0;cursor:pointer}
+.playbook-choice:has(input:checked){border-color:#2563eb;background:#f5f8ff}
+.playbook-choice span{display:grid;gap:3px}
