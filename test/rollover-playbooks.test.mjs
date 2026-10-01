@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';import {PGlite} from '@electric-sql/pglite';
-import {PLAYBOOKS,applyPlaybook,findPlaybook,playbookChoices} from '../rollover-playbooks.mjs';
+import {PLAYBOOKS,applyPlaybook,findPlaybook,playbookChoices,belowAgeFloor} from '../rollover-playbooks.mjs';
 import {selectEmployers,planKinds} from '../plan-catalog.mjs';
 import {labConfiguration} from '../research-lab.mjs';
 
@@ -46,10 +46,22 @@ test('plan filters choose employers by plan type, average and former-employee po
     // Largest left-behind pool first; the $40K-average plan never qualifies the list.
     assert.deepEqual(await pick('former_employees'),['hospital','factory','university']);
     assert.deepEqual(await pick('nonprofit_403b'),['hospital','university']);
-    assert.deepEqual((await pick('in_service_595')).sort(),['factory','university']);
+    // Almost no filings report in-service distributions, so it ranks plans
+    // first rather than emptying the list.
+    const inService=await pick('in_service_595');
+    assert.deepEqual(inService.slice(0,2).sort(),['factory','university']);assert.deepEqual(inService.slice(2),['hospital']);
+    assert.deepEqual((await selectEmployers(db,{states:['NY'],plan_filter:{in_service:true}},'u')).map(p=>p.id).sort(),['factory','small','university']);
     // No filter keeps the earlier behaviour: every employer is a candidate.
     assert.equal((await selectEmployers(db,{states:['NY']},'u')).length,4);
     assert.deepEqual(planKinds({benefit_codes:['2L','2J']}),['401k','403b']);
     assert.deepEqual(planKinds({}),[]);
   }finally{await db.close();}
+});
+
+test('the 59½ age floor drops only people whose reported age is below it',()=>{
+  assert.equal(labConfiguration(applyPlaybook({playbook:'in_service_595'})).minimum_age,59);
+  assert.equal(labConfiguration(applyPlaybook({playbook:'former_employees'})).minimum_age,0);
+  for(const range of ['45-54','52','Age 58'])assert.equal(belowAgeFloor(range,59),true,range);
+  for(const range of ['55-64','62','60+','50 or older','',null,'unknown'])assert.equal(belowAgeFloor(range,59),false,String(range));
+  assert.equal(belowAgeFloor('45-54',0),false,'no floor drops no one');
 });

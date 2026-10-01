@@ -4,7 +4,7 @@ import {normalizeLead, mergeLead, isUsableStoredLead} from './generated/worker.m
 import {assessLead, candidateKeys, leadIdentity, validateObservation, nameKey, US_STATES, researchCSV, hash, QUALITY_VERSION, sourceStrength, fieldKey, leadScores, scoreWeights} from './lead-quality.mjs';
 export {sourceStrength};
 import {matchPlans, selectEmployers, catalogSummary} from './plan-catalog.mjs';
-import {applyPlaybook, findPlaybook, playbookChoices} from './rollover-playbooks.mjs';
+import {applyPlaybook, findPlaybook, playbookChoices, belowAgeFloor} from './rollover-playbooks.mjs';
 import {SOURCE_CATALOG} from './source-catalog.mjs';
 import {LEAD_TEAM,LEAD_VISIBLE_SQL,forgetPerson,forgottenKeys} from './forget.mjs';
 import {identityLookupKeys} from './prospect-workspace.mjs';
@@ -39,7 +39,7 @@ export function labConfiguration(input={}) {
     // How the four scores combine into priority: the advisor's formula, not code.
     score_weights:scoreWeights(input.score_weights),
     // Set by a rollover playbook: which plans' employers to research first.
-    playbook:findPlaybook(input.playbook)?.id||'',plan_filter:planFilter(input.plan_filter)};
+    playbook:findPlaybook(input.playbook)?.id||'',plan_filter:planFilter(input.plan_filter),minimum_age:integer(input.minimum_age,0,100,0)};
 }
 function planFilter(input={}) {
   const kinds=cleanList(input?.kinds,2);
@@ -91,7 +91,7 @@ export function runFunnel({tasks=[],companies=[],statuses={}}={}) {
   const researched=[...byCompany.values()].filter(list=>list.some(t=>['completed','partial'].includes(t.status))).length;
   const result=t=>t.result||{};
   const sum=field=>research.reduce((n,t)=>n+(Number(result(t)[field])||0),0);
-  const pages=sum('pages_checked'),kept=sum('discovered'),offTarget=sum('off_target'),added=sum('added'),known=sum('duplicates'),rejected=sum('rejected'),ambiguous=sum('ambiguous');
+  const pages=sum('pages_checked'),kept=sum('discovered'),offTarget=sum('off_target'),belowAge=sum('below_age'),added=sum('added'),known=sum('duplicates'),rejected=sum('rejected'),ambiguous=sum('ambiguous');
   const status=name=>Number(statuses[name]||0);
   // Saved means linked to this run and visible to this user; a match that
   // belongs to another advisor is counted by the task but never linked.
@@ -108,8 +108,8 @@ export function runFunnel({tasks=[],companies=[],statuses={}}={}) {
     {key:'companies_found',label:'Companies found',count:found},
     {key:'companies_researched',label:'Companies researched',count:researched,lost:tally(notResearched)},
     {key:'pages_read',label:'Pages read',count:pages,lost:tally(pageLosses),note:'Losses count companies, once per reason.'},
-    {key:'people_found',label:'People found',count:kept+offTarget},
-    {key:'people_kept',label:'Matched the titles',count:kept,lost:tally([['Other titles, not kept',offTarget]])},
+    {key:'people_found',label:'People found',count:kept+offTarget+belowAge},
+    {key:'people_kept',label:'Matched the titles',count:kept,lost:tally([['Other titles, not kept',offTarget],['Reported age below the search, not kept',belowAge]])},
     {key:'people_saved',label:'Saved to your records',count:saved,detail:`${Math.min(added,saved)} new · ${onFile} already on file`,lost:tally([['Missing a full name, Equitable, or previously deleted',rejected],['Matched more than one record · held in Possible duplicates',ambiguous],['Already held by another advisor',heldElsewhere]])},
     {key:'promising',label:'Promising or better',count:promising,lost:tally([['Excluded by a qualification check',status('excluded')],['Conflicting identifiers to resolve',status('identity_review')],['Evidence still needed',status('incomplete')+status('unassessed')]])},
     {key:'qualified',label:'All five checks confirmed',count:status('verified'),lost:tally([['Promising, evidence still to review',status('promising')]])}]};
@@ -616,12 +616,19 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       const kept=result.candidates.filter(c=>titleMatches(c.current_title||c.title,config.titles));
       offTarget=result.candidates.length-kept.length;result={...result,candidates:kept};
     }
+    // A playbook's age floor drops only people whose reported age is below it.
+    let belowAge=0;
+    if(config.minimum_age&&result.candidates?.length){
+      const kept=result.candidates.filter(c=>!belowAgeFloor(c.estimated_age_range??c.age,config.minimum_age));
+      belowAge=result.candidates.length-kept.length;result={...result,candidates:kept};
+    }
     await transaction(pool,async client=>{
       const owned=(await client.query('SELECT id FROM lab_tasks WHERE id=$1 AND lease_token=$2 AND status=\'running\' FOR UPDATE',[task.id,task.lease_token])).rows[0];
       if(!owned)return;
       if(task.source==='market'){await expandMarket(client,task,user,config,result);return;}
       const counts=await saveCandidates(client,user,result.candidates||[],{id:task.run_id},task.source);
       if(offTarget)counts.off_target=offTarget;
+      if(belowAge)counts.below_age=belowAge;
       const {candidates,...summary}=result;
       const status=['completed','no_match'].includes(result.status)?'completed':result.status==='partial'?'partial':'failed';
       await client.query('UPDATE lab_tasks SET status=$1,result=$2::jsonb,completed_at=now(),lease_until=NULL,lease_token=NULL WHERE id=$3',[status,JSON.stringify({...summary,...counts,discovered:candidates?.length||0,duration_ms:Math.round(performance.now()-started)}),task.id]);

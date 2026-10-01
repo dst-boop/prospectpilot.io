@@ -12,10 +12,12 @@ const FREE_SOURCES = Object.freeze(['public_web', 'sec', 'warn']);
 export const PLAYBOOKS = Object.freeze([
   {
     id: 'former_employees',
-    label: 'Former employees with balances left behind',
+    label: 'Staff at employers with large balances left behind',
     accounts: ['401(k)', '403(b)'],
-    triggers: ['Job change', 'Former employer'],
-    description: 'Employers whose federal plan filings show many former employees still holding accounts, where the average account is $100K or more.',
+    triggers: ['Job change', 'Separation', 'Retirement'],
+    // Public pages name current staff, not former ones: the plan data picks
+    // employers where people leave with sizeable accounts behind.
+    description: 'Employers whose plan filings show many former employees still holding accounts, averaging $100K or more. People are found on company pages and SEC filings, so they are current staff whose next move is likely a rollover.',
     needs: 'states',
     configuration: {sources: FREE_SOURCES, plan_filter: {order: 'former_employees', min_average: 100000}},
   },
@@ -33,9 +35,12 @@ export const PLAYBOOKS = Object.freeze([
     label: 'Age 59½ while still working',
     accounts: ['401(k)', '403(b)'],
     triggers: ['Age 59½'],
-    description: 'Plans that report in-service distributions, so participants 59½ or older can usually move money without leaving their job.',
+    // Few filings report in-service distributions, so that is a preference,
+    // never a filter. Reported ages under 59 are dropped; unknown ages stay
+    // for review, since the age gate decides, not this list.
+    description: 'Employers whose plans average $100K or more, favoring plans that report in-service withdrawals (most 401(k)s allow them at 59½). People whose reported age is under 59 are left out; anyone with no age yet is kept for your review.',
     needs: 'states',
-    configuration: {sources: FREE_SOURCES, plan_filter: {in_service: true, min_average: 100000}},
+    configuration: {sources: FREE_SOURCES, plan_filter: {min_average: 100000}, minimum_age: 59},
   },
   {
     id: 'business_owners',
@@ -77,8 +82,19 @@ export function applyPlaybook(input = {}) {
     location,
     industries: location ? c.industries : [],
     titles: location ? c.titles : [],
+    minimum_age: c.minimum_age || 0,
     daily_budget_micros: 0,
   };
+}
+
+// A reported age range ("55-64", "62", "60+") is below the floor only when
+// its top is. No age, or an open-ended range, is never a reason to drop.
+export function belowAgeFloor(range, floor) {
+  if (!floor) return false;
+  const text = String(range ?? '');
+  const ages = (text.match(/\d{2,3}/g) || []).map(Number).filter(n => n >= 18 && n <= 110);
+  if (!ages.length || /\+|or (older|more)|and (over|older)/i.test(text)) return false;
+  return Math.max(...ages) < floor;
 }
 
 // What the client needs to draw the choices: no configuration internals.
