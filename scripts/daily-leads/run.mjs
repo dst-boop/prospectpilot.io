@@ -7,6 +7,7 @@
 //   node scripts/daily-leads/run.mjs scoop-ids --work DIR
 //   node scripts/daily-leads/run.mjs select    --work DIR --date D [--ledger FILE]
 //   node scripts/daily-leads/run.mjs finalize  --work DIR --date D [--ledger FILE] [--csv-url U] [--app-url U]
+import {sourcingPlan} from './rollover.mjs';
 import {readFileSync, writeFileSync, readdirSync, existsSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {join, resolve} from 'node:path';
@@ -40,7 +41,7 @@ if (command === 'plan') {
       {file: `search-c-${i}.json`, tool: 'search_contacts', meta: {kind: 'search', tier: 'C', employer, layoff: extra.includes(employer)}, params: {...common, companyName: employer, companyPastOrPresent: 'present', positionStartDateMax: minus(Math.round(config.tenure_years_min * 365.25)), managementLevelList: ['C Level Exec', 'VP Level Exec', 'Director'], pageSize: 10}},
     ]),
   ];
-  console.log(JSON.stringify({date: day, employers, credit_cap: config.enrich_credit_cap, deliver_target: config.deliver_target, kept_goal: config.kept_goal, queries}, null, 1));
+  console.log(JSON.stringify({date: day, rollover_sourcing:sourcingPlan({employers,schools:config.alumni_schools||[],today:day,target:config.rollover_target}), employers, credit_cap: config.enrich_credit_cap, deliver_target: config.deliver_target, kept_goal: config.kept_goal, queries}, null, 1));
 } else if (command === 'layoff-employers') {
   // Employers named in recent layoff scoops, fed to `plan --extra`.
   const names = [];
@@ -54,7 +55,7 @@ if (command === 'plan') {
   console.log(JSON.stringify({count: all.length, batches, params: {requiredFieldsList: config.required_fields, state: config.states, pageSize: 50}, meta: {kind: 'search', tier: 'A'}}));
 } else if (command === 'select') {
   const dir = work(), ledger = readLedger(ledgerText(), {today: day, days: config.ledger_days});
-  const result = select([...files(dir, 'scoops-'), ...files(dir, 'search-')], {config, ledger, today: day, target: Number(args.target) || config.deliver_target});
+  const result = select([...files(dir, 'scoops-'), ...files(dir, 'search-'), ...files(dir, 'evidence-')], {config, ledger, today: day, target: Number(args.target) || config.deliver_target});
   writeFileSync(join(dir, 'selected.json'), JSON.stringify(result.selected));
   writeFileSync(join(dir, 'select-counts.json'), JSON.stringify(result.counts));
   const ids = result.selected.map(c => c.person_id), batches = [];
