@@ -8,7 +8,7 @@ const lead={first_name:'Pat',last_name:'Example',company:'Example Hospital',curr
 test('a reported age is reported, not estimated',()=>{
   const a=estimateAgeBand({...lead,estimated_age_range:'62'},{now});
   assert.equal(a.status,'reported');assert.equal(a.inferred,false);assert.equal(a.label,'62');
-  assert.equal(a.band,'60_64');assert.match(a.rollover_stage,/Past 59½/);
+  assert.equal(a.band,'60_64');assert.match(a.rollover_stage,/Past 59½: .*if the plan allows it/);assert.equal(a.confidence,0.8);
   assert.equal(a.class_basis,'estimated');assert.equal(a.class_year,'1986');assert.equal(a.alumni_window,'likely','an estimated class is never a yes');
 });
 
@@ -24,9 +24,9 @@ test('a graduation year gives an estimated age, the class and a reunion',()=>{
 test('clues are intersected, and disagreeing clues widen instead of averaging',()=>{
   const both=estimateAgeBand({...lead,graduation_year:1985,career_start_year:1986},{now});
   assert.equal(both.status,'estimated');assert.equal(both.min,62);assert.equal(both.max,66);
-  assert.equal(both.basis.length,2);
+  assert.equal(both.basis.length,2);assert.equal(both.confidence,0.74,'agreeing clues earn a bonus');
   const clash=estimateAgeBand({...lead,graduation_year:2010,career_start_year:1980},{now});
-  assert.equal(clash.status,'conflicting');assert.ok(clash.min<=37&&clash.max>=66);
+  assert.equal(clash.status,'conflicting');assert.equal(clash.confidence,0);assert.ok(clash.min<=37&&clash.max>=66);
 });
 
 test('tenure sets a floor and the class is open-ended',()=>{
@@ -49,6 +49,22 @@ test('an estimate can make age a candidate but never confirms it',()=>{
   assert.equal(assessLead({...lead,graduation_year:2005},[],{now}).gates.age.state,'unknown','an estimate outside 45–73 is no candidate');
   assert.equal(assessLead(lead,[],{now}).gates.age.state,'unknown');
   const csv=researchCSV([{lead:{...lead,graduation_year:1984},quality:q}]);
-  assert.match(csv.split('\r\n')[0],/"Age Band \(estimate unless reported\)","Age Basis","Class Year","Class Basis","Alumni 1977-1990","Career Stage"/);
-  assert.match(csv.split('\r\n')[1],/"About 63–67 \(estimated\)","Graduation year 1984","1984","reported","yes","Established leader"/);
+  assert.match(csv.split('\r\n')[0],/"Age Band \(estimate unless reported\)","Age Confidence","Age Basis","Class Year","Class Basis","Alumni 1977-1990","Career Stage"/);
+  assert.match(csv.split('\r\n')[1],/"About 63–67 \(estimated\)","0.65","Graduation year 1984","1984","reported","yes","Established leader"/);
+});
+
+test('providers that disagree on age show as a conflict, not the working value',()=>{
+  const a=estimateAgeBand({...lead,estimated_age_range:'48',field_values:{estimated_age_range:[{value:'48',source:'ZoomInfo CSV'},{value:'66',source:'SEC proxy filing'}]}},{now});
+  assert.equal(a.status,'conflicting');assert.equal(a.min,48);assert.equal(a.max,66);assert.match(a.label,/sources disagree/);
+  assert.equal(a.basis.length,2);assert.equal(a.confidence,0);
+  assert.equal(assessLead({...lead,estimated_age_range:'48',field_values:{estimated_age_range:[{value:'48'},{value:'66'}]}},[],{now}).age_band.status,'conflicting');
+  const agree=estimateAgeBand({...lead,estimated_age_range:'62',field_values:{estimated_age_range:[{value:'60-64'},{value:'62'}]}},{now});
+  assert.equal(agree.status,'reported');assert.equal(agree.label,'62');
+});
+
+test('fractional ages are kept, so 59.5 lands past 59½',()=>{
+  const a=estimateAgeBand({...lead,estimated_age_range:'59.5'},{now});
+  assert.equal(a.min,59.5);assert.equal(a.band,'60_64');assert.equal(a.band_label,'59½–64');assert.match(a.rollover_stage,/Past 59½/);
+  assert.equal(estimateAgeBand({...lead,estimated_age_range:'59'},{now}).band,'55_59');
+  assert.equal(estimateAgeBand({...lead,estimated_age_range:'59.5'},{now}).class_year,'1988–1989');
 });

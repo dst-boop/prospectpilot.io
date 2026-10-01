@@ -205,8 +205,8 @@ export function csvCell(value) {
   return `"${s.replaceAll('"', '""')}"`;
 }
 // Age stays a research column for the advisor's own sorting; it never feeds outreach copy.
-const ageColumns = a => [a.status === 'unknown' ? '' : a.label, a.basis.join('; '), a.class_year ?? '', a.class_basis ?? '', a.alumni_window, a.career_stage];
+const ageColumns = a => [a.status === 'unknown' ? '' : a.label, a.status === 'unknown' ? '' : a.confidence, a.basis.join('; '), a.class_year ?? '', a.class_basis ?? '', a.alumni_window, a.career_stage];
 export function researchCSV(rows) {
-  const header = ['First Name', 'Last Name', 'Company', 'Title', 'Email', 'Phone', 'LinkedIn URL', 'Quality Status', 'Evidence Score', 'Age 45-73', 'US Residence', 'Transfer Eligibility', 'Contact', 'Net Worth Excluding Home >=250K', 'Missing Evidence', 'Source URLs', 'Research Only', 'Age Band (estimate unless reported)', 'Age Basis', 'Class Year', 'Class Basis', 'Alumni 1977-1990', 'Career Stage'];
+  const header = ['First Name', 'Last Name', 'Company', 'Title', 'Email', 'Phone', 'LinkedIn URL', 'Quality Status', 'Evidence Score', 'Age 45-73', 'US Residence', 'Transfer Eligibility', 'Contact', 'Net Worth Excluding Home >=250K', 'Missing Evidence', 'Source URLs', 'Research Only', 'Age Band (estimate unless reported)', 'Age Confidence', 'Age Basis', 'Class Year', 'Class Basis', 'Alumni 1977-1990', 'Career Stage'];
   return '\uFEFF' + [header, ...rows.map(({lead, quality}) => [lead.first_name, lead.last_name, lead.company, lead.current_title, lead.email, lead.phone || lead.business_phone || lead.mobile_phone, lead.linkedin_url, quality.status, quality.score, ...QUALITY_FIELDS.map(f => quality.gates[f].state), quality.gaps.join('; '), QUALITY_FIELDS.map(f => quality.gates[f].evidence?.url).filter(Boolean).join('; '), 'Not a call list; existing suppression applies', ...ageColumns(quality.age_band || estimateAgeBand(lead))])].map(row => row.map(csvCell).join(',')).join('\r\n');
 }
