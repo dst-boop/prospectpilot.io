@@ -319,9 +319,11 @@ test('unresolved identity pauses drafts, follow-up suggestions and contact loggi
   let d=await lab.advisor.detail(user,id);
   assert.equal(d.action.label,'Resolve identity');assert.equal(d.action.contact,null);
   assert.equal(d.cadence.status,'blocked');assert.equal(d.draft,null);assert.equal(d.schedules,null);
+  const pendingExport=await (await lab.advisor.exportEnrichment(user,{ids:[id,id]})).text();assert.doesNotMatch(pendingExport,/Jamie/);assert.match(pendingExport,/First Name/);
   for(const direction of ['outbound','inbound']) await assert.rejects(lab.advisor.save(user,id,{outcome:'connected',direction,channel:'email',signature:d.action.signature,idempotency_key:'pending-'+direction}),/identity/);
   assert.equal((await db.query('SELECT * FROM advisor_activities WHERE lead_id=$1',[id])).rows.length,0);
   await db.query("UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{identity_status}','\"matched\"')::text WHERE id=$1",[id]);
   d=await lab.advisor.detail(user,id);assert.ok(d.draft);assert.notEqual(d.cadence.status,'blocked');
+  assert.match(await (await lab.advisor.exportEnrichment(user,{ids:[id]})).text(),/Jamie/);
  }finally{await db.close();}
 });

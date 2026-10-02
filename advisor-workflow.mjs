@@ -354,7 +354,8 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const rows=[];for(const id of [...new Set(input.ids)]){
       // Nobody pays a provider to enrich a record they have already closed, and
       // a client's details are the firm's to hold by then, not a research gap.
-      const {lead}=await accessible(user,id),{action}=await detail(user,id);if(TERMINAL_BUCKETS.has(action.bucket))continue;
+      // Resolve identity first: conflicting identifiers cannot form a provider request.
+      const {lead}=await accessible(user,id),{action}=await detail(user,id);if(TERMINAL_BUCKETS.has(action.bucket)||lead.identity_status==='review')continue;
       rows.push([lead.first_name,lead.last_name,lead.company,lead.current_title,lead.city,lead.state,lead.linkedin_url,action.label,'Reported identifiers only; verify ownership.']);
     }
     const csv='\uFEFF'+[['First Name','Last Name','Company Name','Job Title','City','State','LinkedIn URL','Research Task','Data Status'],...rows].map(r=>r.map(csvCell).join(',')).join('\r\n');
