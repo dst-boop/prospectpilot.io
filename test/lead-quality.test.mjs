@@ -65,3 +65,15 @@ test('wealth requires consented disclosures, liabilities, home exclusion, and a 
   const stale=all();stale[4].observed_at='2025-01-01';assert.equal(assessLead(lead,stale,{now}).gates.net_worth.state,'stale');
   assert.equal(assessLead(lead,all(),{now}).score,100);
 });
+
+
+test('identity review and exclusion override complete evidence regardless of reason wording',()=>{
+  for(const identity_conflicts of [undefined,[],['Identity needs a full name plus email or profile URL before automatic matching.'],['different:first_name']]) {
+    const pending={...lead,identity_status:'review',identity_conflicts};
+    assert.equal(assessLead(pending,all(),{now}).status,'identity_review');
+    assert.equal(assessLead({...pending,follow_up_status:'Do Not Contact'},all(),{now}).status,'excluded');
+  }
+  const excluded=assessLead({...lead,identity_status:'excluded'},all(),{now});
+  assert.equal(excluded.status,'excluded');assert.equal(excluded.score,0);
+  assert.equal(assessLead({...lead,identity_status:'matched',identity_conflicts:['Old review note']},all(),{now}).status,'verified');
+});

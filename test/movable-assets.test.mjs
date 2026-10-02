@@ -77,7 +77,7 @@ test('saved rollover target is consistent across reviews, worklist, filters and 
     assert.equal((await lab.list(user,{status:'verified'})).total,1);
     await lab.metrics(user);
     const stored=(await db.query('SELECT rule_version FROM lab_qualification')).rows[0];
-    assert.equal(stored.rule_version,'retirement-movable-2');
+    assert.equal(stored.rule_version,'retirement-movable-3');
     await lab.settings(user,{configuration:{score_weights:{qualification:5}}});
     assert.equal((await lab.settings(user)).configuration.qualification_target,'rollover_100k','unrelated settings preserve the target');
     assert.equal((await lab.settings({uid:'other',email:'other@example.com'})).configuration.qualification_target,'legacy','settings are per advisor');

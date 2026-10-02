@@ -72,8 +72,13 @@ test('rule migration invalidates previous verification and retains observations 
     let row=(await db.query('SELECT * FROM lab_qualification WHERE lead_id=$1',[id])).rows[0];
     assert.equal(row.status,'unassessed');assert.equal(row.first_verified_at,null);
     assert.equal((await db.query('SELECT * FROM lab_observations')).rows.length,1);
-    await lab.detail(user,id);await db.exec(migration);
-    row=(await db.query('SELECT * FROM lab_qualification WHERE lead_id=$1',[id])).rows[0];assert.equal(row.rule_version,'retirement-evidence-2');assert.notEqual(row.status,'unassessed');
+    await lab.detail(user,id);
+    // This shipped migration protects v2 reviews; later versions are rebuilt by current assessment.
+    await db.query("UPDATE lab_qualification SET rule_version='retirement-evidence-2' WHERE lead_id=$1",[id]);
+    await db.exec(migration);
+    assert.notEqual((await db.query('SELECT status FROM lab_qualification WHERE lead_id=$1',[id])).rows[0].status,'unassessed');
+    await lab.detail(user,id);
+    row=(await db.query('SELECT * FROM lab_qualification WHERE lead_id=$1',[id])).rows[0];assert.equal(row.rule_version,'retirement-evidence-3');assert.notEqual(row.status,'unassessed');
   }finally{await db.close();}
 });
 test('paid lookup budget is reserved before calls and never silently retried after interruption',async()=>{

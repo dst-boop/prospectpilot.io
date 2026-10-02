@@ -73,7 +73,7 @@ test('a build serving the wrong rules fails on the fields, not the identifier',a
   assert.deepEqual(failed(report), ['version']);
   const detail = report.checks.find(c => c.id === 'version').detail;
   assert.match(detail, /advisor_workspace_version: expected advisor-workflow-1/);
-  assert.match(detail, /quality_version: expected retirement-evidence-2/);
+  assert.match(detail, /quality_version: expected retirement-evidence-3/);
 });
 
 test('an API answering without a session fails, however ordinary the response looks',async()=>{
