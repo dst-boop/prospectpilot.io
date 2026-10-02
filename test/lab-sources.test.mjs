@@ -208,3 +208,16 @@ test('search continues to later results instead of spending page budget on publi
  assert.ok(!seen.some(u=>u.includes('/leadership/')));
  assert.equal(result.pages_checked,2);
 });
+
+
+test('role evidence does not match an employer name inside a longer employer name',()=>{
+ const misleading=[
+  'Robin Hale is the president of Harbor Electrical Services.',
+  'Harbor Electrical Services president Robin Hale said.',
+  'New Harbor Electrical president Robin Hale said.',
+  'Harbor Electrical Holdings CEO Robin Hale said.',
+ ];
+ for(const sentence of misleading)assert.equal(newsRoleLinks(sentence,'Robin Hale',sentence.includes('CEO')?'CEO':'President','Harbor Electrical'),false,sentence);
+ assert.equal(newsRoleLinks('Harbor Electrical vice president Robin Hale said.','Robin Hale','Vice President','Harbor Electrical'),true);
+ assert.equal(newsRoleLinks('Robin Hale is the president of Harbor Electrical, according to the announcement.','Robin Hale','President','Harbor Electrical'),true);
+});

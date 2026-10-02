@@ -43,8 +43,9 @@ export function newsRoleLinks(text,name,title,company){
   const person=looseWords(name),employer=looseWords(String(company||'').replace(/[^\p{L}\p{N}&' -]/gu,' '));
   if(!person||!employer||!role)return false;
   const sentences=String(text).split(/(?<=[.!?])\s+/);
-  const after=new RegExp(`${person},?\\s+(?:(?:is|was|serves as|has been|who is)\\s+)?(?:(?:the|a|an|its|our)\\s+)?[\\p{L}&,' -]{0,40}?\\b${escapeRe(role)}\\w*[\\p{L}&,' -]{0,30}?\\s(?:of|at|with|for)\\s+(?:the\\s+)?${employer}\\b`,'iu');
-  const before=new RegExp(`${employer}(?:'s|’s)?\\s+(?:[\\p{L}&-]+\\s+){0,3}?${escapeRe(role)}\\w*\\s+${person}\\b`,'iu');
+  const exactTitle=looseWords(String(title||'').replace(/[^\p{L}\p{N}&' -]/gu,' '));
+  const after=new RegExp(`${person},?\\s+(?:(?:is|was|serves as|has been|who is)\\s+)?(?:(?:the|a|an|its|our)\\s+)?[\\p{L}&,' -]{0,40}?\\b${escapeRe(role)}\\w*[\\p{L}&,' -]{0,30}?\\s(?:of|at|with|for)\\s+(?:the\\s+)?${employer}\\b(?=\\s*(?:[,.;:!?]|$))`,'iu');
+  const before=new RegExp(`^(?:the\\s+)?${employer}(?:'s|’s)?\\s+${exactTitle}\\s+${person}\\b`,'iu');
   // Words of the title itself ("Vice President of Operations") may hold a
   // connector; any other "of/at" before the company means a different employer.
   const ownTitle=new RegExp(looseWords(String(title||'').replace(/[^\p{L}\p{N}&' -]/gu,' ')),'iu');
