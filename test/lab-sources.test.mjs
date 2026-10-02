@@ -139,3 +139,34 @@ test('a news sentence credits a person only when it ties their role to this comp
   'Kim Doe, owner of Other Firm at Harbor Electrical plaza, said.','Other Firm owner Kim Doe met Harbor Electrical staff.','Kim Doe spoke. Harbor Electrical owner search continues.'];
  for(const text of no)assert.equal(newsRoleLinks(text,'Kim Doe','Owner','Harbor Electrical'),false,text);
 });
+
+
+test('broad search does not turn an article into an employer website or borrow unrelated people',async()=>{
+  for(const website of ['', 'https://harbor.example']) {
+    const sources=createLabSources({searchKey:'synthetic',searchCostMicros:0,fallbacks:false,
+      apiFetch:async()=>new Response(JSON.stringify({web:{results:[{url:'https://news.example/story'}]}})),
+      get:async url=>String(url).endsWith('/robots.txt')?response('',url,'text/plain'):response('<p>Harbor Electrical acquired Other Firm. Kim Doe is the owner of Other Firm.</p><p>Robin Hale is the president of Harbor Electrical.</p>',url,'text/html')});
+    const result=await sources.run('web_search',{company:'Harbor Electrical',website});
+    assert.deepEqual(result.candidates.map(c=>c.name),['Robin Hale']);
+    assert.equal(result.candidates[0].company_website,website);
+    assert.deepEqual(result.candidates[0].source_names,['Web search page']);
+    assert.equal(result.candidates[0].evidence[0].source_url,'https://news.example/story');
+    assert.equal(result.documents[0].scope,'external');
+  }
+});
+
+test('broad search keeps supplied official-site biographies but checks redirected destinations',async()=>{
+  for(const redirected of [false,true]) {
+    const sources=createLabSources({searchKey:'synthetic',searchCostMicros:0,fallbacks:false,
+      apiFetch:async()=>new Response(JSON.stringify({web:{results:[{url:'https://www.harbor.example/team'}]}})),
+      get:async url=>{
+        url=String(url);
+        if(url.endsWith('/robots.txt'))return response('',url,'text/plain');
+        if(redirected&&url==='https://www.harbor.example/team')return {url,redirect:'https://news.example/story'};
+        return response(person('Robin Hale','President','Harbor Electrical'),url,'text/html');
+      }});
+    const result=await sources.run('web_search',{company:'Harbor Electrical',website:'https://harbor.example'});
+    assert.equal(result.candidates.length,redirected?0:1,'third-party structured page alone does not establish employment');
+    if(!redirected)assert.equal(result.candidates[0].company_website,'https://www.harbor.example');
+  }
+});

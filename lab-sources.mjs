@@ -140,7 +140,7 @@ export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicr
       // The page reader credits everyone on a page to the company being
       // researched. On the company's own site that holds; in a news article
       // the sentence itself must tie the person, their role and the company.
-      if(scope==='news'){const article=plain(result.text);found=found.filter(c=>newsRoleLinks(article,c.name,c.current_title,employer.company));}
+      if(scope==='news'||scope==='external'){const article=plain(result.text);found=found.filter(c=>newsRoleLinks(article,c.name,c.current_title,employer.company));}
       for (const c of found) {
         // Company address never becomes residence. Do not manufacture a LinkedIn slug or email pattern.
         c.company_website=website;c.company_location=[employer.city,employer.state].filter(Boolean).join(', ');
@@ -166,7 +166,12 @@ export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicr
       try {
         const result=await page(urls[i],signal);if(seen.has(result.url))continue;seen.add(result.url);
         // Search results need explicit employer context before any person can be associated with that employer.
-        if(readPeople(result,{scope:'professional',website:new URL(result.url).origin})===null){if(!probed.has(urls[i]))errors.push('A page did not establish the employer identity.');continue;}
+        const knownWebsite=publicURL(employer.website);
+        const knownHost=knownWebsite?new URL(knownWebsite).hostname.replace(/^www\./,''):'';
+        const externalSearch=source==='web_search'&&(!knownHost||new URL(result.url).hostname.replace(/^www\./,'')!==knownHost);
+        if(readPeople(result,externalSearch
+          ? {scope:'external',sourceName:'Web search page',website:knownWebsite?new URL(knownWebsite).origin:''}
+          : {scope:'professional',website:new URL(result.url).origin})===null){if(!probed.has(urls[i]))errors.push('A page did not establish the employer identity.');continue;}
         const base=new URL(result.url);
         const discovered=new Set();
         for(const match of result.text.matchAll(/href=["']([^"'<>]+)["']/gi)) {
