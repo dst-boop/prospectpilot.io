@@ -65,7 +65,7 @@ if (command === 'plan') {
 } else if (command === 'finalize') {
   const dir = work(), selected = readJSON(join(dir, 'selected.json'));
   const enrichment = new Map();
-  for (const f of readdirSync(dir).filter(f => f.startsWith('enrich-') && f.endsWith('.json')).sort()) for (const [id, e] of enrichmentRecords(readFileSync(join(dir, f), 'utf8'))) enrichment.set(id, e);
+  for (const f of readdirSync(dir).filter(f => f.startsWith('enrich-') && f.endsWith('.json')).sort()) enrichmentRecords(readFileSync(join(dir, f), 'utf8'), {records: enrichment, source: f});
   // Enrichment can show someone is based abroad; they leave the day's list.
   const all = finalize(selected, enrichment, {today: day}), leads = all.filter(l => !l.abroad);
   const csvName = `daily-leads-${day}.csv`;

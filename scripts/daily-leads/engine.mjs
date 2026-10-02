@@ -138,18 +138,19 @@ export function candidatesFromSearch(file, scoops = new Map(), scoopNames = new 
 // freshness) and whether the mobile can be called. Only the sort adds them.
 export function scoreParts(candidate, today) {
   const age = candidate.signal?.date ? daysBetween(candidate.signal.date, today) : Infinity;
+  const updatedAge = candidate.updated ? daysBetween(candidate.updated, today) : Infinity;
   return {
-    trigger: TIERS[candidate.tier].weight + (age <= 7 ? 10 : age <= 30 ? 5 : 0),
+    trigger: TIERS[candidate.tier].weight + (age >= 0 && age <= 7 ? 10 : age >= 0 && age <= 30 ? 5 : 0),
     seniority: seniority(candidate.title).rank,
-    data: Math.round(Math.max(0, Math.min(15, ((candidate.accuracy || 70) - 70) / 29 * 15)) + (candidate.updated && daysBetween(candidate.updated, today) <= 60 ? 5 : 0)),
-    callable: candidate.mobile_dnc ? 0 : 5,
+    data: Math.round(Math.max(0, Math.min(15, ((candidate.accuracy || 70) - 70) / 29 * 15)) + (updatedAge >= 0 && updatedAge <= 60 ? 5 : 0)),
+    callable: candidate.has_mobile && !candidate.mobile_dnc ? 5 : 0,
   };
 }
 export function score(candidate, today) {
   const parts = scoreParts(candidate, today);
   return parts.trigger + parts.seniority + parts.data + parts.callable;
 }
-export const rankBasis = parts => `Trigger ${parts.trigger}/50 · Seniority ${parts.seniority}/25 · Data ${parts.data}/20 · Callable ${parts.callable}/5${parts.rollover?` · Rollover evidence ${parts.rollover}/100`:""}`;
+export const rankBasis = parts => `Trigger ${parts.trigger}/50 · Seniority ${parts.seniority}/25 · Data ${parts.data}/20 · Mobile on file ${parts.callable}/5${parts.rollover?` · Rollover evidence ${parts.rollover}/100`:""}`;
 
 // ZoomInfo matches company names loosely, so a search for Cisco also returns
 // Cisco Brewers. Long tenure only counts at the employer itself: the company
@@ -170,9 +171,18 @@ export function select(files, {config, ledger = new Set(), today, target = confi
   const seen = new Map(), excluded = [], counts = {found: 0, already_delivered: 0, excluded: 0, duplicate: 0};
   const evidenceById=new Map();
   for(const f of files.filter(f=>f?.meta?.kind==='rollover_evidence')) for(const e of Array.isArray(f.evidence)?f.evidence:[]){const id=personId(e.person_id);if(id)evidenceById.set(id,[...(evidenceById.get(id)||[]),e]);}
-  for (const f of files.filter(f => !['scoops','rollover_evidence'].includes(f?.meta?.kind))) {
-    const found = candidatesFromSearch(f, scoops, scoopNames), employerId = f.meta?.tier === 'C' ? sameEmployerId(found, f.meta.employer) : null;
+  const searches = files.filter(f => !['scoops','rollover_evidence'].includes(f?.meta?.kind)).map(f => ({file:f, found:candidatesFromSearch(f, scoops, scoopNames)}));
+  // Preserve restrictions even from a duplicate that loses ranking or is
+  // excluded from this search lane. Provider ID, never name, joins the flags.
+  const restrictions = new Map();
+  for (const {found} of searches) for (const c of found) {
+    const prior = restrictions.get(c.person_id);
+    restrictions.set(c.person_id, {mobile_dnc: c.mobile_dnc || prior?.mobile_dnc || false, direct_dnc: c.direct_dnc || prior?.direct_dnc || false});
+  }
+  for (const {file:f, found} of searches) {
+    const employerId = f.meta?.tier === 'C' ? sameEmployerId(found, f.meta.employer) : null;
     for (const c of found) {
+      Object.assign(c, restrictions.get(c.person_id));
       counts.found++;
       if (ledger.has(c.person_id)) { counts.already_delivered++; continue; }
       const reason = f.meta?.tier === 'A' && c.tier !== 'A' ? 'Departure identity requires review' : f.meta?.tier === 'C' && c.company_id !== employerId ? 'Different company with a similar name' : exclusion(c, config);
@@ -199,15 +209,40 @@ export function select(files, {config, ledger = new Set(), today, target = confi
 
 // Enrichment results, whatever envelope they arrive in: each successful
 // contact is an object that carries the person's id and some contact fields.
-export function enrichmentRecords(response) {
-  const out = new Map(), root = deepParse(response);
+export function enrichmentRecords(response, {records = new Map(), source = 'response'} = {}) {
+  const out = records, root = deepParse(response);
+  const fields = ['email', 'mobilePhone', 'phone', 'externalUrls', 'firstName', 'lastName', 'jobTitle', 'companyName', 'employmentHistory'];
+  const key = (field, value) => field === 'email' ? text(value).toLowerCase()
+    : ['mobilePhone', 'phone'].includes(field) ? phone(value) || text(value)
+    : typeof value === 'string' ? text(value) : JSON.stringify(value);
+  const present = value => value != null && value !== '' && (!Array.isArray(value) || value.length > 0);
+  let row = 0;
   const visit = (node, inputId) => {
     if (!node || typeof node !== 'object') return;
     if (Array.isArray(node)) { node.forEach(n => visit(n, inputId)); return; }
     if (node.success === false) return;
     const id = personId(node.id ?? node.personId ?? node.input?.personId ?? inputId);
     const flat = {...node, ...(node.attributes || {})};
-    if (id && ('mobilePhone' in flat || 'email' in flat || 'externalUrls' in flat)) { out.set(id, {...(out.get(id) || {}), ...flat}); return; }
+    if (id && ('mobilePhone' in flat || 'email' in flat || 'externalUrls' in flat)) {
+      const prior = out.get(id), merged = {...prior, ...flat};
+      const observations = structuredClone(prior?.enrichment_observations || {});
+      const conflicts = {};
+      const ref = `${source}#${++row}`;
+      for (const field of fields) {
+        const values = observations[field] ||= [];
+        if (!values.length && present(prior?.[field])) values.push({value: prior[field], source: 'previous result'});
+        if (present(flat[field])) values.push({value: flat[field], source: ref});
+        const distinct = new Set(values.map(o => key(field, o.value)));
+        if (distinct.size > 1) { conflicts[field] = values; delete merged[field]; }
+        else if (values.length) merged[field] = values[0].value;
+      }
+      // An empty or permissive later response cannot clear an earlier restriction.
+      for (const flag of ['mobilePhoneDoNotCall', 'directPhoneDoNotCall']) merged[flag] = prior?.[flag] === true || flat[flag] === true;
+      merged.enrichment_observations = observations;
+      merged.enrichment_conflicts = conflicts;
+      out.set(id, merged);
+      return;
+    }
     for (const [key, value] of Object.entries(node)) if (key !== 'input') visit(value, personId(node.input?.personId) || inputId);
   };
   visit(root, '');
@@ -271,9 +306,14 @@ export function whyNow(lead) {
 export function finalize(selected, enrichment, {today}) {
   return selected.map(c => {
     const e = enrichment.get(c.person_id) || {};
+    const conflicts = Object.keys(e.enrichment_conflicts || {});
     const lead = {...c, email: text(e.email).toLowerCase(), mobile: phone(e.mobilePhone), direct: phone(e.phone), linkedin_url: linkedinFrom(e.externalUrls),
       mobile_dnc: e.mobilePhoneDoNotCall === true || c.mobile_dnc, direct_dnc: e.directPhoneDoNotCall === true || c.direct_dnc,
       title: text(e.jobTitle) || c.title, company: text(e.companyName) || c.company};
+    lead.enrichment_conflicts = e.enrichment_conflicts || {};
+    if (conflicts.some(field => ['firstName', 'lastName'].includes(field))) {
+      lead.email = ''; lead.mobile = ''; lead.direct = ''; lead.linkedin_url = '';
+    }
     lead.stint = stintAt(e.employmentHistory, c.signal?.employer, today);lead.today = today;
     lead.tenure_years = lead.stint?.years ?? null;
     // A mobile with another country's code places the person abroad.
@@ -282,6 +322,7 @@ export function finalize(selected, enrichment, {today}) {
     // A successful enrichment is one ZoomInfo credit, recorded with the lead.
     lead.credits = enrichment.has(c.person_id) ? 1 : 0;
     lead.why_now = whyNow(lead)+(lead.rollover?' '+(lead.rollover.financial_status==='confirmed_100k_plus'?'Authorized evidence reports $100,000+ eligible to move.':'$100,000+ available to move remains unconfirmed.')+(lead.rollover.alumni_preference?' Matches the preferred 1977–1990 alumni audience.':''):'');
+    if (conflicts.length) lead.why_now += ` Conflicting enrichment requires review: ${conflicts.join(', ')}. Conflicting values are withheld.`;
     lead.linkedin_search = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(`${lead.first_name} ${lead.last_name} ${lead.company}`)}`;
     return lead;
   });
@@ -338,5 +379,5 @@ export function digest(leads, {today, counts, links = {}, goal}) {
 ${Object.keys(TIERS).map(t => section(t, byTier(t))).join('')}
 <p style="color:#51607a;font-size:12px;margin-top:20px">Likely rollovers, not verified balances: confirm the account and amount in conversation. Nothing has been sent to anyone. Check do-not-call before phoning; mobile numbers carry stricter calling rules. Outreach templates need Equitable approval.</p></div>`;
   const plain = [summary, '', ...leads.map(l => `${l.rank}. ${l.first_name} ${l.last_name} — ${l.title}, ${l.company}. ${l.why_now}`)].join('\n');
-  return {subject: `Daily leads ${today}: ${leads.length} rollover prospects (${ready} ready to call)`, html, text: plain, summary};
+  return {subject: `Daily leads ${today}: ${leads.length} rollover prospects (${ready} with contact details)`, html, text: plain, summary};
 }
