@@ -91,6 +91,38 @@ test('the CSV cannot carry formulas, and the digest carries no phone or email',(
   assert.match(mail.subject,/1 rollover prospects \(1 ready to call\)/);assert.match(mail.summary,/^Short day: only 1 new prospects/);assert.match(mail.html,/not verified balances/);
 });
 
+test('duplicate enrichment keeps restrictions and withholds conflicting contact fields across files',()=>{
+  const first={id:101,email:'avery@one.example',mobilePhone:'(212) 555-0100',mobilePhoneDoNotCall:true};
+  const second={id:101,email:'avery@two.example',mobilePhone:'+12125550100',mobilePhoneDoNotCall:false};
+  for(const rows of [[first,second],[second,first]]){
+    const records=enrichmentRecords(rows[0],{source:'enrich-a.json'});
+    enrichmentRecords(rows[1],{records,source:'enrich-b.json'});
+    // A third response agreeing with one side must not erase the unresolved conflict.
+    enrichmentRecords(first,{records,source:'enrich-c.json'});
+    const record=records.get('101');
+    assert.equal(record.email,undefined);
+    assert.equal(record.mobilePhoneDoNotCall,true);
+    assert.equal(record.enrichment_conflicts.email.length,3);
+    assert.match(record.enrichment_conflicts.email[1].source,/enrich-b.json/);
+    assert.equal(record.enrichment_conflicts.mobilePhone,undefined,'formatting is not a conflict');
+    const [lead]=finalize([{person_id:'101',first_name:'Avery',last_name:'Sample',tier:'B',signal:{employer:'Example'}}],records,{today});
+    assert.equal(lead.email,'');assert.equal(lead.mobile,'+12125550100');assert.equal(lead.mobile_dnc,true);
+    assert.equal(lead.enriched,false);assert.match(lead.why_now,/Conflicting enrichment requires review: email/);
+    assert.doesNotMatch(toCSV([lead],{today}),/avery@one|avery@two/);
+  }
+  assert.equal(first.email,'avery@one.example','source responses remain untouched');
+});
+
+test('empty enrichment never removes recorded values and identity conflicts withhold every contact channel',()=>{
+  const records=enrichmentRecords([{id:101,firstName:'Avery',email:'avery@example.com',mobilePhone:'2125550100'},
+    {id:101,firstName:'Avery',email:'',mobilePhone:null}]);
+  assert.equal(records.get('101').email,'avery@example.com');
+  enrichmentRecords({id:101,firstName:'Blair',email:'avery@example.com'},{records});
+  const [lead]=finalize([{person_id:'101',first_name:'Avery',last_name:'Sample',tier:'B',signal:{employer:'Example'}}],records,{today});
+  assert.equal(lead.email,'');assert.equal(lead.mobile,'');assert.equal(lead.enriched,false);
+  assert.match(lead.why_now,/firstName/);
+});
+
 test('the ledger keeps a person out for the configured window',()=>{
   const csv=appendLedger('',[{person_id:'1'},{person_id:'-2'}],{today:'2026-01-01'});
   assert.deepEqual([...readLedger(csv,{today,days:365})],['1','-2']);

@@ -199,15 +199,40 @@ export function select(files, {config, ledger = new Set(), today, target = confi
 
 // Enrichment results, whatever envelope they arrive in: each successful
 // contact is an object that carries the person's id and some contact fields.
-export function enrichmentRecords(response) {
-  const out = new Map(), root = deepParse(response);
+export function enrichmentRecords(response, {records = new Map(), source = 'response'} = {}) {
+  const out = records, root = deepParse(response);
+  const fields = ['email', 'mobilePhone', 'phone', 'externalUrls', 'firstName', 'lastName', 'jobTitle', 'companyName', 'employmentHistory'];
+  const key = (field, value) => field === 'email' ? text(value).toLowerCase()
+    : ['mobilePhone', 'phone'].includes(field) ? phone(value) || text(value)
+    : typeof value === 'string' ? text(value) : JSON.stringify(value);
+  const present = value => value != null && value !== '' && (!Array.isArray(value) || value.length > 0);
+  let row = 0;
   const visit = (node, inputId) => {
     if (!node || typeof node !== 'object') return;
     if (Array.isArray(node)) { node.forEach(n => visit(n, inputId)); return; }
     if (node.success === false) return;
     const id = personId(node.id ?? node.personId ?? node.input?.personId ?? inputId);
     const flat = {...node, ...(node.attributes || {})};
-    if (id && ('mobilePhone' in flat || 'email' in flat || 'externalUrls' in flat)) { out.set(id, {...(out.get(id) || {}), ...flat}); return; }
+    if (id && ('mobilePhone' in flat || 'email' in flat || 'externalUrls' in flat)) {
+      const prior = out.get(id), merged = {...prior, ...flat};
+      const observations = structuredClone(prior?.enrichment_observations || {});
+      const conflicts = {};
+      const ref = `${source}#${++row}`;
+      for (const field of fields) {
+        const values = observations[field] ||= [];
+        if (!values.length && present(prior?.[field])) values.push({value: prior[field], source: 'previous result'});
+        if (present(flat[field])) values.push({value: flat[field], source: ref});
+        const distinct = new Set(values.map(o => key(field, o.value)));
+        if (distinct.size > 1) { conflicts[field] = values; delete merged[field]; }
+        else if (values.length) merged[field] = values[0].value;
+      }
+      // An empty or permissive later response cannot clear an earlier restriction.
+      for (const flag of ['mobilePhoneDoNotCall', 'directPhoneDoNotCall']) merged[flag] = prior?.[flag] === true || flat[flag] === true;
+      merged.enrichment_observations = observations;
+      merged.enrichment_conflicts = conflicts;
+      out.set(id, merged);
+      return;
+    }
     for (const [key, value] of Object.entries(node)) if (key !== 'input') visit(value, personId(node.input?.personId) || inputId);
   };
   visit(root, '');
@@ -271,9 +296,14 @@ export function whyNow(lead) {
 export function finalize(selected, enrichment, {today}) {
   return selected.map(c => {
     const e = enrichment.get(c.person_id) || {};
+    const conflicts = Object.keys(e.enrichment_conflicts || {});
     const lead = {...c, email: text(e.email).toLowerCase(), mobile: phone(e.mobilePhone), direct: phone(e.phone), linkedin_url: linkedinFrom(e.externalUrls),
       mobile_dnc: e.mobilePhoneDoNotCall === true || c.mobile_dnc, direct_dnc: e.directPhoneDoNotCall === true || c.direct_dnc,
       title: text(e.jobTitle) || c.title, company: text(e.companyName) || c.company};
+    lead.enrichment_conflicts = e.enrichment_conflicts || {};
+    if (conflicts.some(field => ['firstName', 'lastName'].includes(field))) {
+      lead.email = ''; lead.mobile = ''; lead.direct = ''; lead.linkedin_url = '';
+    }
     lead.stint = stintAt(e.employmentHistory, c.signal?.employer, today);lead.today = today;
     lead.tenure_years = lead.stint?.years ?? null;
     // A mobile with another country's code places the person abroad.
@@ -282,6 +312,7 @@ export function finalize(selected, enrichment, {today}) {
     // A successful enrichment is one ZoomInfo credit, recorded with the lead.
     lead.credits = enrichment.has(c.person_id) ? 1 : 0;
     lead.why_now = whyNow(lead)+(lead.rollover?' '+(lead.rollover.financial_status==='confirmed_100k_plus'?'Authorized evidence reports $100,000+ eligible to move.':'$100,000+ available to move remains unconfirmed.')+(lead.rollover.alumni_preference?' Matches the preferred 1977–1990 alumni audience.':''):'');
+    if (conflicts.length) lead.why_now += ` Conflicting enrichment requires review: ${conflicts.join(', ')}. Conflicting values are withheld.`;
     lead.linkedin_search = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(`${lead.first_name} ${lead.last_name} ${lead.company}`)}`;
     return lead;
   });
