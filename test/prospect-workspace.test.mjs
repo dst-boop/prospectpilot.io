@@ -31,7 +31,7 @@ test('source differences can be explicitly accepted or kept without replaying a 
  await app.importCSV(user,{csv:csv.replace('Operations Director','VP Operations'),source:'New source'});
  let c=await get(),index=c.source_history.findIndex(e=>e.proposed_values);assert.equal(c.title,'Operations Director');assert.equal(c.source_history[index].proposed_values.title,'VP Operations');
  const input={resolve_history_index:index,decision:'accept',revision:c.edit_revision,reason:'Confirmed role on company page'};
- await resolve(input);c=await get();assert.equal(c.title,'VP Operations');assert.equal(c.source_history[index].resolution.decision,'accept');
+ await resolve(input);c=await get();assert.equal(c.title,'VP Operations');assert.equal(c.source_history[index].resolution.decision,'accept');assert.equal(c.field_sources.title.source_resolution.source,'New source');assert.equal(c.field_sources.title.source_resolution.proposed_values.title,'VP Operations');assert.equal(c.field_sources.title.source_resolution.resolution.decision,'accept');
  await assert.rejects(resolve(input),{status:409});
  await app.importCSV(user,{csv:csv.replace('Operations Director','Outdated Role'),source:'Older source'});
  c=await get();index=c.source_history.findIndex(e=>e.proposed_values&&!e.resolution);
@@ -145,4 +145,5 @@ test('unresolved source conflicts survive routine imports and corrections beyond
  assert.equal(c.source_history[0].resolution,undefined);
  await app.route(new Request(url,{method:'PATCH',body:JSON.stringify({resolve_history_index:0,decision:'keep',revision:c.edit_revision,reason:'Synthetic conflict review'})}),user);
  c=await get();assert.equal(c.title,'Reviewed title');assert.ok(!c.source_history.some(e=>e.proposed_values&&!e.resolution));
+ const audit=c.source_history.at(-1).source_resolution;assert.equal(audit.source,'Conflicting source');assert.equal(audit.proposed_values.title,'VP Operations');assert.equal(audit.resolution.decision,'keep');assert.equal(audit.resolution.reason,'Synthetic conflict review');
 }));
