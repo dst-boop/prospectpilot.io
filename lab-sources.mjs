@@ -153,6 +153,12 @@ export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicr
     };
     const probed=new Set(),queued=new Set(urls),seen=new Set();
     const siteOrigin=urls.length?new URL(urls[0]).origin:'';
+    const knownWebsite=publicURL(employer.website);
+    const hostKey=url=>new URL(url).hostname.replace(/^www\./,'');
+    // Only supplied or official-index sites can establish an employer website.
+    // Search results and redirects do not gain that status merely by mentioning it.
+    const officialHosts=new Set((source==='web_search'?(knownWebsite?[knownWebsite]:[]):urls).map(hostKey));
+    const employerWebsite=knownWebsite?new URL(knownWebsite).origin:source==='public_web'?siteOrigin:'';
     // Pass 0 follows the site's own links. Pass 1 runs only when that found
     // nobody: the usual addresses, tried once each.
     for(let pass=0;pass<2;pass++){
@@ -165,13 +171,13 @@ export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicr
     for(let i=0;i<urls.length&&seen.size<(pass?10:5)&&!signal.aborted;i++) {
       try {
         const result=await page(urls[i],signal);if(seen.has(result.url))continue;seen.add(result.url);
-        // Search results need explicit employer context before any person can be associated with that employer.
-        const knownWebsite=publicURL(employer.website);
-        const knownHost=knownWebsite?new URL(knownWebsite).hostname.replace(/^www\./,''):'';
-        const externalSearch=source==='web_search'&&(!knownHost||new URL(result.url).hostname.replace(/^www\./,'')!==knownHost);
-        if(readPeople(result,externalSearch
-          ? {scope:'external',sourceName:'Web search page',website:knownWebsite?new URL(knownWebsite).origin:''}
+        const external=!officialHosts.has(hostKey(result.url));
+        if(readPeople(result,external
+          ? {scope:'external',sourceName:source==='web_search'?'Web search page':'External public page',website:employerWebsite}
           : {scope:'professional',website:new URL(result.url).origin})===null){if(!probed.has(urls[i]))errors.push('A page did not establish the employer identity.');continue;}
+        // A publisher's About/Team navigation describes the publisher, not the
+        // employer. Preserve the remaining source budget for relevant results.
+        if(external)continue;
         const base=new URL(result.url);
         const discovered=new Set();
         for(const match of result.text.matchAll(/href=["']([^"'<>]+)["']/gi)) {

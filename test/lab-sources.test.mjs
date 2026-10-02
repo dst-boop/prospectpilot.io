@@ -170,3 +170,41 @@ test('broad search keeps supplied official-site biographies but checks redirecte
     if(!redirected)assert.equal(result.candidates[0].company_website,'https://www.harbor.example');
   }
 });
+
+
+test('public biography redirects cannot confer official status on a publisher or crawl its staff',async()=>{
+ for(const explicit of [false,true]){
+  const seen=[];
+  const sources=createLabSources({fallbacks:false,get:async url=>{
+   url=String(url);seen.push(url);
+   if(url.endsWith('/robots.txt'))return response('',url,'text/plain');
+   if(url==='https://harbor.example/team')return {url,redirect:'https://publisher.example/story'};
+   return response((explicit?'<p>Robin Hale is the president of Harbor Electrical.</p>':person('Robin Hale','President','Harbor Electrical'))+'<a href="/about/team">Our team</a>',url,'text/html');
+  }});
+  const result=await sources.run('public_web',{company:'Harbor Electrical',website:'https://harbor.example/team'});
+  assert.equal(result.candidates.length,explicit?1:0);
+  assert.ok(!seen.includes('https://publisher.example/about/team'));
+  assert.equal(result.documents[0].scope,'external');
+  if(explicit){
+   assert.equal(result.candidates[0].company_website,'https://harbor.example');
+   assert.equal(result.candidates[0].evidence[0].source_url,'https://publisher.example/story');
+   assert.deepEqual(result.candidates[0].source_names,['External public page']);
+  }
+ }
+});
+
+test('search continues to later results instead of spending page budget on publisher navigation',async()=>{
+ const seen=[];
+ const sources=createLabSources({searchKey:'synthetic',searchCostMicros:0,fallbacks:false,
+  apiFetch:async()=>new Response(JSON.stringify({web:{results:[{url:'https://publisher.example/story'},{url:'https://harbor.example/team'}]}})),
+  get:async url=>{
+   url=String(url);seen.push(url);
+   if(url.endsWith('/robots.txt'))return response('',url,'text/plain');
+   if(url==='https://publisher.example/story')return response('<p>Harbor Electrical announced an update.</p>'+Array.from({length:8},(_,i)=>`<a href="/leadership/${i}">Staff</a>`).join(''),url,'text/html');
+   return response(person('Robin Hale','President','Harbor Electrical'),url,'text/html');
+  }});
+ const result=await sources.run('web_search',{company:'Harbor Electrical',website:'https://harbor.example'});
+ assert.deepEqual(result.candidates.map(c=>c.name),['Robin Hale']);
+ assert.ok(!seen.some(u=>u.includes('/leadership/')));
+ assert.equal(result.pages_checked,2);
+});
