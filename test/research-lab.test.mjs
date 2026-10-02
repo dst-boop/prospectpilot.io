@@ -297,3 +297,31 @@ test('related lookup distinguishes missing context from a completed search with 
   const missing=await lab.relatedPeople(user,id);assert.equal(missing.status,'missing_context');assert.equal(missing.searched,false);assert.deepEqual(missing.missing_fields,['company','current_title']);
  }finally{await db.close();}
 });
+
+
+test('selected free sources continue when optional search is unavailable or over budget',async()=>{
+ for(const searchQuote of [null,5000]){
+  const calls=[];
+  const sources={readiness:{},quote:source=>source==='web_search'?searchQuote:0,run:async source=>{
+   calls.push(source);
+   assert.equal(source,'public_web','unavailable or unaffordable provider must never run');
+   return {status:'completed',candidates:[{name:'Synthetic Example',company:'Example Manufacturing',current_title:'Director',email:'synthetic@example.com'}]};
+  }};
+  const {db,lab,user}=await fixture({sources});
+  try{
+   const run=await lab.enqueue(user,{employers:['Example Manufacturing'],sources:['web_search','public_web'],daily_budget_micros:0,idempotency_key:'mixed'});
+   for(let i=0;i<4&&await lab.tick();i++) {}
+   assert.deepEqual(calls,['public_web']);
+   const detail=await lab.runDetail(user,run.id);
+   assert.equal(detail.run.status,'completed_with_gaps');
+   const skipped=detail.tasks.find(t=>t.source==='web_search');
+   assert.equal(skipped.status,'skipped');
+   assert.match(skipped.result.errors.join(' '),searchQuote===null ? /not configured/ : /budget reached/);
+   assert.equal(detail.tasks.find(t=>t.source==='public_web').status,'completed');
+   assert.equal((await lab.list(user)).leads.length,1);
+   assert.equal((await db.query('SELECT count(*)::int AS n FROM lab_costs')).rows[0].n,0);
+   assert.equal((await lab.enqueue(user,{employers:['Example Manufacturing'],sources:['web_search','public_web'],daily_budget_micros:0,idempotency_key:'mixed'})).id,run.id);
+   assert.equal(await lab.tick(),false,'replaying does not rerun sources');
+  }finally{await db.close();}
+ }
+});

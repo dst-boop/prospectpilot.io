@@ -470,8 +470,9 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     let employers=[];
     if(kind==='discovery') {
       if(!config.sources.length)throw fail(422,'Select at least one discovery source.');
-      if(config.sources.includes('web_search')&&sources.quote('web_search')==null)throw fail(422,'Licensed web search is not configured. Deselect it to use free sources.');
-      if(config.sources.includes('web_search')&&sources.quote('web_search')>config.daily_budget_micros)throw fail(422,'The daily provider budget cannot cover one search query. Increase the budget or deselect licensed web search.');
+      const freeFallback=config.sources.some(source=>source!=='web_search'&&sources.quote(source)===0);
+      if(!freeFallback&&config.sources.includes('web_search')&&sources.quote('web_search')==null)throw fail(422,'Licensed web search is not configured. Deselect it to use free sources.');
+      if(!freeFallback&&config.sources.includes('web_search')&&sources.quote('web_search')>config.daily_budget_micros)throw fail(422,'The daily provider budget cannot cover one search query. Increase the budget or deselect licensed web search.');
       // A campaign by place finds its own companies in the worker; the plan
       // catalog and saved leads are the fallback only for a campaign without one.
       const plans=config.location?[]:await selectEmployers(pool,config,user.uid);
