@@ -36,6 +36,8 @@
 
 !research-release-gate.mjs
 !review-files.json
+# Read by test/memberships.test.mjs: a worker rebuild must keep the settings the worker reads.
+!setup-research-worker.sh
 
 !pnpm-workspace.yaml
 !build.mjs
