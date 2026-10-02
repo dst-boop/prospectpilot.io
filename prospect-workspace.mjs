@@ -11,6 +11,8 @@ const matchingDomainCheck="(COALESCE(payload->>'email','')<>'' AND payload->'ema
 export function contactIdentities(c){return [c.zoominfo?.contact_id&&`zoominfo:${c.zoominfo.contact_id}`,c.linkedin_url&&`linkedin:${c.linkedin_url}`,c.email&&!sharedMailbox(c.email)&&`email:${c.email}`,c.company&&`person:${nameKey(c.first_name)}|${nameKey(c.last_name)}|${nameKey(c.company)}|${nameKey(normalizeCountry(c.country))}|${nameKey(normalizeState(c.state,c.country))}|${nameKey(c.city)}`].filter(Boolean);}
 export function identityLookupKeys(c){return [...new Set([...contactIdentities(c),...(c.company?countryAliases(c.country).flatMap(country=>stateAliases(c.state,c.country).map(state=>`person:${nameKey(c.first_name)}|${nameKey(c.last_name)}|${nameKey(c.company)}|${nameKey(country)}|${nameKey(state)}|${nameKey(c.city)}`)):[])])];}
 const identities=contactIdentities;
+// Recent routine history is bounded; pending source decisions must survive until reviewed.
+const retainSourceHistory=history=>history.filter((event,index)=>index>=history.length-20||(event.proposed_values&&!event.resolution));
 const editableFields=['first_name','last_name','title','company','company_domain','industry','seniority','city','state','country','email','phone','mobile_phone','linkedin_url'];
 export function searchFilters(input={}) {
  const allowed=['q','title','company','country','state','city','industry','seniority','email_status','has_email','has_phone','list_id','suppressed','source','quality_issue'];
@@ -198,7 +200,7 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
      if(!old.email&&merged.email)merged.email_status='unverified';if(!old.phone&&merged.phone)merged.phone_status='unverified';
      const differing=['title','company','country','state','city','phone','mobile_phone'].filter(key=>old[key]&&contact[key]&&nameKey(old[key])!==nameKey(contact[key]));
      if(differing.length)result.field_reviews++;
-     merged.source_history=[...(old.source_history||[{source:old.source,kind:old.source_kind,imported_at:null,observed_at:old.source_observed_at||null}]),{...evidence,differing_fields:differing,...differing.length?{proposed_values:Object.fromEntries(differing.map(key=>[key,contact[key]]))}:{}}].slice(-20);
+     merged.source_history=retainSourceHistory([...(old.source_history||[{source:old.source,kind:old.source_kind,imported_at:null,observed_at:old.source_observed_at||null}]),{...evidence,differing_fields:differing,...differing.length?{proposed_values:Object.fromEntries(differing.map(key=>[key,contact[key]]))}:{}}]);
      merged.last_seen_at=now;
      merged.field_sources={...(old.field_sources||{})};for(const key of Object.keys(contact))if(!old[key]&&contact[key]&&parsed.mapped_columns.includes(key))merged.field_sources[key]=evidence;
      // Import recency never refreshes the observation date of existing field values.
@@ -255,7 +257,7 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
    if(changes.phone||changes.mobile_phone){next.phone_import={...(old.phone_import||{})};if(changes.phone){next.phone_origin=normalized.phone_origin;if(next.phone_import.direct)next.phone_import.direct={...next.phone_import.direct,status:'reviewed'};}if(changes.mobile_phone&&next.phone_import.mobile)next.phone_import.mobile={...next.phone_import.mobile,status:'reviewed'};}
    if(changes.first_name||changes.last_name){next.email_status=next.email?'unverified':'missing';next.phone_status=next.phone?'unverified':'missing';}
    const history=[...(old.source_history||[])];if(event)history[input.resolve_history_index]={...event,resolution:{decision:input.decision,reviewed_at:evidence.imported_at,reason:evidence.reason}};
-   next.source_history=[...history,evidence].slice(-20);
+   next.source_history=retainSourceHistory([...history,evidence]);
    await c.query('UPDATE prospect_contacts SET payload=$1::jsonb,identity_keys=$2::jsonb,updated_at=now() WHERE id=$3 AND user_id=$4',[JSON.stringify(next),JSON.stringify(identities(next)),id,user.uid]);
    return {id,changed:true};
   });
