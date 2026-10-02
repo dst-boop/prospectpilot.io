@@ -391,3 +391,14 @@ test('related lookup explains missing profile context without claiming a network
  assert.doesNotMatch(c.element('relatedPeople').innerHTML,/No shared employer/);
  assert.equal(c.element('exploreRelated').disabled,false);
 });
+
+
+test('SEP and SIMPLE review controls expose tax treatment and participation date only when relevant',()=>{
+ const c=client();
+ c.element('accountType').value='simple_ira';c.run('specialIraFields()');
+ assert.equal(c.element('specialIraFields').hidden,false);assert.equal(c.element('simpleDateField').hidden,false);
+ c.element('accountType').value='sep_ira';c.run('specialIraFields()');
+ assert.equal(c.element('specialIraFields').hidden,false);assert.equal(c.element('simpleDateField').hidden,true);
+ c.element('accountType').value='401k';c.run('specialIraFields()');
+ assert.equal(c.element('specialIraFields').hidden,true);
+});

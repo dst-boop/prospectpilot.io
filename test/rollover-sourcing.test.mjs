@@ -73,3 +73,13 @@ test('daily financial confirmation uses the app account, consent and eligibility
   assert.notEqual(assess([money({account_type,route:'trustee_transfer',destination_type:destination_type==='roth_ira'?'traditional_ira':'roth_ira'})]).status,'confirmed_target');
  }
 });
+
+
+test('daily SEP and SIMPLE use the shared traditional transfer checks',()=>{
+ const sep={account_type:'sep_ira',route:'trustee_transfer',destination_type:'traditional_ira',tax_treatment:'traditional'};
+ assert.equal(assess([money(sep)]).status,'confirmed_target');
+ const simple={...sep,account_type:'simple_ira',first_contribution_on:'2024-09-30'};
+ assert.equal(assess([money(simple)]).status,'confirmed_target');
+ assert.notEqual(assess([money({...simple,first_contribution_on:'2024-10-01'})]).status,'confirmed_target');
+ assert.notEqual(assess([money({...simple,observed_at:'2026-09-29'})]).status,'confirmed_target');
+});

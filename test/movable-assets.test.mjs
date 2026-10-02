@@ -86,10 +86,11 @@ test('saved rollover target is consistent across reviews, worklist, filters and 
     const combinedIdentity=(await lab.detail(user,combinedId)).quality.identity_signature;
     for(const row of [review('residence',{country:'US',scope:'residence'}),review('contact',{channel:'email',address:'combined@example.com',identity_confirmed:true})]) await lab.review(user,combinedId,{...row,identity_signature:combinedIdentity});
     assert.equal((await lab.advisor.detail(user,combinedId)).action.field,'movable_assets','next prospect chooses combined financial review');
-    await lab.review(user,combinedId,{...review('movable_assets',amount),identity_signature:combinedIdentity});
+    await lab.review(user,combinedId,{...review('movable_assets',{...amount,account_type:'simple_ira',route:'trustee_transfer',destination_type:'traditional_ira',tax_treatment:'traditional',first_contribution_on:'2024-10-02'}),identity_signature:combinedIdentity});
     const combined=await lab.detail(user,combinedId);
     assert.equal(combined.quality.status,'verified');
     assert.equal(combined.quality.gates.retirement.evidence.field,'movable_assets');
+    assert.equal(combined.quality.gates.movable_assets.evidence.value.first_contribution_on,'2024-10-02');
     assert.equal((await lab.advisor.detail(user,combinedId)).action.bucket,'ready');
     const observations=(await db.query('SELECT field FROM lab_observations WHERE lead_id=$1',[combinedId])).rows;
     assert.equal(observations.filter(o=>o.field==='retirement').length,0,'no duplicated or fabricated observation stored');
@@ -118,4 +119,18 @@ test('one complete amount review supplies transfer evidence only without a separ
   assert.notEqual(assess([...context,disclosed,review('retirement',{...transfer,account_type:'403b'})]).status,'verified');
   assert.notEqual(assessLead(lead,[...context,disclosed],{now}).gates.retirement.state,'confirmed','legacy criteria unchanged');
   assert.equal(assessLead({...lead,suppressed:true},[...context,disclosed],{now,target:'rollover_100k'}).status,'excluded');
+});
+
+
+test('traditional SEP and SIMPLE transfers require explicit tax treatment and dated eligibility',()=>{
+ const ira={...amount,route:'trustee_transfer',destination_type:'traditional_ira',tax_treatment:'traditional'};
+ assert.equal(review('movable_assets',{...ira,account_type:'sep_ira'}).value.tax_treatment,'traditional');
+ for(const tax_treatment of [undefined,'','roth'])assert.throws(()=>review('movable_assets',{...ira,account_type:'sep_ira',tax_treatment}));
+ const simple={...ira,account_type:'simple_ira',first_contribution_on:'2024-10-02'};
+ assert.equal(review('movable_assets',simple).value.first_contribution_on,'2024-10-02');
+ for(const change of [{first_contribution_on:'2024-10-03'},{first_contribution_on:'2024-02-30'},{first_contribution_on:''},{first_contribution_on:'2027-01-01'},{tax_treatment:'roth'},{destination_type:'roth_ira'}])assert.throws(()=>review('movable_assets',{...simple,...change}));
+ assert.throws(()=>validateObservation({...review('movable_assets',simple),observed_at:'2026-10-01'},{userId:'owner',identity:leadIdentity(lead),now}),'eligibility is checked at observation, not the later review day');
+ const context=base().filter(o=>o.field!=='retirement');
+ assert.equal(assess([...context,review('movable_assets',simple)]).status,'verified');
+ assert.notEqual(assess([...context,review('retirement',simple),review('movable_assets',{...simple,first_contribution_on:'2024-09-01'})]).status,'verified','different participation facts require reconciliation');
 });
