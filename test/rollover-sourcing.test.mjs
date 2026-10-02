@@ -39,3 +39,25 @@ test('a scoop cannot be attached to a different provider ID through a matching n
  const [c]=candidatesFromSearch({meta:{tier:'A'},response:{data:[{id:'102',attributes:{firstName:'Alex',lastName:'Example'}}]}},new Map([['101',signal]]),new Map([['alex|example',signal]]));
  assert.notEqual(c.tier,'A');assert.notEqual(c.signal.why,signal.why);
 });
+
+
+test('equal balances cannot hide conflicting account, route or eligibility evidence',()=>{
+ for(const change of [{account_type:'403b'},{route:'trustee_transfer'},{destination_type:'roth_ira'},{assets_retained:false},{eligibility_confirmed:false}]){
+  for(const rows of [[money(),money(change)],[money(change),money()]]){
+   const result=assess(rows);
+   assert.equal(result.financial_status,'conflict',JSON.stringify(change));
+   assert.notEqual(result.status,'confirmed_target');
+   assert.ok(!result.signals.some(s=>s.kind==='confirmed_assets'));
+  }
+ }
+ assert.equal(assess([money(),money({source_ref:'https://example.com/second'})]).financial_status,'confirmed_100k_plus','corroborating equivalent disclosures are not conflicts');
+});
+
+test('daily financial evidence expires after the same 180-day window as app qualification',()=>{
+ const date=days=>new Date(Date.parse(today)-days*86400000).toISOString();
+ assert.equal(assess([money({observed_at:date(180)})]).status,'confirmed_target');
+ assert.notEqual(assess([money({observed_at:date(181)})]).status,'confirmed_target');
+ assert.equal(assess([money(),money({conflict:true,observed_at:date(181)})]).status,'confirmed_target','expired conflicts have the same freshness window');
+ assert.equal(assess([money(),money({account_type:'403b',observed_at:date(181)})]).status,'confirmed_target');
+ assert.equal(assess([ev('job_change',{observed_at:date(181)})]).status,'research_candidate','career context retains its separate window');
+});
