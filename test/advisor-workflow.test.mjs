@@ -309,3 +309,19 @@ test('suppression linking refuses weak, conflicting, ambiguous and other-owner m
   const retry=await lab.importContacts(user,{ids:['exact']});assert.equal(retry.replayed,true);assert.equal(retry.restriction_links,1);
  }finally{await db.close();}
 });
+
+
+test('unresolved identity pauses drafts, follow-up suggestions and contact logging until resolved',async()=>{
+ const {db,lab,user,id}=await fixture();try{
+  await reviewBasics(lab,user,id);
+  assert.ok((await lab.advisor.detail(user,id)).draft);
+  await db.query("UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{identity_status}','\"review\"')::text WHERE id=$1",[id]);
+  let d=await lab.advisor.detail(user,id);
+  assert.equal(d.action.label,'Resolve identity');assert.equal(d.action.contact,null);
+  assert.equal(d.cadence.status,'blocked');assert.equal(d.draft,null);assert.equal(d.schedules,null);
+  for(const direction of ['outbound','inbound']) await assert.rejects(lab.advisor.save(user,id,{outcome:'connected',direction,channel:'email',signature:d.action.signature,idempotency_key:'pending-'+direction}),/identity/);
+  assert.equal((await db.query('SELECT * FROM advisor_activities WHERE lead_id=$1',[id])).rows.length,0);
+  await db.query("UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{identity_status}','\"matched\"')::text WHERE id=$1",[id]);
+  d=await lab.advisor.detail(user,id);assert.ok(d.draft);assert.notEqual(d.cadence.status,'blocked');
+ }finally{await db.close();}
+});
