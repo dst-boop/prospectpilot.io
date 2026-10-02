@@ -18,7 +18,7 @@ const parse=v=>typeof v==='string'?JSON.parse(v):v;
 // is identical, so both are named here rather than checked one at a time.
 const TERMINAL_BUCKETS=new Set(['closed','clients']);
 const fail=(status,message)=>Object.assign(Error(message),{status});
-const fields={age:'Confirm current age',residence:'Confirm US residence',contact:'Verify contact ownership',retirement:'Ask about retained retirement assets and transfer eligibility',net_worth:'Obtain an authorized financial disclosure'};
+const fields={age:'Confirm current age',residence:'Confirm US residence',contact:'Verify contact ownership',retirement:'Ask about retained retirement assets and transfer eligibility',net_worth:'Obtain an authorized financial disclosure',movable_assets:'Confirm at least $100,000 in retained assets eligible to move'};
 const outcomes={no_answer:'Contacted',connected:'Contacted',follow_up:'Follow-up',meeting_booked:'Meeting Set',
   // A booked meeting is an intention. Whether it happened is a separate fact,
   // and without it a show rate cannot be reported at all.
@@ -70,12 +70,12 @@ export function nextAction(lead,quality,now=new Date(),cadence=null) {
       reason:cadence.step.hold||cadence.reason};
   if(validDue&&due<=now)return {...base,cadence,bucket:'due',rank:0,label:'Follow-up due',reason:contact?'Review the last conversation and use the agreed contact route.':'A follow-up is due; verify a contact route before using it.'};
   if(validDue)return {...base,cadence,bucket:'scheduled',rank:70,label:'Follow-up scheduled',reason:'This person returns to your due list at the saved time.'};
-  if(contact&&quality.gates.age.state==='confirmed'&&quality.gates.residence.state==='confirmed')return {...base,cadence,bucket:'ready',rank:quality.status==='verified'?10:20,label:quality.status==='verified'?'Prepare an introductory conversation':'Confirm the remaining fit criteria',reason:quality.status==='verified'?'All five criteria have current reviewed evidence.':quality.gaps.map(g=>fields[g]).join('; ')+'.'};
+  if(contact&&(quality.target==='rollover_100k'||quality.gates.age.state==='confirmed')&&quality.gates.residence.state==='confirmed')return {...base,cadence,bucket:'ready',rank:quality.status==='verified'?10:20,field:quality.gaps[0],label:quality.status==='verified'?'Prepare an introductory conversation':'Confirm the remaining fit criteria',reason:quality.status==='verified'?'All required criteria have current reviewed evidence.':quality.gaps.map(g=>fields[g]).join('; ')+'.'};
   const gap=quality.gaps.includes('contact')?'contact':quality.gaps.find(g=>['age','residence'].includes(g))||quality.gaps[0];
   return {...base,cadence,bucket:gap==='contact'&&quality.gates.contact.state==='unknown'?'enrich':'review',rank:30+(100-quality.score)/10,label:fields[gap]||'Review this prospect',reason:quality.gates[gap]?.reason||'Review the saved evidence.',field:gap};
 }
 
-export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visibleSQL,now=()=>new Date()}) {
+export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visibleSQL,now=()=>new Date(),targetFor=async()=> 'legacy'}) {
   // The advisor's own details, so a drafted message signs itself rather than
   // leaving the advisor to paste their name into every touch.
   async function profile(user) {
@@ -167,7 +167,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
   async function detail(user,id) {
     const {lead}=await accessible(user,id);
     const rows=(await pool.query('SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows;
-    const quality=assessLead(lead,rows.map(r=>parse(r.payload)),{now:now()});
+    const quality=assessLead(lead,rows.map(r=>parse(r.payload)),{now:now(),target:await targetFor(user)});
     const cadence=await cadenceFor(user,id,lead,quality,pool,await dialsToday(user));
     const action=nextAction(lead,quality,now(),cadence);
     return {action,cadence,
@@ -210,7 +210,8 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const weights=(await pool.query('SELECT configuration FROM lab_settings WHERE user_id=$1',[user.uid])).rows[0]?.configuration?.score_weights;
     // Directory restrictions are applied before anything is assessed or paced,
     // so a phone that became do-not-call in the directory is refused here too.
-    const all=rows.map(r=>{const lead=withDirectoryRestrictions({...parse(r.payload),id:r.id},r.linked_contacts),quality=assessLead(lead,observations.get(r.id)||[],{now:now()});
+    const target=await targetFor(user);
+    const all=rows.map(r=>{const lead=withDirectoryRestrictions({...parse(r.payload),id:r.id},r.linked_contacts),quality=assessLead(lead,observations.get(r.id)||[],{now:now(),target});
       const cadence=cadenceState({activities:history.get(r.id)||[],lead,quality,rest:resting.get(r.id)||null,now:now(),dials});
       const s=leadScores(lead,quality,{now:now(),weights});
       const scores={priority:s.priority,qualification:s.qualification.score,opportunity:s.opportunity.score,confidence:s.confidence.score,contactability:s.contactability.score};
@@ -250,7 +251,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
 
       // Pacing is checked against the record as it stands, before this touch is
       // written, so a refusal reaches the advisor while it can still matter.
-      const quality=assessLead(lead,(await client.query('SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows.map(r=>parse(r.payload)),{now:at});
+      const quality=assessLead(lead,(await client.query('SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows.map(r=>parse(r.payload)),{now:at,target:await targetFor(user,client)});
       const before=await cadenceFor(user,id,lead,quality,client,null,at);
       // Attendance is an outcome of something. Without this, Meeting held on an
       // untouched prospect would mark them Met, restart their touch budget and

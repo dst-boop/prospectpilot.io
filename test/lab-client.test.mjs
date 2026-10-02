@@ -24,6 +24,27 @@ const lead=name=>({lead:{id:name,first_name:name,last_name:'Example',evidence:[]
 const run=name=>({run:{status:name,created_at:'2026-09-10'},tasks:[],costs:[]});
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 
+test('changing qualification target preserves saved budgets and closes stale evidence',async()=>{
+  const c=client();c.element('qualificationTarget').value='rollover_100k';c.element('detail').open=true;
+  const save=c.element('saveTarget').onclick();
+  assert.equal(c.pending[0].url,'/api/lab/settings');
+  const saved={daily_enabled:true,daily_hour:16,daily_budget_micros:12000000,configuration:{daily_budget_micros:12000000,sources:['sec'],qualification_target:'legacy',score_weights:{qualification:7}}};
+  c.pending.shift().respond(saved);await settle();
+  const payload=JSON.parse(c.pending[0].options.body);
+  assert.deepEqual(payload,{...saved,configuration:{...saved.configuration,qualification_target:'rollover_100k'}});
+  c.pending.shift().respond(payload);await save;
+  assert.match(c.element('qualificationTargetStatus').textContent,/Active: \$100,000/);
+  assert.equal(c.element('detail').open,false);assert.equal(c.element('saveTarget').disabled,false);
+});
+
+test('movable amount review shares account evidence fields without showing legacy net-worth fields',()=>{
+  const c=client();c.element('reviewField').value='movable_assets';c.element('verdict').value='confirmed';c.run('reviewFields()');
+  assert.equal(c.element('retirementFields').hidden,false);assert.equal(c.element('movable_assetsFields').hidden,false);
+  assert.equal(c.element('net_worthFields').hidden,true);assert.equal(c.element('ageFields').hidden,true);
+  c.element('verdict').value='unknown';c.run('reviewFields()');
+  assert.equal(c.element('retirementFields').hidden,true);assert.equal(c.element('movable_assetsFields').hidden,true);
+});
+
 test('LinkedIn shortcut requires a reviewed profile and a ready touch',()=>{
   const c=client();
   c.run("currentWorkflow={draft:{channel:'linkedin'},cadence:{step:{ready:true}},action:{contact:{channel:'linkedin',address:'https://www.linkedin.com/in/synthetic-person?tracking=1'}}}");
