@@ -68,3 +68,24 @@ test('fractional ages are kept, so 59.5 lands past 59½',()=>{
   assert.equal(estimateAgeBand({...lead,estimated_age_range:'59'},{now}).band,'55_59');
   assert.equal(estimateAgeBand({...lead,estimated_age_range:'59.5'},{now}).class_year,'1988–1989');
 });
+
+
+test('blank and nonnumeric experience never invent an age or alumni cohort',()=>{
+ for(const value of [undefined,null,'',' ',false,true,[],[30],{},'unknown',NaN,Infinity]){
+  const record={...lead,years_of_experience:value,years_at_company:value,years_in_current_role:value};
+  const result=estimateAgeBand(record,{now});
+  assert.equal(result.status,'unknown',String(value));
+  assert.deepEqual(result.basis,[]);
+  assert.equal(result.class_year,null);
+  assert.equal(result.alumni_window,'unknown');
+  assert.equal(assessLead(record,[],{now}).gates.age.state,'unknown');
+ }
+ for(const value of [0,'0',30,'30']){
+  const result=estimateAgeBand({...lead,years_of_experience:value},{now});
+  assert.equal(result.status,'rough_estimate');
+  assert.equal(result.min,Number(value)+20);
+ }
+ const graduation=estimateAgeBand({...lead,graduation_year:1987,years_of_experience:null},{now});
+ assert.equal(graduation.status,'rough_estimate');
+ assert.deepEqual(graduation.basis,['Graduation year 1987'],'missing experience cannot conflict with real evidence');
+});

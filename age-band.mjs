@@ -9,7 +9,7 @@
 
 const text = v => String(v ?? '').trim();
 const year = (v, now) => { const n = Number(String(v ?? '').match(/\b(19|20)\d{2}\b/)?.[0]); return n >= 1930 && n <= now ? n : null; };
-const span = (v, max = 70) => { const n = Number(v); return Number.isFinite(n) && n >= 0 && n <= max ? n : null; };
+const span = (v, max = 70) => { if (!['string','number'].includes(typeof v) || text(v) === '') return null; const n = Number(v); return Number.isFinite(n) && n >= 0 && n <= max ? n : null; };
 
 // Bands follow rollover rules rather than round decades: 59½ is when money can
 // usually move without a job change, 73 is when required distributions start.
