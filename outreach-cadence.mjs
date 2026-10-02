@@ -249,6 +249,9 @@ export function cadenceState({activities = [], lead = {}, quality = null, rest =
   if (restricted) return {...base, status: 'blocked', allowed: false,
     reason: quality?.gates?.contact?.reason || 'This record carries a contact restriction.'};
 
+  if (quality?.status === 'identity_review' || lead.identity_status === 'review') return {...base, status:'blocked', allowed:false,
+    reason:'Resolve this person’s identity before preparing or recording contact.'};
+
   const resume = rest ? time(rest.resume_at) : null;
   if (resume && resume > now) return {...base, status: 'resting', allowed: false, resume_at: resume.toISOString(),
     reason: `${String(rest.reason || 'A rest period is running').replace(/\.*$/, '')}. This person returns to the worklist on ${resume.toISOString().slice(0, 10)}.`};
