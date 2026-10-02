@@ -42,3 +42,5 @@ financial suitability, send outreach, or change spending limits.
 ### Duplicate enrichment responses
 
 Daily sourcing combines enrichment files by provider person ID. Empty responses do not erase prior values, and any recorded do-not-call flag remains active. Conflicting fields are withheld from CSV output and named in the review note; first/last-name conflicts withhold all contact channels. The in-memory result retains each field observation with its input file and row reference. Original scratch files remain the source of evidence; this does not change saved contact records, automatically re-run enrichment, resolve conflicts, or reset suppression.
+
+Restrictions are also combined before daily search deduplication, including from rows excluded in another lane. A later selected duplicate cannot clear a known restriction. Ranking awards freshness only to valid past/current dates. Contact details are described as available, never as permission to call.

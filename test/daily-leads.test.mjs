@@ -6,7 +6,7 @@ import {readFileSync,mkdtempSync,writeFileSync,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
-import {deepParse,select,finalize,toCSV,digest,readLedger,appendLedger,enrichmentRecords,tenureAt,seniority,csvCell} from '../scripts/daily-leads/engine.mjs';
+import {deepParse,select,finalize,toCSV,digest,readLedger,appendLedger,enrichmentRecords,tenureAt,seniority,csvCell,scoreParts} from '../scripts/daily-leads/engine.mjs';
 import {createProspectWorkspace} from '../prospect-workspace.mjs';
 
 // Every name here is fictional. Real lead data never enters this repository.
@@ -88,7 +88,32 @@ test('the CSV cannot carry formulas, and the digest carries no phone or email',(
   assert.match(csv,/"'=cmd\|x"/);
   const mail=digest(leads,{today,counts:{found:1,already_delivered:0,excluded:0,employers:1},goal:50,links:{csv:'https://drive.example/csv',app:'https://prospectpilot.io/prospect'}});
   assert.doesNotMatch(mail.html+mail.text,/2125550100|a@b\.example/);
-  assert.match(mail.subject,/1 rollover prospects \(1 ready to call\)/);assert.match(mail.summary,/^Short day: only 1 new prospects/);assert.match(mail.html,/not verified balances/);
+  assert.match(mail.subject,/1 rollover prospects \(1 with contact details\)/);assert.match(mail.summary,/^Short day: only 1 new prospects/);assert.match(mail.html,/not verified balances/);
+});
+
+test('search duplicates retain restrictions from excluded rows in either file order',()=>{
+  const good=search('B','Example Robotics',[person(101,'Avery','Sample','Director','Delta Systems')]);
+  const blocked=search('B','Example Robotics',[person(101,'Avery','Sample','Director','Delta Systems',{mobilePhoneDoNotCall:true,directPhoneDoNotCall:true,hasEmail:false})]);
+  const unrelated=search('B','Example Robotics',[person(102,'Avery','Sample','Director','Delta Systems')]);
+  for(const files of [[good,blocked,unrelated],[blocked,unrelated,good]]){
+    const {selected}=select(files,{config,today});
+    const lead=selected.find(c=>c.person_id==='101');
+    assert.equal(lead.mobile_dnc,true);assert.equal(lead.direct_dnc,true);assert.equal(lead.parts.callable,0);
+    assert.equal(selected.find(c=>c.person_id==='102').mobile_dnc,false,'names do not join restrictions');
+    const [enriched]=finalize([lead],enrichmentRecords({id:101,email:'avery@example.com',mobilePhone:'2125550100',mobilePhoneDoNotCall:false}),{today});
+    assert.equal(enriched.mobile_dnc,true);
+    assert.doesNotMatch(digest([enriched],{today,counts:{},goal:1}).subject,/ready to call/);
+  }
+});
+
+test('future or invalid dates do not earn freshness points and missing mobile does not earn availability points',()=>{
+  const candidate={tier:'B',title:'Director',accuracy:90,has_mobile:true,signal:{date:'2026-09-27'},updated:'2026-09-27'};
+  const fresh=scoreParts(candidate,today);
+  for(const date of ['2026-09-29','not-a-date','']){
+    const bad=scoreParts({...candidate,signal:{date},updated:date},today);
+    assert.equal(bad.trigger,fresh.trigger-10);assert.equal(bad.data,fresh.data-5);
+  }
+  assert.equal(scoreParts({...candidate,has_mobile:false},today).callable,0);
 });
 
 test('duplicate enrichment keeps restrictions and withholds conflicting contact fields across files',()=>{
@@ -167,7 +192,7 @@ test('the delivery imports into Contacts and drives the daily review to the goal
     assert.deepEqual(review.counts,{total:3,pending:3,kept:0,passed:0,quality:0,kept_missing_contact:0});
     const avery=review.items.find(i=>i.first_name==='Avery');
     assert.equal(review.items[0].first_name,'Avery','delivered rank order');
-    assert.equal(avery.signal.type,'Left company','the event itself, not the tier');assert.match(avery.signal.basis,/^Trigger \d+\/50 · Seniority 25\/25 · Data \d+\/20 · Callable 5\/5$/);assert.equal(avery.signal.credits,1);
+    assert.equal(avery.signal.type,'Left company','the event itself, not the tier');assert.match(avery.signal.basis,/^Trigger \d+\/50 · Seniority 25\/25 · Data \d+\/20 · Mobile on file 5\/5$/);assert.equal(avery.signal.credits,1);
     assert.equal(review.items.find(i=>i.first_name==='Blair').signal.credits,0);assert.equal(avery.signal.url,'https://news.example.com/avery');assert.match(avery.signal.linkedin_search,/linkedin\.com\/search/);
     assert.equal(avery.mobile_phone,'+12125550100');assert.equal(avery.mobile_do_not_call,true);assert.equal(avery.linkedin_url,'https://www.linkedin.com/in/avery-sample');
     assert.equal(review.items.find(i=>i.first_name==='Casey').zoominfo_id,'-3','negative ZoomInfo IDs survive');

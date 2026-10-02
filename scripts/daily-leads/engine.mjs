@@ -138,18 +138,19 @@ export function candidatesFromSearch(file, scoops = new Map(), scoopNames = new 
 // freshness) and whether the mobile can be called. Only the sort adds them.
 export function scoreParts(candidate, today) {
   const age = candidate.signal?.date ? daysBetween(candidate.signal.date, today) : Infinity;
+  const updatedAge = candidate.updated ? daysBetween(candidate.updated, today) : Infinity;
   return {
-    trigger: TIERS[candidate.tier].weight + (age <= 7 ? 10 : age <= 30 ? 5 : 0),
+    trigger: TIERS[candidate.tier].weight + (age >= 0 && age <= 7 ? 10 : age >= 0 && age <= 30 ? 5 : 0),
     seniority: seniority(candidate.title).rank,
-    data: Math.round(Math.max(0, Math.min(15, ((candidate.accuracy || 70) - 70) / 29 * 15)) + (candidate.updated && daysBetween(candidate.updated, today) <= 60 ? 5 : 0)),
-    callable: candidate.mobile_dnc ? 0 : 5,
+    data: Math.round(Math.max(0, Math.min(15, ((candidate.accuracy || 70) - 70) / 29 * 15)) + (updatedAge >= 0 && updatedAge <= 60 ? 5 : 0)),
+    callable: candidate.has_mobile && !candidate.mobile_dnc ? 5 : 0,
   };
 }
 export function score(candidate, today) {
   const parts = scoreParts(candidate, today);
   return parts.trigger + parts.seniority + parts.data + parts.callable;
 }
-export const rankBasis = parts => `Trigger ${parts.trigger}/50 · Seniority ${parts.seniority}/25 · Data ${parts.data}/20 · Callable ${parts.callable}/5${parts.rollover?` · Rollover evidence ${parts.rollover}/100`:""}`;
+export const rankBasis = parts => `Trigger ${parts.trigger}/50 · Seniority ${parts.seniority}/25 · Data ${parts.data}/20 · Mobile on file ${parts.callable}/5${parts.rollover?` · Rollover evidence ${parts.rollover}/100`:""}`;
 
 // ZoomInfo matches company names loosely, so a search for Cisco also returns
 // Cisco Brewers. Long tenure only counts at the employer itself: the company
@@ -170,9 +171,18 @@ export function select(files, {config, ledger = new Set(), today, target = confi
   const seen = new Map(), excluded = [], counts = {found: 0, already_delivered: 0, excluded: 0, duplicate: 0};
   const evidenceById=new Map();
   for(const f of files.filter(f=>f?.meta?.kind==='rollover_evidence')) for(const e of Array.isArray(f.evidence)?f.evidence:[]){const id=personId(e.person_id);if(id)evidenceById.set(id,[...(evidenceById.get(id)||[]),e]);}
-  for (const f of files.filter(f => !['scoops','rollover_evidence'].includes(f?.meta?.kind))) {
-    const found = candidatesFromSearch(f, scoops, scoopNames), employerId = f.meta?.tier === 'C' ? sameEmployerId(found, f.meta.employer) : null;
+  const searches = files.filter(f => !['scoops','rollover_evidence'].includes(f?.meta?.kind)).map(f => ({file:f, found:candidatesFromSearch(f, scoops, scoopNames)}));
+  // Preserve restrictions even from a duplicate that loses ranking or is
+  // excluded from this search lane. Provider ID, never name, joins the flags.
+  const restrictions = new Map();
+  for (const {found} of searches) for (const c of found) {
+    const prior = restrictions.get(c.person_id);
+    restrictions.set(c.person_id, {mobile_dnc: c.mobile_dnc || prior?.mobile_dnc || false, direct_dnc: c.direct_dnc || prior?.direct_dnc || false});
+  }
+  for (const {file:f, found} of searches) {
+    const employerId = f.meta?.tier === 'C' ? sameEmployerId(found, f.meta.employer) : null;
     for (const c of found) {
+      Object.assign(c, restrictions.get(c.person_id));
       counts.found++;
       if (ledger.has(c.person_id)) { counts.already_delivered++; continue; }
       const reason = f.meta?.tier === 'A' && c.tier !== 'A' ? 'Departure identity requires review' : f.meta?.tier === 'C' && c.company_id !== employerId ? 'Different company with a similar name' : exclusion(c, config);
@@ -369,5 +379,5 @@ export function digest(leads, {today, counts, links = {}, goal}) {
 ${Object.keys(TIERS).map(t => section(t, byTier(t))).join('')}
 <p style="color:#51607a;font-size:12px;margin-top:20px">Likely rollovers, not verified balances: confirm the account and amount in conversation. Nothing has been sent to anyone. Check do-not-call before phoning; mobile numbers carry stricter calling rules. Outreach templates need Equitable approval.</p></div>`;
   const plain = [summary, '', ...leads.map(l => `${l.rank}. ${l.first_name} ${l.last_name} — ${l.title}, ${l.company}. ${l.why_now}`)].join('\n');
-  return {subject: `Daily leads ${today}: ${leads.length} rollover prospects (${ready} ready to call)`, html, text: plain, summary};
+  return {subject: `Daily leads ${today}: ${leads.length} rollover prospects (${ready} with contact details)`, html, text: plain, summary};
 }
