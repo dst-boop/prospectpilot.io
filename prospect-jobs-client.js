@@ -19,7 +19,7 @@ export function billingContent(state){
  const money=v=>(Number(v)/1000000).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2});
  const m=state.membership,paying=m&&['active','trialing'].includes(m.status);
  const statusLine=!m?'<p>You have not chosen a plan yet.</p>':
-  `<p>Your plan: <strong>${esc(m.plan_name||m.plan)}</strong>${m.status?` · ${esc(m.status==='trialing'?'trial':m.status.replaceAll('_',' '))}`:''}${m.current_period_end&&paying?` · renews ${esc(m.current_period_end.slice(0,10))}`:''}.</p>`+
+  `<p>Your plan: <strong>${esc(m.plan_name||m.plan)}</strong>${m.status?` · ${esc(m.status==='trialing'?'trial':m.status.replaceAll('_',' '))}`:''}${paying&&m.cancels_at?` · ends ${esc(m.cancels_at.slice(0,10))} (cancellation scheduled)`:m.current_period_end&&paying?` · renews ${esc(m.current_period_end.slice(0,10))}`:''}.</p>`+
   (m.status&&!paying?'<p role="status"><strong>Paid lookups are paused until the subscription is paid up.</strong> Update your card or plan under Manage billing.</p>':'');
  const choose=!paying&&state.plans.some(p=>p.purchasable)?'<h3>Choose a plan</h3><ul class="plan-list">'+state.plans.filter(p=>p.purchasable).map(p=>`<li><strong>${esc(p.name)}</strong> — includes ${money(p.monthly_allowance_micros)} of paid lookups a month <button type="button" class="secondary" data-billing-plan="${esc(p.id)}">Choose ${esc(p.name)}</button></li>`).join('')+'</ul><p class="muted">You pay on Stripe’s secure page. Unused allowance does not carry over.</p>':'';
  const manage=m?.manageable?'<p><button type="button" id="billingPortal">Manage billing</button> <span class="muted">Change plan, update your card, see invoices or cancel.</span></p>':'';

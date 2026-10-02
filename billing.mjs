@@ -12,6 +12,8 @@ const fail=(status,message)=>Object.assign(Error(message),{status});
 // Subscription states that keep paid lookups available. Anything else
 // (past_due, unpaid, canceled, incomplete, paused) allows nothing until paid.
 export const PAYING_STATUSES=['active','trialing'];
+// Subscription states that are over; a new Checkout is allowed after these.
+const ENDED=['canceled','incomplete_expired'];
 const SIGNATURE_TOLERANCE_SECONDS=300;
 
 export function readBilling(env=process.env){
@@ -32,7 +34,8 @@ export function formEncode(params,prefix='',out=new URLSearchParams()){
  return out;
 }
 
-export function createStripeClient({secretKey,fetch=globalThis.fetch,timeoutMs=15000}){
+// Kept under the database's 15 s idle-in-transaction limit: Checkout calls Stripe inside a transaction.
+export function createStripeClient({secretKey,fetch=globalThis.fetch,timeoutMs=10000}){
  async function call(method,path,params){
   const response=await fetch('https://api.stripe.com/v1/'+path,{method,headers:{Authorization:'Bearer '+secretKey,...(params?{'Content-Type':'application/x-www-form-urlencoded'}:{})},body:params?formEncode(params).toString():undefined,signal:AbortSignal.timeout(timeoutMs)});
   let body;try{body=await response.json();}catch{body={};}
@@ -64,26 +67,46 @@ export function createBilling({pool,stripe,config,webhookSecret,logger=console})
   const row=await membershipRow(pool,user.uid);
   return {
    enabled:!!stripe,
-   membership:row?{plan:row.plan,plan_name:plans[row.plan]?.name||null,status:row.status||null,current_period_end:row.current_period_end?new Date(row.current_period_end).toISOString():null,manageable:!!row.stripe_customer_id}:null,
+   membership:row?{plan:row.plan,plan_name:plans[row.plan]?.name||null,status:row.status||null,current_period_end:row.current_period_end?new Date(row.current_period_end).toISOString():null,cancels_at:row.cancels_at?new Date(row.cancels_at).toISOString():null,manageable:!!row.stripe_customer_id}:null,
    plans:Object.entries(plans).map(([id,p])=>({id,name:p.name,monthly_allowance_micros:p.monthly_allowance_micros,purchasable:!!(stripe&&p.stripe_price_id)})),
   };
  }
 
  async function checkout(user,input,origin){
   if(!stripe)throw fail(503,'Billing is not set up on this server yet.');
-  const plan=plans[input?.plan];
+  const planId=input?.plan,plan=plans[planId];
   if(!plan?.stripe_price_id)throw fail(422,'Choose a plan that is available to buy.');
-  const row=await membershipRow(pool,user.uid);
-  // Plan changes and cancellation go through the portal, so nobody ends up paying twice.
-  if(row?.stripe_subscription_id&&row.status&&!['canceled','incomplete_expired'].includes(row.status))throw fail(409,'You already have a subscription. Use Manage billing to change plans.');
-  const session=await stripe.post('checkout/sessions',{
-   mode:'subscription',line_items:[{price:plan.stripe_price_id,quantity:1}],
-   client_reference_id:user.uid,metadata:{uid:user.uid},subscription_data:{metadata:{uid:user.uid}},
-   ...(row?.stripe_customer_id?{customer:row.stripe_customer_id}:{customer_email:user.email}),
-   success_url:origin+'/prospect?billing=success',cancel_url:origin+'/prospect?billing=cancelled',
+  // Serialised per advisor, and at most one open Checkout each: a second tab
+  // or a double click reuses it, so nobody can start two subscriptions.
+  return tx(pool,async c=>{
+   // Up to three Stripe calls run back to back here; allow them past the pool's 15 s idle limit.
+   await c.query("SET LOCAL idle_in_transaction_session_timeout='60s'");
+   try{await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',['checkout:'+user.uid]);}
+   catch(e){if(e.code==='55P03')throw fail(409,'Your checkout is already being prepared in another tab. Try again in a moment.');throw e;}
+   const row=await membershipRow(c,user.uid);
+   // Plan changes and cancellation go through the portal, so nobody ends up paying twice.
+   if(row?.stripe_subscription_id&&row.status&&!ENDED.includes(row.status))throw fail(409,'You already have a subscription. Use Manage billing to change plans.');
+   const pending=(await c.query("SELECT * FROM billing_checkouts WHERE user_id=$1 AND expires_at>now()+interval '1 minute'",[user.uid])).rows[0];
+   if(pending){
+    const open=await stripe.get('checkout/sessions/'+encodeURIComponent(pending.session_id));
+    if(open.status==='complete')throw fail(409,'Your payment went through and your plan is being activated. Refresh in a minute.');
+    if(open.status==='open'){
+     if(pending.plan===planId)return {url:pending.url};
+     await stripe.post('checkout/sessions/'+encodeURIComponent(pending.session_id)+'/expire',{});
+    }
+   }
+   const expires=Math.floor(Date.now()/1000)+3600;
+   const session=await stripe.post('checkout/sessions',{
+    mode:'subscription',line_items:[{price:plan.stripe_price_id,quantity:1}],expires_at:expires,
+    client_reference_id:user.uid,metadata:{uid:user.uid},subscription_data:{metadata:{uid:user.uid}},
+    ...(row?.stripe_customer_id?{customer:row.stripe_customer_id}:{customer_email:user.email}),
+    success_url:origin+'/prospect?billing=success',cancel_url:origin+'/prospect?billing=cancelled',
+   });
+   if(typeof session.id!=='string'||typeof session.url!=='string'||!session.url.startsWith('https://'))throw fail(502,'Stripe did not return a checkout page.');
+   await c.query(`INSERT INTO billing_checkouts(user_id,session_id,plan,url,expires_at) VALUES($1,$2,$3,$4,to_timestamp($5))
+    ON CONFLICT(user_id) DO UPDATE SET session_id=EXCLUDED.session_id,plan=EXCLUDED.plan,url=EXCLUDED.url,expires_at=EXCLUDED.expires_at,created_at=now()`,[user.uid,session.id,planId,session.url,expires]);
+   return {url:session.url};
   });
-  if(typeof session.url!=='string'||!session.url.startsWith('https://'))throw fail(502,'Stripe did not return a checkout page.');
-  return {url:session.url};
  }
 
  async function portal(user,origin){
@@ -105,11 +128,21 @@ export function createBilling({pool,stripe,config,webhookSecret,logger=console})
   // A price no plan names allows nothing (the allowance code treats an unknown plan as zero).
   const plan=planForPrice(price)||'unmapped';
   const periodEnd=item?.current_period_end??sub.current_period_end;
+  const at=v=>Number.isFinite(v)?new Date(v*1000):null;
+  const cancelsAt=at(sub.cancel_at)||(sub.cancel_at_period_end?at(periodEnd):null);
   await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',['membership:'+uid]);
-  await c.query(`INSERT INTO prospect_memberships(user_id,plan,stripe_customer_id,stripe_subscription_id,status,current_period_end,updated_at)
-   VALUES($1,$2,$3,$4,$5,$6,now())
-   ON CONFLICT(user_id) DO UPDATE SET plan=EXCLUDED.plan,stripe_customer_id=EXCLUDED.stripe_customer_id,stripe_subscription_id=EXCLUDED.stripe_subscription_id,status=EXCLUDED.status,current_period_end=EXCLUDED.current_period_end,updated_at=now()`,
-   [uid,plan,typeof sub.customer==='string'?sub.customer:sub.customer?.id||null,sub.id,String(sub.status||'unknown'),Number.isFinite(periodEnd)?new Date(periodEnd*1000):null]);
+  const current=await membershipRow(c,uid);
+  // A late event about a subscription the advisor has since replaced must not
+  // overwrite the newer one: the most recently created subscription wins.
+  if(current?.stripe_subscription_id&&current.stripe_subscription_id!==sub.id&&current.subscription_created&&!(Number.isFinite(sub.created)&&sub.created*1000>new Date(current.subscription_created).getTime()))return 'superseded';
+  // A new plan or subscription clears a hand-set allowance override, so a
+  // purchase always gets exactly the allowance it paid for.
+  await c.query(`INSERT INTO prospect_memberships(user_id,plan,stripe_customer_id,stripe_subscription_id,status,current_period_end,subscription_created,cancels_at,updated_at)
+   VALUES($1,$2,$3,$4,$5,$6,$7,$8,now())
+   ON CONFLICT(user_id) DO UPDATE SET
+    monthly_allowance_micros=CASE WHEN prospect_memberships.plan IS DISTINCT FROM EXCLUDED.plan OR prospect_memberships.stripe_subscription_id IS DISTINCT FROM EXCLUDED.stripe_subscription_id THEN NULL ELSE prospect_memberships.monthly_allowance_micros END,
+    plan=EXCLUDED.plan,stripe_customer_id=EXCLUDED.stripe_customer_id,stripe_subscription_id=EXCLUDED.stripe_subscription_id,status=EXCLUDED.status,current_period_end=EXCLUDED.current_period_end,subscription_created=EXCLUDED.subscription_created,cancels_at=EXCLUDED.cancels_at,updated_at=now()`,
+   [uid,plan,typeof sub.customer==='string'?sub.customer:sub.customer?.id||null,sub.id,String(sub.status||'unknown'),at(periodEnd),at(sub.created),cancelsAt]);
   return plan==='unmapped'?'unmapped_price':'applied';
  }
 

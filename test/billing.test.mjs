@@ -14,13 +14,18 @@ const SECRET='whsec_testsecret';
 const PLANS={starter:{name:'Starter',monthly_allowance_micros:2000,stripe_price_id:'price_starter'},pro:{name:'Pro',monthly_allowance_micros:10000,stripe_price_id:'price_pro'},internal:{name:'Internal',monthly_allowance_micros:500}};
 const advisor={uid:'advisor-a',email:'advisor@example.com'};
 const sign=(body,{secret=SECRET,t=Math.floor(Date.now()/1000)}={})=>`t=${t},v1=${createHmac('sha256',secret).update(`${t}.${body}`).digest('hex')}`;
-const subscription=(over={})=>({id:'sub_1',customer:'cus_1',status:'active',metadata:{uid:advisor.uid},items:{data:[{price:{id:'price_starter'},current_period_end:1790000000}]},...over});
+const subscription=(over={})=>({id:'sub_1',created:1780000000,customer:'cus_1',status:'active',metadata:{uid:advisor.uid},items:{data:[{price:{id:'price_starter'},current_period_end:1790000000}]},...over});
 
 function stubStripe(){
-  const calls=[];let current=subscription();let failNext=false;
-  return {calls,set:s=>{current=s;},failOnce:()=>{failNext=true;},
-    post:async(path,params)=>{calls.push({method:'POST',path,params});return {url:path.startsWith('checkout')?'https://checkout.stripe.com/c/pay/cs_test':'https://billing.stripe.com/p/session/test'};},
-    get:async path=>{calls.push({method:'GET',path});if(failNext){failNext=false;throw Object.assign(Error('Stripe request failed: timeout'),{status:502});}return structuredClone(current);}};
+  const calls=[];let current=subscription();let failNext=false;const subs={};const sessions={};let n=0;
+  return {calls,sessions,set:sub=>{current=sub;},put:sub=>{subs[sub.id]=sub;},failOnce:()=>{failNext=true;},
+    post:async(path,params)=>{calls.push({method:'POST',path,params});
+      if(path==='checkout/sessions'){const id='cs_'+(++n);sessions[id]={status:'open'};return {id,url:'https://checkout.stripe.com/c/pay/'+id};}
+      if(path.endsWith('/expire')){sessions[path.split('/')[2]].status='expired';return {};}
+      return {url:'https://billing.stripe.com/p/session/test'};},
+    get:async path=>{calls.push({method:'GET',path});if(failNext){failNext=false;throw Object.assign(Error('Stripe request failed: timeout'),{status:502});}
+      if(path.startsWith('checkout/sessions/'))return structuredClone(sessions[path.split('/')[2]]);
+      const id=decodeURIComponent(path.split('/')[1]);return structuredClone(subs[id]||current);}};
 }
 
 async function fixture(fn){
@@ -176,3 +181,51 @@ test('the billing panel offers plans, then management, and says when lookups are
   assert.match(billingContent({enabled:false,membership:null,plans:[]}),/not set up/);
   assert.match(billingContent({enabled:true,membership:{plan:'x',plan_name:'<b>',status:null,manageable:false},plans:[]}),/&lt;b&gt;/);
 });
+
+test('a late event about a replaced subscription cannot overwrite the newer one',()=>fixture(async({deliver,row,stripe})=>{
+  await deliver(completed());
+  stripe.put(subscription({status:'canceled'}));
+  stripe.put(subscription({id:'sub_2',created:1785000000,items:{data:[{price:{id:'price_pro'},current_period_end:1795000000}]}}));
+  await deliver({id:'evt_new',type:'customer.subscription.created',data:{object:{id:'sub_2'}}});
+  assert.deepEqual([(await row()).stripe_subscription_id,(await row()).plan,(await row()).status],['sub_2','pro','active']);
+  // The old subscription's cancellation arrives afterwards: it is ignored.
+  assert.equal((await (await deliver({id:'evt_old',type:'customer.subscription.deleted',data:{object:{id:'sub_1'}}})).json()).outcome,'superseded');
+  assert.deepEqual([(await row()).stripe_subscription_id,(await row()).status],['sub_2','active']);
+}));
+
+test('a purchase clears a hand-set allowance; an override set afterwards survives routine updates',()=>fixture(async({db,deliver,row,stripe,jobs})=>{
+  await db.query("INSERT INTO prospect_memberships(user_id,plan,monthly_allowance_micros) VALUES($1,'internal',999999)",[advisor.uid]);
+  await deliver(completed());
+  assert.equal((await row()).monthly_allowance_micros,null);
+  assert.equal((await jobs.summary(advisor)).plan.monthly_allowance_micros,2000);
+  await db.query('UPDATE prospect_memberships SET monthly_allowance_micros=3000 WHERE user_id=$1',[advisor.uid]);
+  await deliver(updated('evt_same'));
+  assert.equal(Number((await row()).monthly_allowance_micros),3000,'same plan, same subscription: kept');
+  stripe.set(subscription({items:{data:[{price:{id:'price_pro'}}]}}));
+  await deliver(updated('evt_upgrade'));
+  assert.equal((await row()).monthly_allowance_micros,null,'a plan change resets it');
+}));
+
+test('one open checkout per advisor: repeats reuse it, a new plan replaces it, a paid one blocks another',()=>fixture(async({billing,stripe})=>{
+  const site='https://prospectpilot.io';
+  // PGlite has one connection, so the per-advisor lock cannot be exercised
+  // concurrently here; on Postgres it makes the second request wait for the first.
+  const a=await billing.checkout(advisor,{plan:'pro'},site),b=await billing.checkout(advisor,{plan:'pro'},site);
+  assert.equal(a.url,b.url,'a second tab or click gets the same checkout');
+  assert.equal(stripe.calls.filter(c=>c.path==='checkout/sessions').length,1);
+  assert.ok(stripe.calls.find(c=>c.path==='checkout/sessions').params.expires_at>Date.now()/1000);
+  const other=await billing.checkout(advisor,{plan:'starter'},site);
+  assert.notEqual(other.url,a.url);
+  assert.equal(stripe.sessions.cs_1.status,'expired','the abandoned checkout for the other plan is closed first');
+  stripe.sessions.cs_2.status='complete';
+  await assert.rejects(billing.checkout(advisor,{plan:'starter'},site),e=>e.status===409&&/being activated/.test(e.message));
+}));
+
+test('a scheduled cancellation shows the end date, not a renewal',()=>fixture(async({deliver,billing,stripe})=>{
+  stripe.set(subscription({cancel_at_period_end:true}));
+  await deliver(completed());
+  const state=await billing.status(advisor);
+  assert.equal(state.membership.cancels_at,new Date(1790000000*1000).toISOString());
+  const html=billingContent(state);
+  assert.match(html,/ends \d{4}-\d{2}-\d{2} \(cancellation scheduled\)/);assert.doesNotMatch(html,/renews/);
+}));
