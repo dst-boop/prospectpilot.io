@@ -42,6 +42,23 @@ const ROUTES = new Set(['separated', 'in_service', 'plan_termination', 'other_co
 const excludedSource = value => /(^|[^a-z])(fec|familytreenow|fastpeoplesearch)([^a-z]|$)/i.test(value) || /fec\.gov/i.test(value);
 const validDate = value => { const date = new Date(value); return Number.isFinite(date.getTime()) ? date : null; };
 
+export function validateFinancialEvidence(field, inputValue) {
+  if (!['retirement','movable_assets'].includes(field)) throw Object.assign(Error('Unsupported financial criterion.'), {status:422});
+  let value = inputValue;
+  if (!DISCLOSURES.has(value?.evidence_basis) || value?.consent_confirmed !== true) throw Object.assign(Error('Financial evidence requires participant disclosure or an authorized document and consent for this research use.'), {status: 422});
+  const ira = IRA_TYPES.has(value?.account_type);
+  if ((!ira && !RETIREMENT_TYPES.has(value?.account_type)) || (ira ? value?.route !== 'trustee_transfer' : !ROUTES.has(value?.route)) || value?.assets_confirmed !== true || value?.eligible_distribution !== true || value?.individual !== true) throw Object.assign(Error('Confirm retained individual assets and an eligible employer-plan distribution or IRA trustee-to-trustee transfer.'), {status: 422});
+  if (ira && value?.destination_type !== (value.account_type === 'roth_ira' ? 'roth_ira' : 'traditional_ira')) throw Object.assign(Error('Confirm a matching IRA destination: Roth to Roth; traditional or rollover IRA to traditional. Conversions require separate review.'), {status: 422});
+  if (value.route === 'in_service' && value.plan_permission !== true) throw Object.assign(Error('An in-service opportunity requires confirmation of this plan’s permission and the participant’s eligibility.'), {status: 422});
+  value = {account_type: value.account_type, route: value.route, assets_confirmed: true, eligible_distribution: true, individual: true, plan_permission: value.plan_permission === true, destination_type: ira ? value.destination_type : null, evidence_basis: value.evidence_basis, consent_confirmed: true};
+  if (field === 'movable_assets') {
+    const amount = inputValue.lower_bound_usd;
+    if (!['number','string'].includes(typeof amount) || String(amount).trim() === '' || !Number.isFinite(Number(amount)) || Number(amount) < 0 || Number(amount) > 1e12 || inputValue.amount_scope !== 'eligible_retained_assets') throw Object.assign(Error('Record a disclosed USD lower bound for retained assets eligible for this transfer, not net worth or the total employer plan.'), {status:422});
+    value = {...value, lower_bound_usd:Number(amount), amount_scope:'eligible_retained_assets'};
+  }
+  return value;
+}
+
 export function validateObservation(input, {userId, identity, now = new Date()} = {}) {
   if (![...QUALITY_FIELDS, 'movable_assets'].includes(input.field)) throw Object.assign(Error('Choose a supported qualification criterion.'), {status: 422});
   if (!['confirmed', 'rejected', 'unknown'].includes(input.verdict)) throw Object.assign(Error('Choose confirmed, does not meet, or unknown.'), {status: 422});
@@ -61,19 +78,7 @@ export function validateObservation(input, {userId, identity, now = new Date()} 
       if (!['US', 'USA', 'UNITED STATES', 'UNITED STATES OF AMERICA'].includes(clean(value?.country).toUpperCase()) || value?.scope !== 'residence') throw Object.assign(Error('Confirm the person’s US residence; a company office address is insufficient.'), {status: 422});
       value = {country: 'US', scope: 'residence'};
     }
-    if (input.field === 'retirement' || input.field === 'movable_assets') {
-      if (!DISCLOSURES.has(value?.evidence_basis) || value?.consent_confirmed !== true) throw Object.assign(Error('Financial evidence requires participant disclosure or an authorized document and consent for this research use.'), {status: 422});
-      const ira = IRA_TYPES.has(value?.account_type);
-      if ((!ira && !RETIREMENT_TYPES.has(value?.account_type)) || (ira ? value?.route !== 'trustee_transfer' : !ROUTES.has(value?.route)) || value?.assets_confirmed !== true || value?.eligible_distribution !== true || value?.individual !== true) throw Object.assign(Error('Confirm retained individual assets and an eligible employer-plan distribution or IRA trustee-to-trustee transfer.'), {status: 422});
-      if (ira && value?.destination_type !== (value.account_type === 'roth_ira' ? 'roth_ira' : 'traditional_ira')) throw Object.assign(Error('Confirm a matching IRA destination: Roth to Roth; traditional or rollover IRA to traditional. Conversions require separate review.'), {status: 422});
-      if (value.route === 'in_service' && value.plan_permission !== true) throw Object.assign(Error('An in-service opportunity requires confirmation of this plan’s permission and the participant’s eligibility.'), {status: 422});
-      value = {account_type: value.account_type, route: value.route, assets_confirmed: true, eligible_distribution: true, individual: true, plan_permission: value.plan_permission === true, destination_type: ira ? value.destination_type : null, evidence_basis: value.evidence_basis, consent_confirmed: true};
-      if (input.field === 'movable_assets') {
-        const amount = input.value.lower_bound_usd;
-        if (!['number','string'].includes(typeof amount) || String(amount).trim() === '' || !Number.isFinite(Number(amount)) || Number(amount) < 0 || Number(amount) > 1e12 || input.value.amount_scope !== 'eligible_retained_assets') throw Object.assign(Error('Record a disclosed USD lower bound for retained assets eligible for this transfer, not net worth or the total employer plan.'), {status:422});
-        value = {...value, lower_bound_usd:Number(amount), amount_scope:'eligible_retained_assets'};
-      }
-    }
+    if (input.field === 'retirement' || input.field === 'movable_assets') value = validateFinancialEvidence(input.field, value);
     if (input.field === 'net_worth') {
       const lower = Number(value?.lower_bound_usd);
       if (value?.lower_bound_usd == null || value.lower_bound_usd === '' || !Number.isFinite(lower) || lower < 0 || lower > 1e12 || value?.excludes_home !== true || value?.net_of_liabilities !== true || !DISCLOSURES.has(value?.evidence_basis) || value?.consent_confirmed !== true) throw Object.assign(Error('Record a disclosed USD lower bound, excluding the home and net of liabilities, with an authorized evidence basis and research consent. Estimates from titles or property records are insufficient.'), {status: 422});

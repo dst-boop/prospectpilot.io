@@ -44,3 +44,10 @@ financial suitability, send outreach, or change spending limits.
 Daily sourcing combines enrichment files by provider person ID. Empty responses do not erase prior values, and any recorded do-not-call flag remains active. Conflicting fields are withheld from CSV output and named in the review note; first/last-name conflicts withhold all contact channels. The in-memory result retains each field observation with its input file and row reference. Original scratch files remain the source of evidence; this does not change saved contact records, automatically re-run enrichment, resolve conflicts, or reset suppression.
 
 Restrictions are also combined before daily search deduplication, including from rows excluded in another lane. A later selected duplicate cannot clear a known restriction. Ranking awards freshness only to valid past/current dates. Contact details are described as available, never as permission to call.
+
+
+### Financial evidence validation
+
+Daily sourcing and app reviews share the same account/transfer validator. Daily records must explicitly include `individual: true`, `consent_confirmed: true`, and `amount_scope: "eligible_retained_assets"`, alongside authorized retained assets, eligibility, amount, source and observation date. Authorization does not substitute for research consent. Records missing these fields stay unconfirmed; they are not deleted or backfilled.
+
+For `direct_rollover`, supply the reviewed `distribution_reason` (such as `separated` or `plan_termination`); a job-change signal does not supply it. `in_service` requires explicit plan permission. IRA `trustee_transfer` requires the matching `destination_type` supported by the app. SEP/SIMPLE remain research audiences, but their financial confirmation is held for account-specific support; `two_year_rule_reviewed` alone cannot confirm them. Financial evidence expires after 180 days. Conflicting account, amount, route, ownership or consent details require review rather than selecting a convenient row.

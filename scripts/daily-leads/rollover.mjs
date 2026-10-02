@@ -1,4 +1,4 @@
-import {FINANCIAL_EVIDENCE_DAYS} from '../../lead-quality.mjs';
+import {FINANCIAL_EVIDENCE_DAYS, validateFinancialEvidence} from '../../lead-quality.mjs';
 // Evidence-backed targeting. A search signal is never a financial disclosure.
 export const ROLLOVER_TARGET = Object.freeze({minimum_movable_usd:100000, alumni_from:1977, alumni_to:1990,
   account_types:['401k','403b','governmental_457b','traditional_ira','rollover_ira','roth_ira','sep_ira','simple_ira']});
@@ -28,25 +28,34 @@ export function assessRollover(person,{today,target=ROLLOVER_TARGET}={}){
  // The lower bound covers the disclosed eligible assets as a whole; never sum
  // potentially duplicated accounts, plan averages, or provider wealth estimates.
  const financial=rows.filter(e=>e.kind==='movable_assets'&&dated(e.observed_at,today,FINANCIAL_EVIDENCE_DAYS)&&e.authorized===true&&['participant_disclosure','authorized_document'].includes(e.source_type));
- const valid=financial.filter(e=>Number.isFinite(e.lower_bound_usd)&&e.lower_bound_usd>=0&&e.eligibility_confirmed===true&&
-   target.account_types.includes(e.account_type)&&e.assets_retained===true&&
-   (e.route!=='in_service'||e.plan_permission===true)&&
-   (e.account_type!=='simple_ira'||e.two_year_rule_reviewed===true)&&
-   ['direct_rollover','trustee_transfer','in_service'].includes(e.route));
+ const valid=financial.filter(e=>{
+   if(!target.account_types.includes(e.account_type))return false;
+   try {
+     validateFinancialEvidence('movable_assets',{
+       account_type:e.account_type,route:e.route==='direct_rollover'?e.distribution_reason:e.route,
+       assets_confirmed:e.assets_retained,eligible_distribution:e.eligibility_confirmed,
+       individual:e.individual,consent_confirmed:e.consent_confirmed,evidence_basis:e.source_type,
+       plan_permission:e.plan_permission,destination_type:e.destination_type,
+       lower_bound_usd:e.lower_bound_usd,amount_scope:e.amount_scope
+     });
+     return true;
+   } catch {return false;}
+ });
  // Equal amounts do not reconcile different accounts or transfer eligibility.
  // Include authorized negative/incomplete evidence so a positive row cannot
  // silently hide a retained-assets or eligibility contradiction.
  const disclosures=new Set(financial.map(e=>JSON.stringify([
    e.lower_bound_usd,e.account_type,e.route,e.destination_type??null,
    e.assets_retained,e.eligibility_confirmed,e.plan_permission??null,
-   e.two_year_rule_reviewed??null
+   e.two_year_rule_reviewed??null,e.distribution_reason??null,e.individual??null,e.consent_confirmed??null,e.amount_scope??null
  ])));
  const conflict=raw.some(e=>e?.person_id===id&&e.kind==='movable_assets'&&e.conflict===true&&e.source_ref&&dated(e.observed_at,today,FINANCIAL_EVIDENCE_DAYS))||disclosures.size>1;
  const confirmed=!conflict&&valid.length>0&&valid[0].lower_bound_usd>=target.minimum_movable_usd;
  if(confirmed)add('confirmed_assets',60,'Authorized evidence reports at least $100,000 eligible to move.',valid[0]);
  if(!confirmed)questions.push('Confirm whether at least $100,000 remains available to move; do not infer a balance from job history.');
  if(conflict)questions.push('Resolve conflicting financial evidence.');
- if(!valid.length)questions.push('Confirm account type, ownership and eligible transfer route.');
+ if(!valid.length)questions.push('Confirm account type, individual ownership, research consent, eligible asset amount and transfer route.');
+ if(financial.some(e=>['sep_ira','simple_ira'].includes(e.account_type)))questions.push('SEP and SIMPLE IRA evidence requires a supported account-specific review before confirmation.');
  if(age)questions.push('Check the current plan’s in-service distribution rules.');
  if(accounts.some(e=>e.account_type==='simple_ira'))questions.push('Review SIMPLE IRA participation dates and transfer restrictions.');
  return {status:confirmed?'confirmed_target':signals.length?'research_candidate':'insufficient_evidence',

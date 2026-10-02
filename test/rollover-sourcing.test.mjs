@@ -5,7 +5,7 @@ import {candidatesFromSearch} from '../scripts/daily-leads/engine.mjs';
 const today='2026-09-30', person_id='101';
 const ev=(kind,extra={})=>({kind,person_id,source_ref:'https://example.com/fixture',observed_at:today,...extra});
 const assess=rows=>assessRollover({person_id,rollover_evidence:rows},{today});
-const money=extra=>ev('movable_assets',{lower_bound_usd:100000,source_type:'participant_disclosure',authorized:true,assets_retained:true,eligibility_confirmed:true,account_type:'401k',route:'direct_rollover',...extra});
+const money=extra=>ev('movable_assets',{lower_bound_usd:100000,source_type:'participant_disclosure',authorized:true,assets_retained:true,eligibility_confirmed:true,account_type:'401k',route:'direct_rollover',distribution_reason:'separated',individual:true,consent_confirmed:true,amount_scope:'eligible_retained_assets',...extra});
 test('events and preferred alumni never establish assets or age',()=>{
  const r=assess([ev('job_change'),ev('layoff'),ev('graduation',{year:1977,school:'Fictional University'})]);
  assert.equal(r.status,'research_candidate');assert.equal(r.alumni_preference,true);assert.equal(r.financial_status,'unconfirmed');
@@ -23,7 +23,7 @@ test('plan permission, SIMPLE restrictions and financial conflicts require revie
  assert.notEqual(assess([money({route:'in_service'})]).status,'confirmed_target');
  assert.equal(assess([money({route:'in_service',plan_permission:true})]).status,'confirmed_target');
  assert.notEqual(assess([money({account_type:'simple_ira',route:'trustee_transfer'})]).status,'confirmed_target');
- assert.equal(assess([money({account_type:'simple_ira',route:'trustee_transfer',two_year_rule_reviewed:true})]).status,'confirmed_target');
+ assert.notEqual(assess([money({account_type:'simple_ira',route:'trustee_transfer',two_year_rule_reviewed:true})]).status,'confirmed_target','unsupported account review cannot be replaced by one boolean');
  assert.equal(assess([money(),money({conflict:true})]).financial_status,'conflict');
  assert.equal(assess([money(),money({lower_bound_usd:200000})]).financial_status,'conflict');
  assert.equal(assessRollover({person_id,suppressed:true,rollover_evidence:[money()]},{today}).status,'excluded');
@@ -60,4 +60,16 @@ test('daily financial evidence expires after the same 180-day window as app qual
  assert.equal(assess([money(),money({conflict:true,observed_at:date(181)})]).status,'confirmed_target','expired conflicts have the same freshness window');
  assert.equal(assess([money(),money({account_type:'403b',observed_at:date(181)})]).status,'confirmed_target');
  assert.equal(assess([ev('job_change',{observed_at:date(181)})]).status,'research_candidate','career context retains its separate window');
+});
+
+
+test('daily financial confirmation uses the app account, consent and eligibility requirements',()=>{
+ for(const change of [{individual:undefined},{consent_confirmed:undefined},{amount_scope:undefined},{distribution_reason:undefined},{route:'trustee_transfer'},{account_type:'sep_ira'},{account_type:'simple_ira',two_year_rule_reviewed:true}]){
+  assert.notEqual(assess([money(change)]).status,'confirmed_target',JSON.stringify(change));
+ }
+ for(const account_type of ['traditional_ira','rollover_ira','roth_ira']){
+  const destination_type=account_type==='roth_ira'?'roth_ira':'traditional_ira';
+  assert.equal(assess([money({account_type,route:'trustee_transfer',destination_type})]).status,'confirmed_target');
+  assert.notEqual(assess([money({account_type,route:'trustee_transfer',destination_type:destination_type==='roth_ira'?'traditional_ira':'roth_ira'})]).status,'confirmed_target');
+ }
 });
