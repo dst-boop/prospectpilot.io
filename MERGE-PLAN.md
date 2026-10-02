@@ -78,6 +78,33 @@ These are recorded so they are not reopened by accident.
    instead: drop the file anywhere on Contacts, the format is recognised from
    its headers, a list named after the file is offered and the rows are
    previewed. Nothing is saved until Import.
+8. **Selling ProspectPilot: whose accounts power it.** Decided 2026-10-02 by
+   the operator, ahead of selling memberships to other advisors.
+   - **AI is built in.** ProspectPilot's own Claude key does the AI work;
+     advisors never sign into Claude or ChatGPT. The reasons:
+     - A consumer Claude or ChatGPT subscription cannot power another app.
+     - Built in, the compliance rules (no promissory language, no age in
+       outreach, findings that cite their source) are enforced in one place.
+     - Firms can approve one vetted AI provider.
+     - Other model vendors may sit behind the same layer later.
+   - **Lead data is built in through providers licensed for embedding.**
+     People Data Labs, Hunter and Trestle are already on the paid queue.
+     Confirm resale terms in each contract before charging for it.
+   - **Membership pays for usage.** Each plan includes a monthly allowance of
+     paid lookups. It is enforced on the server when a cost is reserved, per
+     advisor, on top of the shared daily cap (`PROSPECT_PLANS`, migration
+     023).
+   - **ZoomInfo is bring-your-own.** ZoomInfo's terms forbid sharing one
+     subscription's data across customers, so it is never bundled unless a
+     partner/data licence is signed.
+     - An advisor with ZoomInfo brings their own: the CSV drop-to-import
+       today (decision 7), and the advisor's own ZoomInfo sign-in where their
+       plan includes API access.
+     - The operator's own ZoomInfo is the operator's alone. The daily-leads
+       routine stays an internal tool, not a product feature.
+   - **Claude/ChatGPT as a front end is an add-on.** An advisor's own
+     assistant reaching ProspectPilot through a connector is later work. It
+     never powers ProspectPilot's own features.
 
 ## Open items
 
@@ -110,4 +137,5 @@ These are recorded so they are not reopened by accident.
 | B | Lead Qualifier's "Move to ProspectPilot" export, in the columns the contact import already reads; `test/lead-qualifier-import.test.mjs` pins the contract | Done |
 | C | WhitePages/Trestle phone check (`check_phone`) on the provider queue and budget | Done |
 | D | Claude web research (`web_research` job) and profile screenshots (read once, never stored) are done. SEC proxy ages and the employer-site reader were already covered (`lab-sources.mjs`, `native-research.mjs`). AI QC is superseded by the five evidence gates | Done |
+| F | Selling memberships (decision 8): **per-advisor plan allowances (done)**; then plan management and billing (payment provider to choose), per-firm compliance settings in place of the Equitable-specific ones, the daily 8 a.m. leads as a per-advisor queue job on built-in data, and Research Lab licensed search counted against the same allowance | In progress |
 | E | Email and `.ics` through the advisor's Outlook, and ZoomInfo CSV drop-to-import, are done (decisions 6 and 7). List sharing is implemented with owner/editor/viewer authorization and Postgres regression tests (see `SETUP-sharing.md`). Autopilot remains; then redirect leads.financialplannersofamerica.com and retire Lead Qualifier | In progress |

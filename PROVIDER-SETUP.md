@@ -32,10 +32,31 @@ Configure the same values on **both** the authenticated `prospectpilot` Cloud Ru
 | `WEB_RESEARCH_COST_MICROS` | Configured maximum cost per contact researched (tokens plus up to 5 searches) |
 | `PROFILE_IMAGE_COST_MICROS` | Configured maximum cost per profile screenshot read (same `ANTHROPIC_API_KEY`) |
 | `PROSPECT_DAILY_BUDGET_MICROS` | Shared maximum new reservations per UTC day; defaults to 0 |
+| `PROSPECT_PLANS` | *(optional)* Membership plans as JSON: plan id → name and the paid-lookup spend each advisor on it may reserve per calendar month (UTC), e.g. `{"starter":{"name":"Starter","monthly_allowance_micros":25000000},"pro":{"name":"Pro","monthly_allowance_micros":75000000}}`. Unset means no per-advisor allowance. Set it with the `^\|^` delimiter in gcloud because the value contains commas |
+| `PROSPECT_DEFAULT_PLAN` | *(optional)* The plan for advisors with no membership row; defaults to the first plan listed |
 
 Prices intentionally have no defaults. Set them from your own provider contract. A value of zero means an explicitly configured zero-cost allowance, not missing configuration. This is local budget accounting and does not replace provider credit balance checks or invoices. Match pricing and budget on every web and worker instance.
 
 Use the existing release process after configuration. Migrations 008 and 009 must be applied before the new app and worker run. `setup-research-worker.sh` preserves the provider settings already configured on an existing worker; it does not copy secrets out of the service or provision subscriptions. Verify service and worker settings separately. The existing 5-minute recovery scheduler launches the worker; the app also requests a worker execution when a job is submitted.
+
+### Membership plans
+
+With `PROSPECT_PLANS` set, every paid reservation is checked against the advisor's plan before any provider request:
+- It counts the advisor's month-to-date reservations.
+- It runs on the server and is serialised per advisor.
+- A job that would go past the allowance is skipped with no request and no charge. The advisor sees what is left in the tools panel and in the cost quote.
+- The shared daily cap still applies to everyone.
+
+Until billing is connected, assign plans in the database (the advisor's Firebase uid):
+
+```sql
+INSERT INTO prospect_memberships(user_id,plan) VALUES('<uid>','pro')
+  ON CONFLICT(user_id) DO UPDATE SET plan=EXCLUDED.plan, monthly_allowance_micros=NULL, updated_at=now();
+-- One advisor's own allowance, without a new plan:
+UPDATE prospect_memberships SET monthly_allowance_micros=50000000, updated_at=now() WHERE user_id='<uid>';
+```
+
+A plan id that is no longer in `PROSPECT_PLANS` allows nothing, so removing a plan never unlocks unlimited spend.
 
 ## Workflow
 
