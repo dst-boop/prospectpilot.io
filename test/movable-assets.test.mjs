@@ -62,6 +62,7 @@ test('saved rollover target is consistent across reviews, worklist, filters and 
     await lab.settings(user,{configuration:{qualification_target:'rollover_100k'}});
     assert.equal((await lab.list(user,{status:'verified'})).total,0,'old verified rule cannot populate the new verified filter');
     assert.equal((await lab.detail(user,id)).quality.gates.movable_assets.state,'unknown');
+    assert.equal((await lab.advisor.detail(user,id)).action.field,'movable_assets','next action opens the missing criterion directly');
     await save('movable_assets',amount);
     await save('age',{min:80,max:80});
     const result=await lab.detail(user,id);
