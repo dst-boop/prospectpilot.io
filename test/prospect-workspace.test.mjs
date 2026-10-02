@@ -147,3 +147,19 @@ test('unresolved source conflicts survive routine imports and corrections beyond
  c=await get();assert.equal(c.title,'Reviewed title');assert.ok(!c.source_history.some(e=>e.proposed_values&&!e.resolution));
  const audit=c.source_history.at(-1).source_resolution;assert.equal(audit.source,'Conflicting source');assert.equal(audit.proposed_values.title,'VP Operations');assert.equal(audit.resolution.decision,'keep');assert.equal(audit.resolution.reason,'Synthetic conflict review');
 }));
+
+
+test('correcting a mobile fallback updates or clears the primary number without changing a separate direct route',()=>fixture(async(app,db)=>{
+ await app.importCSV(user,{csv:'First Name,Last Name,Email,Mobile Phone\nJamie,Rivera,jamie@example.com,+12125550123'});
+ const contact=(await app.search(user)).contacts[0],url='https://example.com/api/prospect/contacts/'+contact.id;
+ const get=async()=>(await app.route(new Request(url),user)).contact;
+ const patch=async fields=>{const c=await get();return app.route(new Request(url,{method:'PATCH',body:JSON.stringify({fields,revision:c.edit_revision,reason:'Synthetic phone correction'})}),user);};
+ let c=await get();assert.equal(c.phone_origin,'mobile');
+ await db.query("UPDATE prospect_contacts SET payload=payload || $1::jsonb WHERE id=$2",[JSON.stringify({phone_status:'valid',phone_restrictions:{mobile:true,direct:false}}),contact.id]);
+ await patch({mobile_phone:'+12125550456',phone:c.phone});
+ c=await get();assert.equal(c.phone,'+12125550456');assert.equal(c.mobile_phone,c.phone);assert.equal(c.phone_origin,'mobile');assert.equal(c.phone_status,'unverified');assert.equal(c.phone_restrictions.mobile,true);
+ assert.equal(c.source_history.at(-1).changes.phone.before,'+12125550123');
+ await patch({mobile_phone:''});c=await get();assert.equal(c.phone,'');assert.equal(c.mobile_phone,'');assert.equal(c.phone_status,'missing');
+ await patch({phone:'+12125550789',mobile_phone:'+12125550456'});
+ await patch({mobile_phone:'+12125550999'});c=await get();assert.equal(c.phone,'+12125550789');assert.equal(c.phone_origin,'direct');assert.equal(c.mobile_phone,'+12125550999');
+}));

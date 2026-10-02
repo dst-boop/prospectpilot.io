@@ -242,7 +242,9 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
     fields=input.decision==='accept'?event.proposed_values:{};
    }else if(input.decision!==undefined)throw fail(422,'Select a source conflict to resolve.');
    if(!fields||typeof fields!=='object'||Array.isArray(fields)||Object.keys(fields).some(k=>!editableFields.includes(k)||typeof fields[k]!=='string'||fields[k].length>1000)||(!event&&!Object.keys(fields).length))throw fail(422,'Provide editable contact fields only.');
-   const normalized=normalizeContact({...old,...fields},old.source),next={...old};
+   const correction={...old,...fields};
+   if(old.phone_origin==='mobile'&&old.phone===old.mobile_phone&&(!Object.hasOwn(fields,'phone')||fields.phone===old.phone))correction.phone='';
+   const normalized=normalizeContact(correction,old.source),next={...old};
    const changes={};for(const key of editableFields){if(normalized[key]!==old[key]){changes[key]={before:old[key]||'',after:normalized[key]};next[key]=normalized[key];}}
    if(!identities(next).length)throw fail(422,'Keep a company, individual email or LinkedIn profile for identity matching.');
    if((await c.query('SELECT id FROM prospect_contacts WHERE user_id=$1 AND id<>$2 AND identity_keys ?| $3::text[]',[user.uid,id,identityLookupKeys(next)])).rows.length)throw fail(409,'These identifiers match another contact. Review both records before correcting their identities. No records were merged.');
