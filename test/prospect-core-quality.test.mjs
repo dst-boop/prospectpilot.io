@@ -73,3 +73,24 @@ test('an explicit unresolved conflict is preserved even without its competing ob
   assert.equal(estimateAge(lead,{asOf:now}).status,'conflicting');
   assert.equal(scoreProspect(lead,{asOf:now}).explanation.age55,0);
 });
+
+
+test('missing imported ages stay null instead of becoming zero',()=>{
+ for(const value of [undefined,null,'',' ',false,true,[],[61],{},NaN,Infinity,-1,121]){
+  const lead=createLead({...person,exact_age:value,estimated_age_min:value,estimated_age_max:value},{now});
+  for(const field of ['exact_age','estimated_age_min','estimated_age_max'])assert.equal(lead[field],null);
+ }
+ assert.equal(createLead({...person,exact_age:'61'},{now}).exact_age,61);
+});
+
+test('contradictory career and graduation clues receive no age credit',()=>{
+ const lead={...createLead(person,{now}),graduation_year:2015,career_start_year:1980};
+ const age=estimateAge(lead,{asOf:now});
+ assert.equal(age.status,'conflicting');assert.equal(age.confidence,0);
+ assert.equal(age.basis.length,2,'both provenance clues remain visible');
+ assert.equal(scoreProspect(lead,{asOf:now}).explanation.age55,0);
+ for(const fields of [{graduation_year:2030},{career_start_year:2030},{employment_history:[{start_year:2030}]}]){
+  const result=estimateAge({...createLead(person,{now}),...fields},{asOf:now});
+  assert.equal(result.min,null);assert.equal(result.max,null);assert.equal(result.confidence,0);
+ }
+});

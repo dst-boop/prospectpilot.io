@@ -68,6 +68,8 @@ export function normalizeEvidence(input={}, {now=new Date()}={}) {
   return normalized;
 }
 
+const optionalAge=v=>{if(!['string','number'].includes(typeof v)||String(v).trim()==='')return null;const n=Number(v);return Number.isFinite(n)&&n>=0&&n<=120?n:null;};
+
 export function createLead(input={}, {now=new Date(), id=randomUUID()}={}) {
   const lead={
     id:text(input.id)||id,
@@ -76,9 +78,9 @@ export function createLead(input={}, {now=new Date(), id=randomUUID()}={}) {
     linkedin_url:text(input.linkedin_url),
     previous_employers:arr(input.previous_employers),previous_titles:arr(input.previous_titles),employment_history:arr(input.employment_history),
     education:arr(input.education),
-    exact_age:Number.isFinite(Number(input.exact_age))?Number(input.exact_age):null,
-    estimated_age_min:Number.isFinite(Number(input.estimated_age_min))?Number(input.estimated_age_min):null,
-    estimated_age_max:Number.isFinite(Number(input.estimated_age_max))?Number(input.estimated_age_max):null,
+    exact_age:optionalAge(input.exact_age),
+    estimated_age_min:optionalAge(input.estimated_age_min),
+    estimated_age_max:optionalAge(input.estimated_age_max),
     age_confidence:Number.isFinite(Number(input.age_confidence))?Number(input.age_confidence):0,
     retirement_plans:arr(input.retirement_plans),signals:arr(input.signals),
     mobile:text(input.mobile),business_phone:text(input.business_phone),personal_email:text(input.personal_email),business_email:text(input.business_email),
@@ -150,19 +152,20 @@ export function estimateAge(lead,{asOf=new Date()}={}){
   const ranges=[];
   const basis=[];
   const grad=resolved.graduation_year?.status==='conflicting'?null:year(resolved.graduation_year?.value ?? lead.graduation_year);
-  if(grad){ranges.push({min:currentYear-grad+20,max:currentYear-grad+25,confidence:resolved.graduation_year?.confidence||0.65});basis.push(`graduation year ${grad}`);}
+  if(grad&&grad<=currentYear){ranges.push({min:currentYear-grad+20,max:currentYear-grad+25,confidence:resolved.graduation_year?.confidence||0.65});basis.push(`graduation year ${grad}`);}
   const career=resolved.career_start_year?.status==='conflicting'?null:year(resolved.career_start_year?.value ?? lead.career_start_year);
-  if(career){ranges.push({min:currentYear-career+18,max:currentYear-career+27,confidence:resolved.career_start_year?.confidence||0.6});basis.push(`career start ${career}`);}
+  if(career&&career<=currentYear){ranges.push({min:currentYear-career+18,max:currentYear-career+27,confidence:resolved.career_start_year?.confidence||0.6});basis.push(`career start ${career}`);}
   for(const job of arr(lead.employment_history)){
     const start=year(job.start_year);
-    if(start){ranges.push({min:currentYear-start+18,max:currentYear-start+30,confidence:0.55});basis.push(`employment start ${start}`);break;}
+    if(start&&start<=currentYear){ranges.push({min:currentYear-start+18,max:currentYear-start+30,confidence:0.55});basis.push(`employment start ${start}`);break;}
   }
   if(!ranges.length)return {min:null,max:null,confidence:0,basis:[]};
   const intersection={min:Math.max(...ranges.map(r=>r.min)),max:Math.min(...ranges.map(r=>r.max))};
   const min=intersection.min<=intersection.max?intersection.min:Math.min(...ranges.map(r=>r.min));
   const max=intersection.min<=intersection.max?intersection.max:Math.max(...ranges.map(r=>r.max));
-  const confidence=Math.min(0.95,ranges.reduce((acc,r)=>acc+r.confidence,0)/ranges.length + (ranges.length>1?0.12:0));
-  return {min:Math.max(18,min),max:Math.min(110,max),confidence:Number(confidence.toFixed(2)),basis:[...new Set(basis)]};
+  const conflicting=intersection.min>intersection.max;
+  const confidence=conflicting?0:Math.min(0.95,ranges.reduce((acc,r)=>acc+r.confidence,0)/ranges.length + (ranges.length>1?0.12:0));
+  return {min:Math.max(18,min),max:Math.min(110,max),...(conflicting?{status:'conflicting'}:{}),confidence:Number(confidence.toFixed(2)),basis:[...new Set(basis)]};
 }
 
 const seniorRx=/\b(chief|c[a-z]o|president|owner|founder|partner|principal|vice president|vp|director|managing director|head)\b/i;
