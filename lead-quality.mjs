@@ -36,21 +36,31 @@ export function candidateKeys(lead) {
 export const QUALITY_FIELDS = ['age', 'residence', 'retirement', 'contact', 'net_worth'];
 export const ROLLOVER_FIELDS = ['residence', 'retirement', 'contact', 'movable_assets'];
 const RETIREMENT_TYPES = new Set(['401k', '403b', 'governmental_457b', 'qualified_pension', 'profit_sharing', 'tsp']);
-const IRA_TYPES = new Set(['traditional_ira', 'rollover_ira', 'roth_ira']);
+const IRA_TYPES = new Set(['traditional_ira', 'rollover_ira', 'roth_ira', 'sep_ira', 'simple_ira']);
 const DISCLOSURES = new Set(['participant_disclosure', 'authorized_document']);
 const ROUTES = new Set(['separated', 'in_service', 'plan_termination', 'other_confirmed']);
 const excludedSource = value => /(^|[^a-z])(fec|familytreenow|fastpeoplesearch)([^a-z]|$)/i.test(value) || /fec\.gov/i.test(value);
 const validDate = value => { const date = new Date(value); return Number.isFinite(date.getTime()) ? date : null; };
 
-export function validateFinancialEvidence(field, inputValue) {
+export function validateFinancialEvidence(field, inputValue, {asOf = new Date()} = {}) {
   if (!['retirement','movable_assets'].includes(field)) throw Object.assign(Error('Unsupported financial criterion.'), {status:422});
   let value = inputValue;
   if (!DISCLOSURES.has(value?.evidence_basis) || value?.consent_confirmed !== true) throw Object.assign(Error('Financial evidence requires participant disclosure or an authorized document and consent for this research use.'), {status: 422});
   const ira = IRA_TYPES.has(value?.account_type);
   if ((!ira && !RETIREMENT_TYPES.has(value?.account_type)) || (ira ? value?.route !== 'trustee_transfer' : !ROUTES.has(value?.route)) || value?.assets_confirmed !== true || value?.eligible_distribution !== true || value?.individual !== true) throw Object.assign(Error('Confirm retained individual assets and an eligible employer-plan distribution or IRA trustee-to-trustee transfer.'), {status: 422});
   if (ira && value?.destination_type !== (value.account_type === 'roth_ira' ? 'roth_ira' : 'traditional_ira')) throw Object.assign(Error('Confirm a matching IRA destination: Roth to Roth; traditional or rollover IRA to traditional. Conversions require separate review.'), {status: 422});
+  const specialIRA = ['sep_ira','simple_ira'].includes(value.account_type);
+  if (specialIRA && value.tax_treatment !== 'traditional') throw Object.assign(Error('Confirm traditional tax treatment for this SEP or SIMPLE IRA. Roth variants and conversions require separate review.'), {status:422});
+  if (value.account_type === 'simple_ira') {
+    const day = value.first_contribution_on;
+    const first = typeof day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(day) ? new Date(day+'T00:00:00Z') : null;
+    if (!first || !Number.isFinite(first.getTime()) || first.toISOString().slice(0,10)!==day || first < new Date('1997-01-01') || !Number.isFinite(asOf.getTime())) throw Object.assign(Error('Provide the documented date of the first employer contribution to this SIMPLE IRA.'), {status:422});
+    const anniversary = new Date(first); anniversary.setUTCFullYear(first.getUTCFullYear()+2);
+    if (anniversary > asOf) throw Object.assign(Error('This SIMPLE IRA has not completed two years as of the evidence date. Transfers within that period require a separate SIMPLE-to-SIMPLE review.'), {status:422});
+  }
   if (value.route === 'in_service' && value.plan_permission !== true) throw Object.assign(Error('An in-service opportunity requires confirmation of this plan’s permission and the participant’s eligibility.'), {status: 422});
   value = {account_type: value.account_type, route: value.route, assets_confirmed: true, eligible_distribution: true, individual: true, plan_permission: value.plan_permission === true, destination_type: ira ? value.destination_type : null, evidence_basis: value.evidence_basis, consent_confirmed: true};
+  if (specialIRA) value = {...value,tax_treatment:'traditional',...(inputValue.account_type==='simple_ira'?{first_contribution_on:inputValue.first_contribution_on}:{})};
   if (field === 'movable_assets') {
     const amount = inputValue.lower_bound_usd;
     if (!['number','string'].includes(typeof amount) || String(amount).trim() === '' || !Number.isFinite(Number(amount)) || Number(amount) < 0 || Number(amount) > 1e12 || inputValue.amount_scope !== 'eligible_retained_assets') throw Object.assign(Error('Record a disclosed USD lower bound for retained assets eligible for this transfer, not net worth or the total employer plan.'), {status:422});
@@ -78,7 +88,7 @@ export function validateObservation(input, {userId, identity, now = new Date()} 
       if (!['US', 'USA', 'UNITED STATES', 'UNITED STATES OF AMERICA'].includes(clean(value?.country).toUpperCase()) || value?.scope !== 'residence') throw Object.assign(Error('Confirm the person’s US residence; a company office address is insufficient.'), {status: 422});
       value = {country: 'US', scope: 'residence'};
     }
-    if (input.field === 'retirement' || input.field === 'movable_assets') value = validateFinancialEvidence(input.field, value);
+    if (input.field === 'retirement' || input.field === 'movable_assets') value = validateFinancialEvidence(input.field, value, {asOf:observed});
     if (input.field === 'net_worth') {
       const lower = Number(value?.lower_bound_usd);
       if (value?.lower_bound_usd == null || value.lower_bound_usd === '' || !Number.isFinite(lower) || lower < 0 || lower > 1e12 || value?.excludes_home !== true || value?.net_of_liabilities !== true || !DISCLOSURES.has(value?.evidence_basis) || value?.consent_confirmed !== true) throw Object.assign(Error('Record a disclosed USD lower bound, excluding the home and net of liabilities, with an authorized evidence basis and research consent. Estimates from titles or property records are insufficient.'), {status: 422});
@@ -151,7 +161,7 @@ export function assessLead(lead, observations = [], {now = new Date(), plans = [
   }
   if (target === 'rollover_100k' && gates.movable_assets.state === 'confirmed' && gates.retirement.state === 'confirmed') {
     const amount = gates.movable_assets.evidence.value, transfer = gates.retirement.evidence.value;
-    if (['account_type','route','destination_type'].some(key => amount[key] !== transfer[key])) gates.movable_assets = gate('unknown', 'Amount and transfer reviews describe different accounts or transfer routes. Reconcile the evidence.', gates.movable_assets.evidence);
+    if (['account_type','route','destination_type','tax_treatment','first_contribution_on'].some(key => amount[key] !== transfer[key])) gates.movable_assets = gate('unknown', 'Amount and transfer reviews describe different accounts or transfer routes. Reconcile the evidence.', gates.movable_assets.evidence);
   }
   const confirmedContact=gates.contact.evidence?.value;
   if(confirmedContact?.channel==='phone'&&(lead.imported_dnc||[]).some(p=>phoneNumber(p)===confirmedContact.address))gates.contact=gate('failed','This phone has an existing do-not-call restriction.');

@@ -36,8 +36,8 @@ export function assessRollover(person,{today,target=ROLLOVER_TARGET}={}){
        assets_confirmed:e.assets_retained,eligible_distribution:e.eligibility_confirmed,
        individual:e.individual,consent_confirmed:e.consent_confirmed,evidence_basis:e.source_type,
        plan_permission:e.plan_permission,destination_type:e.destination_type,
-       lower_bound_usd:e.lower_bound_usd,amount_scope:e.amount_scope
-     });
+       lower_bound_usd:e.lower_bound_usd,amount_scope:e.amount_scope,tax_treatment:e.tax_treatment,first_contribution_on:e.first_contribution_on
+     },{asOf:new Date(e.observed_at)});
      return true;
    } catch {return false;}
  });
@@ -47,7 +47,7 @@ export function assessRollover(person,{today,target=ROLLOVER_TARGET}={}){
  const disclosures=new Set(financial.map(e=>JSON.stringify([
    e.lower_bound_usd,e.account_type,e.route,e.destination_type??null,
    e.assets_retained,e.eligibility_confirmed,e.plan_permission??null,
-   e.two_year_rule_reviewed??null,e.distribution_reason??null,e.individual??null,e.consent_confirmed??null,e.amount_scope??null
+   e.two_year_rule_reviewed??null,e.distribution_reason??null,e.individual??null,e.consent_confirmed??null,e.amount_scope??null,e.tax_treatment??null,e.first_contribution_on??null
  ])));
  const conflict=raw.some(e=>e?.person_id===id&&e.kind==='movable_assets'&&e.conflict===true&&e.source_ref&&dated(e.observed_at,today,FINANCIAL_EVIDENCE_DAYS))||disclosures.size>1;
  const confirmed=!conflict&&valid.length>0&&valid[0].lower_bound_usd>=target.minimum_movable_usd;
@@ -55,7 +55,7 @@ export function assessRollover(person,{today,target=ROLLOVER_TARGET}={}){
  if(!confirmed)questions.push('Confirm whether at least $100,000 remains available to move; do not infer a balance from job history.');
  if(conflict)questions.push('Resolve conflicting financial evidence.');
  if(!valid.length)questions.push('Confirm account type, individual ownership, research consent, eligible asset amount and transfer route.');
- if(financial.some(e=>['sep_ira','simple_ira'].includes(e.account_type)))questions.push('SEP and SIMPLE IRA evidence requires a supported account-specific review before confirmation.');
+ if(!valid.length&&financial.some(e=>['sep_ira','simple_ira'].includes(e.account_type)))questions.push('SEP and SIMPLE IRA evidence requires a supported account-specific review before confirmation.');
  if(age)questions.push('Check the current plan’s in-service distribution rules.');
  if(accounts.some(e=>e.account_type==='simple_ira'))questions.push('Review SIMPLE IRA participation dates and transfer restrictions.');
  return {status:confirmed?'confirmed_target':signals.length?'research_candidate':'insufficient_evidence',
