@@ -2,6 +2,7 @@ import {createHash} from 'node:crypto';
 import {estimateAgeBand} from './age-band.mjs';
 
 export const QUALITY_VERSION = 'retirement-evidence-2';
+export const qualificationVersion = target => target === 'rollover_100k' ? 'retirement-movable-1' : QUALITY_VERSION;
 export const US_STATES = new Set('AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC'.split(' '));
 const clean = value => String(value ?? '').normalize('NFKC').trim();
 export const nameKey = value => clean(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
@@ -224,5 +225,6 @@ export function csvCell(value) {
 const ageColumns = a => [a.status === 'unknown' ? '' : a.label, a.status === 'unknown' ? '' : a.confidence, a.basis.join('; '), a.class_year ?? '', a.class_basis ?? '', a.alumni_window, a.career_stage];
 export function researchCSV(rows) {
   const header = ['First Name', 'Last Name', 'Company', 'Title', 'Email', 'Phone', 'LinkedIn URL', 'Quality Status', 'Evidence Score', 'Age 45-73', 'US Residence', 'Transfer Eligibility', 'Contact', 'Net Worth Excluding Home >=250K', 'Missing Evidence', 'Source URLs', 'Research Only', 'Age Band (estimate unless reported)', 'Age Confidence', 'Age Basis', 'Class Year', 'Class Basis', 'Alumni 1977-1990', 'Career Stage'];
-  return '\uFEFF' + [header, ...rows.map(({lead, quality}) => [lead.first_name, lead.last_name, lead.company, lead.current_title, lead.email, lead.phone || lead.business_phone || lead.mobile_phone, lead.linkedin_url, quality.status, quality.score, ...QUALITY_FIELDS.map(f => quality.gates[f].state), quality.gaps.join('; '), QUALITY_FIELDS.map(f => quality.gates[f].evidence?.url).filter(Boolean).join('; '), 'Not a call list; existing suppression applies', ...ageColumns(quality.age_band || estimateAgeBand(lead))])].map(row => row.map(csvCell).join(',')).join('\r\n');
+  header.push('Qualification Target','Retained Assets Eligible to Move >=100K');
+  return '\uFEFF' + [header, ...rows.map(({lead, quality}) => [lead.first_name, lead.last_name, lead.company, lead.current_title, lead.email, lead.phone || lead.business_phone || lead.mobile_phone, lead.linkedin_url, quality.status, quality.score, ...QUALITY_FIELDS.map(f => quality.gates[f].state), quality.gaps.join('; '), (quality.required_fields||QUALITY_FIELDS).map(f => quality.gates[f].evidence?.url).filter(Boolean).join('; '), 'Not a call list; existing suppression applies', ...ageColumns(quality.age_band || estimateAgeBand(lead)),quality.target||'legacy',quality.gates.movable_assets?.state||'not_assessed'])].map(row => row.map(csvCell).join(',')).join('\r\n');
 }

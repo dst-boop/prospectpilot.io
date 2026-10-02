@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
-import {assessLead,leadScores,leadIdentity,validateObservation} from '../lead-quality.mjs';
+import {assessLead,leadScores,leadIdentity,validateObservation,researchCSV} from '../lead-quality.mjs';
+import {createResearchLab} from '../research-lab.mjs';
 
 const now=new Date('2026-10-02T12:00:00Z');
 const lead={first_name:'Example',last_name:'Prospect',company:'Example Co',email:'example@example.com'};
@@ -44,4 +45,40 @@ test('movable-assets migration preserves legacy observations',async()=>{
     assert.deepEqual(rows.map(r=>r.field),['movable_assets','net_worth']);
     assert.equal(rows[1].payload.lower_bound_usd,250000);
   } finally {await db.close();}
+});
+
+test('saved rollover target is consistent across reviews, worklist, filters and exports',async()=>{
+  const db=new PGlite();
+  try {
+    for(const file of readFileSync(new URL('../migrate.mjs',import.meta.url),'utf8').match(/'(generated\/schema\.sql|migrations\/[^']+\.sql)'/g).map(s=>s.slice(1,-1))) await db.exec(readFileSync(new URL('../'+file,import.meta.url),'utf8'));
+    const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
+    const lab=createResearchLab({pool,now:()=>now,sources:{readiness:{}}}),user={uid:'owner',email:'owner@example.com'};
+    await lab.importCSV(user,{csv:'First Name,Last Name,Company,Email,Country\nExample,Prospect,Example Co,example@example.com,US'});
+    const id=(await db.query('SELECT id FROM discovery_leads')).rows[0].id;
+    const current=await lab.detail(user,id);
+    const save=async(field,value)=>lab.review(user,id,{...review(field,value),identity_signature:current.quality.identity_signature});
+    for(const row of [...base(),review('age',{min:60,max:60}),review('net_worth',{lower_bound_usd:1000000,excludes_home:true,net_of_liabilities:true,evidence_basis:'participant_disclosure',consent_confirmed:true})]) await save(row.field,row.value);
+    assert.equal((await lab.detail(user,id)).quality.status,'verified');
+    await lab.settings(user,{configuration:{qualification_target:'rollover_100k'}});
+    assert.equal((await lab.list(user,{status:'verified'})).total,0,'old verified rule cannot populate the new verified filter');
+    assert.equal((await lab.detail(user,id)).quality.gates.movable_assets.state,'unknown');
+    await save('movable_assets',amount);
+    await save('age',{min:80,max:80});
+    const result=await lab.detail(user,id);
+    assert.equal(result.quality.status,'verified');assert.equal(result.quality.target,'rollover_100k');
+    assert.equal(result.scores.qualification.score,100);
+    assert.equal((await lab.advisor.detail(user,id)).action.bucket,'ready');
+    const work=(await lab.advisor.worklist(user,{view:'all'})).items.find(item=>item.lead.id===id);
+    assert.equal(work.quality.target,'rollover_100k');assert.equal(work.action.bucket,'ready');
+    assert.match(researchCSV([result]),/"rollover_100k","confirmed"/);
+    const exported=await lab.route(new Request('https://app.example/api/lab/export',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ids:[id]})}),user);
+    assert.match(await exported.text(),/"rollover_100k","confirmed"/);
+    assert.equal((await lab.list(user,{status:'verified'})).total,1);
+    await lab.metrics(user);
+    const stored=(await db.query('SELECT rule_version FROM lab_qualification')).rows[0];
+    assert.equal(stored.rule_version,'retirement-movable-1');
+    await lab.settings(user,{configuration:{score_weights:{qualification:5}}});
+    assert.equal((await lab.settings(user)).configuration.qualification_target,'rollover_100k','unrelated settings preserve the target');
+    assert.equal((await lab.settings({uid:'other',email:'other@example.com'})).configuration.qualification_target,'legacy','settings are per advisor');
+  }finally{await db.close();}
 });
