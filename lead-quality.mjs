@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
 import {estimateAgeBand} from './age-band.mjs';
 
+export const FINANCIAL_EVIDENCE_DAYS = 180;
 export const QUALITY_VERSION = 'retirement-evidence-2';
 export const qualificationVersion = target => target === 'rollover_100k' ? 'retirement-movable-2' : QUALITY_VERSION;
 export const US_STATES = new Set('AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC'.split(' '));
@@ -118,7 +119,7 @@ export function assessLead(lead, observations = [], {now = new Date(), plans = [
     if (o.identity_signature !== identity) { warnings.push(`${field}: identity changed; review the evidence again.`); continue; }
     const date = validDate(o.observed_at), reviewed = validDate(o.reviewed_at);
     if (!date || !reviewed || reviewed > now || date > now || !o.reviewer || excludedSource(`${o.source} ${o.url}`)) continue;
-    const ttl = field === 'age' ? 366 : 180;
+    const ttl = field === 'age' ? 366 : FINANCIAL_EVIDENCE_DAYS;
     if (now - date > ttl * 86400000) { gates[field] = gate('stale', 'Evidence needs a fresh review.', o); continue; }
     if (o.verdict === 'rejected') { gates[field] = gate('failed', 'Reviewed evidence does not meet this criterion.', o); continue; }
     if (o.verdict !== 'confirmed') { gates[field] = gate('unknown', 'Reviewed; still unknown.', o); continue; }
