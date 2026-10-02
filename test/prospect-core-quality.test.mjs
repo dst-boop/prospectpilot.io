@@ -94,3 +94,22 @@ test('contradictory career and graduation clues receive no age credit',()=>{
   assert.equal(result.min,null);assert.equal(result.max,null);assert.equal(result.confidence,0);
  }
 });
+
+
+test('shared identifiers cannot override conflicting given names or generation suffixes',()=>{
+ const base={first_name:'John',last_name:'Example',company:'Example Co',current_title:'Director',city:'Albany',state:'NY',mobile:'2125550100',business_email:'j.example@example.com'};
+ for(const [a,b,reason] of [
+  [base,{...base,first_name:'Jane'},'different:first_name'],
+  [{...base,middle_name:'Alan'},{...base,middle_name:'Andrew'},'different:middle_name'],
+  [{...base,suffix:'Jr'},{...base,suffix:'Sr'},'different:suffix'],
+ ]){
+  for(const [left,right] of [[a,b],[b,a]]){
+   const result=compareIdentity(left,right);
+   assert.equal(result.hard_conflict,true);assert.notEqual(result.outcome,'confirmed');
+   assert.ok(result.reasons.includes(reason));
+   assert.equal(chooseIdentityMatch(left,[{...right,id:'existing'}]).outcome,'review');
+  }
+ }
+ assert.equal(compareIdentity(base,{...base,first_name:'JOHN'}).outcome,'confirmed');
+ assert.equal(compareIdentity(base,{...base,middle_name:'Alan'}).hard_conflict,false,'missing middle name is not a contradiction');
+});
