@@ -248,6 +248,7 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
    if((await c.query('SELECT id FROM prospect_contacts WHERE user_id=$1 AND id<>$2 AND identity_keys ?| $3::text[]',[user.uid,id,identityLookupKeys(next)])).rows.length)throw fail(409,'These identifiers match another contact. Review both records before correcting their identities. No records were merged.');
    if(!event&&!Object.keys(changes).length)return {id,changed:false};
    const evidence={...(scope?{actor_uid:scope.actor}:{}),source:'User correction',kind:'manual_review',imported_at:new Date().toISOString(),observed_at:null,reason:input.reason.trim(),changes};
+   if(event)evidence.source_resolution={...event,resolution:{decision:input.decision,reviewed_at:evidence.imported_at,reason:evidence.reason}};
    next.field_sources={...(old.field_sources||{})};for(const key of Object.keys(changes))next.field_sources[key]=evidence;
    if(changes.email){next.email_status=next.email?'unverified':'missing';}
    // A phone check answered for one number and name; after either changes it is someone else's answer.
@@ -256,7 +257,7 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
    if(changes.phone){next.phone_status=next.phone?'unverified':'missing';}
    if(changes.phone||changes.mobile_phone){next.phone_import={...(old.phone_import||{})};if(changes.phone){next.phone_origin=normalized.phone_origin;if(next.phone_import.direct)next.phone_import.direct={...next.phone_import.direct,status:'reviewed'};}if(changes.mobile_phone&&next.phone_import.mobile)next.phone_import.mobile={...next.phone_import.mobile,status:'reviewed'};}
    if(changes.first_name||changes.last_name){next.email_status=next.email?'unverified':'missing';next.phone_status=next.phone?'unverified':'missing';}
-   const history=[...(old.source_history||[])];if(event)history[input.resolve_history_index]={...event,resolution:{decision:input.decision,reviewed_at:evidence.imported_at,reason:evidence.reason}};
+   const history=[...(old.source_history||[])];if(event)history[input.resolve_history_index]=evidence.source_resolution;
    next.source_history=retainSourceHistory([...history,evidence]);
    await c.query('UPDATE prospect_contacts SET payload=$1::jsonb,identity_keys=$2::jsonb,updated_at=now() WHERE id=$3 AND user_id=$4',[JSON.stringify(next),JSON.stringify(identities(next)),id,user.uid]);
    return {id,changed:true};
