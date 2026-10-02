@@ -402,3 +402,14 @@ test('SEP and SIMPLE review controls expose tax treatment and participation date
  c.element('accountType').value='401k';c.run('specialIraFields()');
  assert.equal(c.element('specialIraFields').hidden,true);
 });
+
+
+test('ineligible enrichment export shows the server explanation instead of download success',async()=>{
+ const c=client();c.run("workSelected.add('pending-identity')");
+ const exporting=c.element('enrichExport').onclick();
+ assert.equal(c.pending[0].url,'/api/lab/enrichment-export');
+ c.pending.shift().respond({detail:'No selected prospects are eligible for enrichment export. Resolve pending identity reviews.'},422);
+ await exporting;
+ assert.match(c.element('notice').textContent,/No selected prospects are eligible/);
+ assert.doesNotMatch(c.element('notice').textContent,/CSV prepared/);
+});
