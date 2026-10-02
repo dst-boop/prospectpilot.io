@@ -234,7 +234,7 @@ test('a scheduled cancellation shows the end date, not a renewal',()=>fixture(as
 const PRICED={...PLANS,starter:{...PLANS.starter,stripe_annual_price_id:'price_starter_yr',trial_days:14,trial_allowance_micros:500,monthly_price_cents:14900,annual_price_cents:149000}};
 const TOPUPS={small:{name:'Small top-up',stripe_price_id:'price_small',allowance_micros:1500,price_cents:5000}};
 const priced=fn=>fixture(fn,{plans:PRICED,topups:TOPUPS,leadCostMicros:500});
-const paidTopup=(id,over={})=>({id,type:'checkout.session.completed',data:{object:{id:'cs_top_'+id,mode:'payment',payment_status:'paid',client_reference_id:advisor.uid,metadata:{uid:advisor.uid,kind:'topup',pack:'small'},...over}}});
+const paidTopup=(id,over={})=>({id,type:'checkout.session.completed',data:{object:{id:'cs_top_'+id,mode:'payment',payment_status:'paid',client_reference_id:advisor.uid,metadata:{uid:advisor.uid,kind:'topup',pack:'small',allowance_micros:'1500'},...over}}});
 
 test('yearly checkout uses the annual price; the free trial is offered once; promotion codes are allowed',()=>priced(async({db,billing,stripe,deliver})=>{
   const site='https://prospectpilot.io';
@@ -276,7 +276,7 @@ test('top-ups: only for active plans, credited once when paid, this month only, 
   const {url}=await billing.topup(advisor,{pack:'small'},site);
   assert.match(url,/^https:\/\/checkout\.stripe\.com\//);
   const sent=stripe.calls.at(-1).params;
-  assert.deepEqual([sent.mode,sent.line_items[0].price,sent.customer,sent.metadata.kind,sent.metadata.pack],['payment','price_small','cus_1','topup','small']);
+  assert.deepEqual([sent.mode,sent.line_items[0].price,sent.customer,sent.metadata.kind,sent.metadata.pack,sent.metadata.allowance_micros],['payment','price_small','cus_1','topup','small','1500']);
   // An unpaid session (bank debit still clearing) credits nothing yet.
   assert.equal((await (await deliver(paidTopup('1',{payment_status:'unpaid'}))).json()).outcome,'unpaid');
   assert.equal((await jobs.summary(advisor)).plan.monthly_allowance_micros,2000);
@@ -285,7 +285,11 @@ test('top-ups: only for active plans, credited once when paid, this month only, 
   assert.deepEqual([plan.monthly_allowance_micros,plan.topup_micros,plan.plan_allowance_micros],[3500,1500,2000]);
   // The same paid session delivered again under a new event id is not credited twice.
   assert.equal((await (await deliver(paidTopup('3',{id:'cs_top_2'}))).json()).outcome,'duplicate');
-  assert.equal((await (await deliver(paidTopup('4',{metadata:{uid:advisor.uid,kind:'topup',pack:'gone'}}))).json()).outcome,'unknown_pack');
+  // The purchased terms are credited even if the pack was removed or changed before payment completed.
+  assert.equal((await (await deliver(paidTopup('4',{metadata:{uid:advisor.uid,kind:'topup',pack:'retired',allowance_micros:'700'}}))).json()).outcome,'topup_credited');
+  assert.equal((await jobs.summary(advisor)).plan.topup_micros,2200);
+  assert.equal((await (await deliver(paidTopup('5',{metadata:{uid:advisor.uid,kind:'topup',pack:'small'}}))).json()).outcome,'invalid_terms');
+  await db.query("DELETE FROM billing_topups WHERE pack='retired'");
   // Last month's top-up does not count this month.
   await db.query("UPDATE billing_topups SET purchased_at=date_trunc('month',now())-interval '1 day'");
   assert.equal((await jobs.summary(advisor)).plan.monthly_allowance_micros,2000);
@@ -308,3 +312,11 @@ test('the billing panel shows prices, the trial, yearly billing, top-ups and lea
   assert.doesNotMatch(billingContent({enabled:true,membership:{...member,status:'past_due'},plans,topups:[{...topups[0],purchasable:false}],lead_cost_micros:500000}),/data-billing-topup/);
   assert.doesNotMatch(billingContent({enabled:true,membership:null,plans,topups:[]}),/fully worked leads/,'no estimate without a configured lead cost');
 });
+
+test('no top-up is sold on a subscription whose price matches no configured plan',()=>priced(async({billing,stripe,deliver})=>{
+  stripe.set(subscription({items:{data:[{price:{id:'price_unknown'}}]}}));
+  await deliver(completed());
+  const before=stripe.calls.length;
+  await assert.rejects(billing.topup(advisor,{pack:'small'},'https://prospectpilot.io'),e=>e.status===409&&/would not count/.test(e.message));
+  assert.equal(stripe.calls.length,before,'no Stripe checkout was created');
+}));

@@ -126,9 +126,13 @@ export function createBilling({pool,stripe,config,webhookSecret,logger=console})
   if(!pack)throw fail(422,'Choose a top-up pack.');
   const row=await membershipRow(pool,user.uid);
   if(!row?.stripe_customer_id||!PAYING_STATUSES.includes(row.status))throw fail(409,'Top-ups are for active plans. Choose a plan first, or update your billing.');
+  // Top-ups only count on a configured plan, so never sell one that would not.
+  if(!plans[row.plan])throw fail(409,'Your plan is not available right now, so a top-up would not count. Contact support.');
   const session=await stripe.post('checkout/sessions',{
    mode:'payment',line_items:[{price:pack.stripe_price_id,quantity:1}],customer:row.stripe_customer_id,
-   client_reference_id:user.uid,metadata:{uid:user.uid,kind:'topup',pack:packId},
+   // The purchased terms travel with the session: a pack renamed, repriced or
+   // removed before payment completes still credits what was bought.
+   client_reference_id:user.uid,metadata:{uid:user.uid,kind:'topup',pack:packId,allowance_micros:String(pack.allowance_micros)},
    success_url:origin+'/prospect?billing=topup',cancel_url:origin+'/prospect?billing=cancelled',
   });
   if(typeof session.url!=='string'||!session.url.startsWith('https://'))throw fail(502,'Stripe did not return a checkout page.');
@@ -136,11 +140,12 @@ export function createBilling({pool,stripe,config,webhookSecret,logger=console})
  }
 
  async function creditTopup(c,session){
-  const uid=session.metadata?.uid||session.client_reference_id,packId=session.metadata?.pack,pack=topups[packId];
+  const uid=session.metadata?.uid||session.client_reference_id,packId=String(session.metadata?.pack||''),allowance=Number(session.metadata?.allowance_micros);
   if(!uid)return 'no_uid';
   if(session.payment_status!=='paid')return 'unpaid';
-  if(!pack)return 'unknown_pack';
-  const added=(await c.query('INSERT INTO billing_topups(session_id,user_id,pack,allowance_micros) VALUES($1,$2,$3,$4) ON CONFLICT(session_id) DO NOTHING RETURNING session_id',[session.id,uid,packId,pack.allowance_micros])).rows.length;
+  // Only this server sets session metadata (with the secret key); a malformed value means a session it did not create.
+  if(!packId||!Number.isSafeInteger(allowance)||allowance<=0)return 'invalid_terms';
+  const added=(await c.query('INSERT INTO billing_topups(session_id,user_id,pack,allowance_micros) VALUES($1,$2,$3,$4) ON CONFLICT(session_id) DO NOTHING RETURNING session_id',[session.id,uid,packId,allowance])).rows.length;
   return added?'topup_credited':'duplicate';
  }
 
