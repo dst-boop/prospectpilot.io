@@ -28,6 +28,7 @@ test('each stage counts what got through and names why the rest stopped',()=>{
   assert.equal(stage(f,'people_saved').count,3);assert.match(stage(f,'people_saved').detail,/2 new · 1 already on file/);
   const promising=stage(f,'promising');assert.equal(promising.count,2);assert.equal(lost(promising,'Evidence still needed'),1);
   assert.equal(stage(f,'qualified').count,1);
+  assert.equal(stage(f,'qualified').label,'All required checks confirmed');
   assert.deepEqual(f.stages.map(s=>s.key),['companies_found','companies_researched','pages_read','people_found','people_kept','people_saved','promising','qualified']);
 });
 

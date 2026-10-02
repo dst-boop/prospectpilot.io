@@ -113,7 +113,7 @@ export function runFunnel({tasks=[],companies=[],statuses={}}={}) {
     {key:'people_kept',label:'Matched the titles',count:kept,lost:tally([['Other titles, not kept',offTarget],['Reported age below the search, not kept',belowAge]])},
     {key:'people_saved',label:'Saved to your records',count:saved,detail:`${Math.min(added,saved)} new · ${onFile} already on file`,lost:tally([['Missing a full name, Equitable, or previously deleted',rejected],['Matched more than one record · held in Possible duplicates',ambiguous],['Already held by another advisor',heldElsewhere]])},
     {key:'promising',label:'Promising or better',count:promising,lost:tally([['Excluded by a qualification check',status('excluded')],['Conflicting identifiers to resolve',status('identity_review')],['Evidence still needed',status('incomplete')+status('unassessed')]])},
-    {key:'qualified',label:'All five checks confirmed',count:status('verified'),lost:tally([['Promising, evidence still to review',status('promising')]])}]};
+    {key:'qualified',label:'All required checks confirmed',count:status('verified'),lost:tally([['Promising, evidence still to review',status('promising')]])}]};
 }
 // Every value a source reported for these fields is kept with its source and
 // when it was seen, so a second source never silently erases the first. The
