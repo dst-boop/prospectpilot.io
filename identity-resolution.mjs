@@ -35,7 +35,13 @@ export function compareIdentity(a,b){
   if(A.city&&B.city)add('city',A.city===B.city?1:0,8);
   if(A.state&&B.state){const same=A.state===B.state?1:0;add('state',same,8);if(!same&&A.company&&B.company&&jaccard(A.company,B.company)<0.25)hardConflict=true;}
   if(A.education.length&&B.education.length)add('education',Math.max(...A.education.flatMap(x=>B.education.map(y=>jaccard(x,y)))),8);
-  if(firstA&&firstB&&firstA[0]!==firstB[0])hardConflict=true;
+  // A shared/recycled identifier cannot erase a conflicting full name.
+  // Initials remain weak context; nicknames need review rather than inference.
+  if(firstA&&firstB&&(firstA[0]!==firstB[0]||(firstA.length>1&&firstB.length>1&&firstA!==firstB))){hardConflict=true;reasons.push('different:first_name');}
+  const middleA=clean(a.middle_name),middleB=clean(b.middle_name);
+  if(middleA&&middleB&&(middleA[0]!==middleB[0]||(middleA.length>1&&middleB.length>1&&middleA!==middleB))){hardConflict=true;reasons.push('different:middle_name');}
+  const suffixA=clean(a.suffix),suffixB=clean(b.suffix);
+  if(suffixA&&suffixB&&suffixA!==suffixB){hardConflict=true;reasons.push('different:suffix');}
   const confidence=weight?Math.round(score/weight*100):0;
   const corroboratingContext=reasons.some(reason=>reason.startsWith('match:')&&reason!=='match:name');
   // A name, job title, employer or shared switchboard can suggest a match,
