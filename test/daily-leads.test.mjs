@@ -6,7 +6,7 @@ import {readFileSync,mkdtempSync,writeFileSync,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
-import {deepParse,select,finalize,toCSV,digest,readLedger,appendLedger,enrichmentRecords,tenureAt,seniority,csvCell,scoreParts} from '../scripts/daily-leads/engine.mjs';
+import {deepParse,select,finalize,toCSV,digest,readLedger,appendLedger,enrichmentRecords,tenureAt,seniority,csvCell,scoreParts,stintAt,scoopSignals} from '../scripts/daily-leads/engine.mjs';
 import {createProspectWorkspace} from '../prospect-workspace.mjs';
 
 // Every name here is fictional. Real lead data never enters this repository.
@@ -63,6 +63,35 @@ test('long tenure is not claimed when the history shows the stint ended',()=>{
   assert.match(lead.why_now,/ending 2011\. Confirm on LinkedIn/);assert.doesNotMatch(lead.why_now,/10 years or more/);
 });
 
+test('tenure rejects similarly named companies but accepts ordinary legal suffixes',()=>{
+  const history=[{companyName:'Cisco Brewers',fromDate:'1990-01-01',toDate:'2020-01-01'},
+    {companyName:'Cisco, Inc.',fromDate:'2010-01-01',toDate:'2015-01-01'},
+    {companyName:'Cisco Corporation',fromDate:'2013-01-01',toDate:'2020-01-01'}];
+  const matched=stintAt(history,'Cisco',today);
+  assert.equal(matched.first,'2010-01-01');assert.equal(matched.years,10,'overlapping roles are counted once');
+  assert.equal(stintAt([{companyName:'Cisco Brewers',fromDate:'1990-01-01'}],'Cisco',today),null);
+  assert.equal(stintAt([{companyName:'Cisco',fromDate:'1990-01-01'}],'Cisco Brewers',today),null);
+  assert.equal(stintAt([{companyName:'Company Builders',fromDate:'1990-01-01'}],'Builders',today),null,'legal-looking words inside a brand are not stripped');
+});
+
+test('invalid or future career dates cannot invent tenure or a completed departure',()=>{
+  for(const change of [{fromDate:'2026-02-30'},{fromDate:'2027-01-01'},{toDate:'not-a-date'},{toDate:'2026-02-30'}])
+    assert.equal(stintAt([{companyName:'Example Co',fromDate:'2010-01-01',...change}],'Example Co',today),null);
+  const planned=stintAt([{companyName:'Example Co',fromDate:'2010-01-01',toDate:'2030-01-01'}],'Example Co',today);
+  assert.equal(planned.last,today);assert.equal(planned.current,true);assert.ok(planned.years<17);
+  const [lead]=finalize([{person_id:'1',tier:'B',company:'Other Co',signal:{employer:'Example Co'}}],new Map([['1',{employmentHistory:[{companyName:'Example Co',fromDate:'2010-01-01'}]}]]),{today});
+  assert.match(lead.why_now,/still lists a role/);assert.doesNotMatch(lead.why_now,/^Left /);
+});
+
+test('search-only context does not claim an exact tenure or recent start and name-only scoop index is removed',()=>{
+  const rows=finalize([{person_id:'1',tier:'C',company:'Example Co',signal:{employer:'Example Co',layoff:true}},
+    {person_id:'2',tier:'B',company:'Other Co',signal:{employer:'Example Co'}}],new Map(),{today});
+  assert.match(rows[0].why_now,/career dates need confirmation/);
+  assert.doesNotMatch(rows.map(r=>r.why_now).join(' '),/10 years or more|last 90 days|announced layoffs this month/);
+  const parsed=scoopSignals(scoops.response);
+  assert.equal(parsed.byPerson.has('101'),true);assert.equal('byName' in parsed,false);
+});
+
 test('enrichment merges whatever envelope arrives; missing numbers are left for the advisor',()=>{
   const {selected}=select([scoops,search('A','',[person(101,'Avery','Sample','Chief Operating Officer','Beta Labs')]),search('B','Example Robotics',[person(102,'Blair','Test','Director','Delta Systems')])],{config,today});
   const response=JSON.stringify({contact_1:{success:true,input:{personId:101},data:{result:[{id:101,firstName:'Avery',email:'Avery.Sample@betalabs.example',mobilePhone:'(212) 555-0100',mobilePhoneDoNotCall:true,
@@ -74,7 +103,7 @@ test('enrichment merges whatever envelope arrives; missing numbers are left for 
   const avery=leads.find(l=>l.person_id==='101'),blair=leads.find(l=>l.person_id==='102');
   assert.equal(avery.email,'avery.sample@betalabs.example');assert.equal(avery.mobile,'+12125550100');assert.equal(avery.linkedin_url,'https://www.linkedin.com/in/avery-sample');
   assert.equal(avery.mobile_dnc,true);assert.equal(avery.enriched,true);assert.equal(avery.tenure_years,22.7);
-  assert.equal(blair.enriched,false);assert.equal(blair.email,'');assert.match(blair.why_now,/^Formerly at Example Robotics; started as Director at Delta Systems within the last 90 days/,'no departure date is claimed without the history');
+  assert.equal(blair.enriched,false);assert.equal(blair.email,'');assert.match(blair.why_now,/^Reported former employer: Example Robotics; current role Director at Delta Systems/,'no departure date is claimed without the history');
   assert.match(blair.linkedin_search,/^https:\/\/www\.linkedin\.com\/search\/results\/people\/\?keywords=Blair%20Test%20Delta%20Systems$/);
   assert.equal(tenureAt([{company:{companyName:'Other'},fromDate:'2000-01-01'}],'Example Robotics',today),null);
 });
