@@ -49,7 +49,7 @@ test('contact responses preserve CSV while internal failures do not expose sensi
 test('release identity distinguishes a registered contact workspace from the older lab-only app',async()=>{
  for(const enabled of [true,false]){
   const response=await fixture({enabled}).handler(request('/version',{cookie:''}));const version=await response.json();
-  assert.equal(version.contact_workspace_version,enabled?'professional-contacts-1':null);assert.equal(version.release_id,'release-test');assert.equal(version.quality_version,'retirement-evidence-2');assert.equal(response.headers.get('cache-control'),'no-store');
+  assert.equal(version.contact_workspace_version,enabled?'professional-contacts-1':null);assert.equal(version.release_id,'release-test');assert.equal(version.quality_version,'retirement-evidence-3');assert.equal(response.headers.get('cache-control'),'no-store');
  }
 });
 

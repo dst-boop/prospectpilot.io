@@ -2,8 +2,8 @@ import {createHash} from 'node:crypto';
 import {estimateAgeBand} from './age-band.mjs';
 
 export const FINANCIAL_EVIDENCE_DAYS = 180;
-export const QUALITY_VERSION = 'retirement-evidence-2';
-export const qualificationVersion = target => target === 'rollover_100k' ? 'retirement-movable-2' : QUALITY_VERSION;
+export const QUALITY_VERSION = 'retirement-evidence-3';
+export const qualificationVersion = target => target === 'rollover_100k' ? 'retirement-movable-3' : QUALITY_VERSION;
 export const US_STATES = new Set('AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC'.split(' '));
 const clean = value => String(value ?? '').normalize('NFKC').trim();
 export const nameKey = value => clean(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
@@ -168,10 +168,10 @@ export function assessLead(lead, observations = [], {now = new Date(), plans = [
   const suppressed = lead.suppressed === true || /^(do not contact|do not call|opted out|deceased|suppressed)$/i.test(clean(lead.follow_up_status)) || lead.qualifier?.dnc_status === 'BLOCKED';
   if (suppressed) { gates.contact = gate('failed', 'An existing suppression or contact restriction is active.'); warnings.push('Research does not authorize outreach or remove suppression.'); }
   if (nameKey(lead.company).includes('equitable')) warnings.push('Equitable employees are excluded from lead output.');
-  const identityConflict = lead.identity_status === 'review' && (lead.identity_conflicts || []).some(x => /different identifiers|conflict|ambiguous/i.test(x));
+  const identityConflict = lead.identity_status === 'review';
   const confirmed = required.filter(f => gates[f].state === 'confirmed').length;
   const candidates = required.filter(f => gates[f].state === 'candidate').length;
-  const excluded = required.some(f => gates[f].state === 'failed') || nameKey(lead.company).includes('equitable');
+  const excluded = lead.identity_status === 'excluded' || required.some(f => gates[f].state === 'failed') || nameKey(lead.company).includes('equitable');
   const status = excluded ? 'excluded' : identityConflict ? 'identity_review' : confirmed === required.length ? 'verified' : confirmed + candidates >= 3 ? 'promising' : 'incomplete';
   const gaps = required.filter(f => gates[f].state !== 'confirmed');
   // Offer the combined review first instead of making users enter it twice.
