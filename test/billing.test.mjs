@@ -28,20 +28,20 @@ function stubStripe(){
       const id=decodeURIComponent(path.split('/')[1]);return structuredClone(subs[id]||current);}};
 }
 
-async function fixture(fn){
+async function fixture(fn,extra={}){
   const db=new PGlite();
   try{
-    for(const name of ['008-prospect-workspace','020-list-sharing','009-prospect-jobs','011-email-domain-check','017-forget','019-web-research','023-memberships','024-billing'])await db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
+    for(const name of ['008-prospect-workspace','020-list-sharing','009-prospect-jobs','011-email-domain-check','017-forget','019-web-research','023-memberships','024-billing','025-topups'])await db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
     const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
     const stripe=stubStripe(),logs=[];
-    const config={dailyBudgetMicros:1000000,prices:{search:1000},plans:PLANS,defaultPlan:'internal'};
+    const config={dailyBudgetMicros:1000000,prices:{search:1000},plans:PLANS,defaultPlan:'internal',...extra};
     const billing=createBilling({pool,stripe,config,webhookSecret:SECRET,logger:{log:l=>logs.push(l)}});
     let n=0;
     const jobs=createProspectJobs({pool,config,pacingMs:{pdl:0},providers:{readiness:{search:true},search:async()=>({contacts:[],retrieved:0,total:0})}});
     const search=async()=>{const job=await jobs.enqueue(advisor,{action:'search',filters:{company:'Example'},size:1,max_cost_micros:1000,idempotency_key:'billing-search-'+(++n)});while(await jobs.tick());return (await jobs.jobs(advisor,job.id)).tasks[0];};
     const deliver=async(event,signature)=>{const body=JSON.stringify(event);return billing.webhook(body,signature??sign(body));};
     const row=async()=>(await db.query('SELECT * FROM prospect_memberships WHERE user_id=$1',[advisor.uid])).rows[0];
-    await fn({db,billing,stripe,jobs,search,deliver,row,logs});
+    await fn({db,billing,stripe,jobs,search,deliver,row,logs,config});
   }finally{await db.close();}
 }
 const completed=(id='evt_1')=>({id,type:'checkout.session.completed',data:{object:{mode:'subscription',subscription:'sub_1',client_reference_id:advisor.uid,customer:'cus_1'}}});
@@ -229,3 +229,82 @@ test('a scheduled cancellation shows the end date, not a renewal',()=>fixture(as
   const html=billingContent(state);
   assert.match(html,/ends \d{4}-\d{2}-\d{2} \(cancellation scheduled\)/);assert.doesNotMatch(html,/renews/);
 }));
+
+// Hybrid pricing: annual prices, one free trial, promotion codes and top-up packs.
+const PRICED={...PLANS,starter:{...PLANS.starter,stripe_annual_price_id:'price_starter_yr',trial_days:14,trial_allowance_micros:500,monthly_price_cents:14900,annual_price_cents:149000}};
+const TOPUPS={small:{name:'Small top-up',stripe_price_id:'price_small',allowance_micros:1500,price_cents:5000}};
+const priced=fn=>fixture(fn,{plans:PRICED,topups:TOPUPS,leadCostMicros:500});
+const paidTopup=(id,over={})=>({id,type:'checkout.session.completed',data:{object:{id:'cs_top_'+id,mode:'payment',payment_status:'paid',client_reference_id:advisor.uid,metadata:{uid:advisor.uid,kind:'topup',pack:'small'},...over}}});
+
+test('yearly checkout uses the annual price; the free trial is offered once; promotion codes are allowed',()=>priced(async({db,billing,stripe,deliver})=>{
+  const site='https://prospectpilot.io';
+  await billing.checkout(advisor,{plan:'starter',interval:'annual'},site);
+  let sent=stripe.calls.at(-1).params;
+  assert.equal(sent.line_items[0].price,'price_starter_yr');assert.equal(sent.allow_promotion_codes,true);assert.equal(sent.subscription_data.trial_period_days,14);
+  // Switching to monthly is a different choice, so the open yearly checkout is closed first.
+  await billing.checkout(advisor,{plan:'starter',interval:'monthly'},site);
+  assert.equal(stripe.calls.at(-1).params.line_items[0].price,'price_starter');assert.equal(stripe.sessions.cs_1.status,'expired');
+  await assert.rejects(billing.checkout(advisor,{plan:'pro',interval:'annual'},site),{status:422});
+  // After a first subscription, no second trial.
+  await deliver(completed());
+  await db.query("UPDATE prospect_memberships SET status='canceled' WHERE user_id=$1",[advisor.uid]);
+  await billing.checkout(advisor,{plan:'starter',interval:'monthly'},site);
+  assert.equal(stripe.calls.at(-1).params.subscription_data.trial_period_days,undefined);
+  assert.equal((await billing.status(advisor)).plans.find(p=>p.id==='starter').trial_days,null);
+}));
+
+test('an annual price maps back to its plan when Stripe reports the subscription',()=>priced(async({deliver,row,stripe})=>{
+  stripe.set(subscription({items:{data:[{price:{id:'price_starter_yr'},current_period_end:1790000000}]}}));
+  await deliver(completed());
+  assert.equal((await row()).plan,'starter');
+}));
+
+test('a trial gets the smaller trial allowance until the first payment',()=>priced(async({deliver,stripe,jobs})=>{
+  stripe.set(subscription({status:'trialing'}));
+  await deliver(completed());
+  assert.equal((await jobs.summary(advisor)).plan.monthly_allowance_micros,500);
+  stripe.set(subscription({status:'active'}));
+  await deliver(updated('evt_paid'));
+  assert.equal((await jobs.summary(advisor)).plan.monthly_allowance_micros,2000);
+}));
+
+test('top-ups: only for active plans, credited once when paid, this month only, paused if the plan lapses',()=>priced(async({db,billing,stripe,deliver,jobs})=>{
+  const site='https://prospectpilot.io';
+  await assert.rejects(billing.topup(advisor,{pack:'small'},site),{status:409});
+  await deliver(completed());
+  await assert.rejects(billing.topup(advisor,{pack:'huge'},site),{status:422});
+  const {url}=await billing.topup(advisor,{pack:'small'},site);
+  assert.match(url,/^https:\/\/checkout\.stripe\.com\//);
+  const sent=stripe.calls.at(-1).params;
+  assert.deepEqual([sent.mode,sent.line_items[0].price,sent.customer,sent.metadata.kind,sent.metadata.pack],['payment','price_small','cus_1','topup','small']);
+  // An unpaid session (bank debit still clearing) credits nothing yet.
+  assert.equal((await (await deliver(paidTopup('1',{payment_status:'unpaid'}))).json()).outcome,'unpaid');
+  assert.equal((await jobs.summary(advisor)).plan.monthly_allowance_micros,2000);
+  assert.equal((await (await deliver({...paidTopup('2'),type:'checkout.session.async_payment_succeeded'})).json()).outcome,'topup_credited');
+  let plan=(await jobs.summary(advisor)).plan;
+  assert.deepEqual([plan.monthly_allowance_micros,plan.topup_micros,plan.plan_allowance_micros],[3500,1500,2000]);
+  // The same paid session delivered again under a new event id is not credited twice.
+  assert.equal((await (await deliver(paidTopup('3',{id:'cs_top_2'}))).json()).outcome,'duplicate');
+  assert.equal((await (await deliver(paidTopup('4',{metadata:{uid:advisor.uid,kind:'topup',pack:'gone'}}))).json()).outcome,'unknown_pack');
+  // Last month's top-up does not count this month.
+  await db.query("UPDATE billing_topups SET purchased_at=date_trunc('month',now())-interval '1 day'");
+  assert.equal((await jobs.summary(advisor)).plan.monthly_allowance_micros,2000);
+  await db.query("UPDATE billing_topups SET purchased_at=now()");
+  stripe.set(subscription({status:'past_due'}));
+  await deliver(updated('evt_lapse'));
+  plan=(await jobs.summary(advisor)).plan;
+  assert.deepEqual([plan.monthly_allowance_micros,plan.topup_micros],[0,0]);
+}));
+
+test('the billing panel shows prices, the trial, yearly billing, top-ups and leads instead of dollars alone',()=>{
+  const plans=[{id:'starter',name:'Starter',monthly_allowance_micros:40000000,purchasable:true,annual:true,monthly_price_cents:14900,annual_price_cents:149000,trial_days:14}];
+  const html=billingContent({enabled:true,membership:null,plans,topups:[],lead_cost_micros:500000});
+  assert.match(html,/\$149\/month/);assert.match(html,/about 80 fully worked leads/);assert.match(html,/14-day free trial/);
+  assert.match(html,/Start free trial/);assert.match(html,/data-billing-interval="annual"/);assert.match(html,/\$1,490\/year/);assert.match(html,/promotion code/);
+  const member={plan:'starter',plan_name:'Starter',status:'active',manageable:true};
+  const topups=[{id:'small',name:'Small top-up',allowance_micros:35000000,price_cents:5000,purchasable:true}];
+  const active=billingContent({enabled:true,membership:member,plans,topups,lead_cost_micros:500000});
+  assert.match(active,/data-billing-topup="small"/);assert.match(active,/\$50 adds \$35\.00 of paid lookups \(about 70 fully worked leads\)/);assert.match(active,/expires when your allowance resets/);
+  assert.doesNotMatch(billingContent({enabled:true,membership:{...member,status:'past_due'},plans,topups:[{...topups[0],purchasable:false}],lead_cost_micros:500000}),/data-billing-topup/);
+  assert.doesNotMatch(billingContent({enabled:true,membership:null,plans,topups:[]}),/fully worked leads/,'no estimate without a configured lead cost');
+});

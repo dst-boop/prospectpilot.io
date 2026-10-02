@@ -1,0 +1,25 @@
+{
+  "assumptions": {
+    "note": "Planning assumptions, not measured costs. Replace with measured cost per qualified lead after two weeks of metered use.",
+    "lead_cost_micros": 500000,
+    "lead_cost_range_micros": [250000, 750000],
+    "stripe_percent": 2.9,
+    "stripe_fixed_cents": 30,
+    "overhead_cents_per_advisor_month": 1500,
+    "founding_discount_percent": 30,
+    "minimum_margin_percent": { "plan": 40, "topup": 20 }
+  },
+  "default_plan": "none",
+  "plans": {
+    "none": { "name": "No plan", "monthly_allowance_micros": 0 },
+    "internal": { "name": "Internal", "monthly_allowance_micros": 300000000 },
+    "starter": { "name": "Starter", "monthly_allowance_micros": 40000000, "monthly_price_cents": 14900, "annual_price_cents": 149000, "trial_days": 14, "trial_allowance_micros": 5000000 },
+    "professional": { "name": "Professional", "monthly_allowance_micros": 100000000, "monthly_price_cents": 34900, "annual_price_cents": 349000, "trial_days": 14, "trial_allowance_micros": 5000000 },
+    "practice": { "name": "Practice", "monthly_allowance_micros": 250000000, "monthly_price_cents": 79900, "annual_price_cents": 799000 },
+    "producer": { "name": "Producer", "monthly_allowance_micros": 525000000, "monthly_price_cents": 149900, "annual_price_cents": 1499000 }
+  },
+  "topups": {
+    "small": { "name": "Small top-up", "allowance_micros": 35000000, "price_cents": 5000 },
+    "large": { "name": "Large top-up", "allowance_micros": 110000000, "price_cents": 15000 }
+  }
+}

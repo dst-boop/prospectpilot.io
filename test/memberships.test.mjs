@@ -16,7 +16,7 @@ const PLANS={starter:{name:'Starter',monthly_allowance_micros:2500},pro:{name:'P
 async function fixture(fn,{plans=PLANS,defaultPlan='starter'}={}){
   const db=new PGlite();
   try{
-    for(const name of ['008-prospect-workspace','020-list-sharing','009-prospect-jobs','011-email-domain-check','017-forget','019-web-research','023-memberships'])await db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
+    for(const name of ['008-prospect-workspace','020-list-sharing','009-prospect-jobs','011-email-domain-check','017-forget','019-web-research','023-memberships','024-billing','025-topups'])await db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
     const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
     let calls=0;
     const providers={readiness:{search:true,profile_image:true},search:async()=>{calls++;return {contacts:[record],retrieved:1,total:1};},
