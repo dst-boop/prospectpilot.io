@@ -31,9 +31,8 @@ export function deepParse(value) {
 }
 
 const text = value => String(value ?? '').replace(/\s+/g, ' ').trim();
-const nameKey = (first, last) => `${text(first).toLowerCase().split(' ')[0]}|${text(last).toLowerCase()}`;
 const personId = value => /^-?\d{1,20}$/.test(String(value ?? '')) ? String(value) : '';
-const isoDay = value => { const day = String(value ?? '').slice(0, 10); return /^\d{4}-\d{2}-\d{2}$/.test(day) && Number.isFinite(Date.parse(day)) ? day : ''; };
+const isoDay = value => { const day = String(value ?? '').slice(0, 10); return /^\d{4}-\d{2}-\d{2}$/.test(day) && Number.isFinite(Date.parse(day)) && new Date(day).toISOString().slice(0,10) === day ? day : ''; };
 const daysBetween = (a, b) => (Date.parse(b) - Date.parse(a)) / 86400000;
 const safeURL = value => { try { const u = new URL(String(value)); return ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password ? u.href : ''; } catch { return ''; } };
 
@@ -64,7 +63,7 @@ export function cleanScoop(description,company){
   return t.charAt(0).toUpperCase()+t.slice(1);
 }
 export function scoopSignals(response) {
-  const byPerson = new Map(), byName = new Map(), layoffEmployers = new Map();
+  const byPerson = new Map(), layoffEmployers = new Map();
   const data = deepParse(response)?.data;
   for (const row of Array.isArray(data) ? data : []) {
     const s = row?.attributes || {}, types = (s.types || []).map(t => t?.type), topics = (s.topics || []).map(t => t?.topic);
@@ -83,11 +82,9 @@ export function scoopSignals(response) {
       const signal = {type: kind.label, kind: kind.kind, employer: kind.kind === 'joined' ? '' : company, why: cleanScoop(s.description, company).slice(0, 400), date, url, strength: kind.rank};
       const better = prior => !prior || signal.strength > prior.strength || (signal.strength === prior.strength && signal.date > prior.date);
       if (better(byPerson.get(id))) byPerson.set(id, signal);
-      const name = nameKey(c.firstName, c.lastName);
-      if (text(c.lastName) && better(byName.get(name))) byName.set(name, signal);
     }
   }
-  return {byPerson, byName, layoffEmployers: [...layoffEmployers].sort((a, b) => b[1] - a[1]).map(([name]) => name)};
+  return {byPerson, layoffEmployers: [...layoffEmployers].sort((a, b) => b[1] - a[1]).map(([name]) => name)};
 }
 
 // Seniority from the title: search results do not return a management level.
@@ -116,7 +113,7 @@ function exclusion(candidate, config) {
 }
 
 // One candidate per search row, carrying the trigger that found them.
-export function candidatesFromSearch(file, scoops = new Map(), scoopNames = new Map()) {
+export function candidatesFromSearch(file, scoops = new Map()) {
   const meta = file?.meta || {};
   return contactRecords(file?.response).map(r => {
     // ZoomInfo sometimes answers with a newer profile id than the scoop names;
@@ -166,12 +163,12 @@ export function sameEmployerId(candidates, employer) {
 // `target` is how many to hand over, and the advisor keeps what is good.
 export function select(files, {config, ledger = new Set(), today, target = config.deliver_target}) {
   const scoopFiles = files.filter(f => f?.meta?.kind === 'scoops');
-  const scoops = new Map(), scoopNames = new Map(), layoffEmployers = new Set();
-  for (const f of scoopFiles) { const s = scoopSignals(f.response); for (const [id, sig] of s.byPerson) scoops.set(id, sig); for (const [n, sig] of s.byName) scoopNames.set(n, sig); s.layoffEmployers.forEach(e => layoffEmployers.add(e)); }
+  const scoops = new Map(), layoffEmployers = new Set();
+  for (const f of scoopFiles) { const s = scoopSignals(f.response); for (const [id, sig] of s.byPerson) scoops.set(id, sig); s.layoffEmployers.forEach(e => layoffEmployers.add(e)); }
   const seen = new Map(), excluded = [], counts = {found: 0, already_delivered: 0, excluded: 0, duplicate: 0};
   const evidenceById=new Map();
   for(const f of files.filter(f=>f?.meta?.kind==='rollover_evidence')) for(const e of Array.isArray(f.evidence)?f.evidence:[]){const id=personId(e.person_id);if(id)evidenceById.set(id,[...(evidenceById.get(id)||[]),e]);}
-  const searches = files.filter(f => !['scoops','rollover_evidence'].includes(f?.meta?.kind)).map(f => ({file:f, found:candidatesFromSearch(f, scoops, scoopNames)}));
+  const searches = files.filter(f => !['scoops','rollover_evidence'].includes(f?.meta?.kind)).map(f => ({file:f, found:candidatesFromSearch(f, scoops)}));
   // Preserve restrictions even from a duplicate that loses ranking or is
   // excluded from this search lane. Provider ID, never name, joins the flags.
   const restrictions = new Map();
@@ -267,14 +264,18 @@ export function tenureAt(history, employer, today) {
   return stintAt(history, employer, today)?.years ?? null;
 }
 export function stintAt(history, employer, today) {
-  const name = text(employer).toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (!name) return null;
+  const name = companyKey(employer);
+  if (!name || !isoDay(today)) return null;
   const spans = [];
   for (const job of Array.isArray(history) ? history : []) {
-    const company = text(job?.company?.companyName || job?.companyName || job?.company?.name).toLowerCase().replace(/[^a-z0-9]/g, '');
-    if (!company || !(company.includes(name) || name.includes(company))) continue;
-    const from = isoDay(job.fromDate || job.startDate), to = isoDay(job.toDate || job.endDate) || today;
-    if (from && to >= from) spans.push([from, to, !isoDay(job.toDate || job.endDate)]);
+    const company = companyKey(job?.company?.companyName || job?.companyName || job?.company?.name);
+    // A substring is not an employer identity: Cisco Brewers is not Cisco.
+    // Legal suffix differences are harmless; subsidiaries/aliases need evidence.
+    if (!company || company !== name) continue;
+    const endValue = job.toDate || job.endDate, endDate = isoDay(endValue);
+    if (endValue && !endDate) continue;
+    const from = isoDay(job.fromDate || job.startDate), to = endDate && endDate < today ? endDate : today;
+    if (from && from <= today && to >= from) spans.push([from, to, !endDate || endDate > today]);
   }
   if (!spans.length) return null;
   spans.sort((a, b) => a[0].localeCompare(b[0]));
@@ -294,10 +295,11 @@ export function whyNow(lead) {
   // ZoomInfo lists the role as current, but the history shows the stint ended:
   // say so rather than claim a long current tenure.
   if (lead.tier === 'C' && lead.stint && !lead.stint.current) return `ZoomInfo lists ${lead.title ? `${lead.title} at ` : ''}${s.employer || lead.company} as the current role, but the employment history shows ${lead.stint.years} years there ending ${lead.stint.last.slice(0, 4)}. Confirm on LinkedIn before calling.`;
-  if (lead.tier === 'C') return `${lead.tenure_years ? `${lead.tenure_years} years at ${s.employer || lead.company}` : `In the current role at ${s.employer || lead.company} for 10 years or more`}${lead.title ? ` as ${lead.title}` : ''}.${s.layoff ? ` ${s.employer} announced layoffs this month.` : ''} In-service or separation rollover options may apply.`;
+  if (lead.tier === 'C') return `${lead.tenure_years ? `${lead.tenure_years} years reported at ${s.employer || lead.company}` : `Search matched long-tenure criteria at ${s.employer || lead.company}; career dates need confirmation`}${lead.title ? ` as ${lead.title}` : ''}.${s.layoff ? ' Employer layoff context reported; confirm whether this person was affected.' : ''} Confirm retained assets and plan eligibility.`;
   // Without the employment history we know they worked there, not when they left.
+  if (lead.stint?.current) return `Employment history still lists a role at ${s.employer}; confirm whether the person has left before treating this as a separation opportunity.`;
   if (lead.tenure_years) return `Left ${s.employer}${tenure}; now ${lead.title || 'in a new role'} at ${lead.company}. Confirm whether an account remains with the former employer.`;
-  return `Formerly at ${s.employer || 'a large employer'}; started as ${lead.title || 'a new role'} at ${lead.company} within the last 90 days. A workplace plan may be left behind.`;
+  return `Reported former employer: ${s.employer || 'unknown'}; current role ${lead.title || 'unknown'} at ${lead.company}. Confirm departure timing and whether any retirement account remains.`;
 }
 
 // Merge enrichment into the selection. Nothing is dropped for a missing
