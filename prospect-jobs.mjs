@@ -48,8 +48,9 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   if(!config.plans)return null;
   const row=(await c.query('SELECT plan,monthly_allowance_micros FROM prospect_memberships WHERE user_id=$1',[userId])).rows[0];
   const id=row?.plan||config.defaultPlan,plan=config.plans[id];
-  // A plan id that is no longer configured allows nothing rather than everything.
-  const allowance=row&&row.monthly_allowance_micros!=null?Number(row.monthly_allowance_micros):plan?plan.monthly_allowance_micros:0;
+  // A plan id that is no longer configured allows nothing rather than everything,
+  // even when the advisor had an override on it.
+  const allowance=!plan?0:row&&row.monthly_allowance_micros!=null?Number(row.monthly_allowance_micros):plan.monthly_allowance_micros;
   const used=Number((await c.query(`SELECT COALESCE(sum(reserved_micros),0) AS n FROM prospect_charges WHERE user_id=$1 AND reserved_at>=${monthStart}`,[userId])).rows[0].n);
   const now=new Date(),resets=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth()+1,1));
   return {id,name:plan?.name||'Plan not available',monthly_allowance_micros:allowance,used_this_month_micros:used,remaining_micros:Math.max(0,allowance-used),resets_at:resets.toISOString()};

@@ -54,6 +54,10 @@ test('assigning a plan or an override changes the allowance; an unknown plan all
   const plan=(await jobs.summary(colleague)).plan;
   assert.equal(plan.monthly_allowance_micros,0);assert.equal(plan.name,'Plan not available');
   assert.equal((await search(colleague)).status,'skipped');
+  // An override does not survive its plan being retired.
+  await db.query("UPDATE prospect_memberships SET plan='retired-plan',monthly_allowance_micros=99999 WHERE user_id=$1",[advisor.uid]);
+  assert.equal((await jobs.summary(advisor)).plan.monthly_allowance_micros,0);
+  assert.equal((await search(advisor)).status,'skipped');
 }));
 
 test('spend from earlier months does not count against this month',()=>fixture(async({db,jobs,search})=>{
@@ -94,4 +98,16 @@ test('the tools panel shows the plan and what it has used, escaped',()=>{
   assert.match(html,/Your plan: <strong>&lt;Pro&gt;<\/strong>/);
   assert.match(html,/\$1\.50 of \$25\.00 included\. Resets 2026-11-01/);
   assert.doesNotMatch(providerSetupContent({actions:{},prices:{},plan:null}),/Your plan/);
+});
+
+test('a worker rebuild keeps every setting the worker reads, plans included',()=>{
+  const script=readFileSync(new URL('../setup-research-worker.sh',import.meta.url),'utf8');
+  const kept=new Set([...script.match(/preserved=\[entry for entry in prior if entry\.get\('name'\) in \{([^}]*)\}/)[1].matchAll(/'([A-Z0-9_]+)'/g)].map(m=>m[1]));
+  const source=name=>readFileSync(new URL('../'+name,import.meta.url),'utf8');
+  const needed=new Set([
+    ...[...source('research-worker.mjs').matchAll(/process\.env\.([A-Z0-9_]+)/g)].map(m=>m[1]),
+    ...[...source('forget.mjs').matchAll(/process\.env\.([A-Z0-9_]+)/g)].map(m=>m[1]),
+    ...[...source('prospect-jobs.mjs').matchAll(/(?:read\('|env\.)([A-Z][A-Z0-9_]{5,})/g)].map(m=>m[1])]);
+  for(const name of ['PROSPECT_PLANS','PROSPECT_DEFAULT_PLAN','PROSPECT_DAILY_BUDGET_MICROS','ANTHROPIC_API_KEY'])assert.ok(needed.has(name),name+' is read by the worker');
+  assert.deepEqual([...needed].filter(name=>!kept.has(name)),[],'setup-research-worker.sh drops settings the worker needs');
 });
