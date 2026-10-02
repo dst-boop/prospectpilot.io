@@ -60,7 +60,8 @@ async function tx(pool,fn){const c=await pool.connect();let broken;try{await c.q
 
 export function createBilling({pool,stripe,config,webhookSecret,logger=console}){
  const plans=config.plans||{};
- const planForPrice=price=>Object.keys(plans).find(id=>plans[id].stripe_price_id===price)||null;
+ const planForPrice=price=>Object.keys(plans).find(id=>price&&(plans[id].stripe_price_id===price||plans[id].stripe_annual_price_id===price))||null;
+ const topups=config.topups||{};
  const membershipRow=async(c,uid)=>(await c.query('SELECT * FROM prospect_memberships WHERE user_id=$1',[uid])).rows[0]||null;
 
  async function status(user){
@@ -68,14 +69,18 @@ export function createBilling({pool,stripe,config,webhookSecret,logger=console})
   return {
    enabled:!!stripe,
    membership:row?{plan:row.plan,plan_name:plans[row.plan]?.name||null,status:row.status||null,current_period_end:row.current_period_end?new Date(row.current_period_end).toISOString():null,cancels_at:row.cancels_at?new Date(row.cancels_at).toISOString():null,manageable:!!row.stripe_customer_id}:null,
-   plans:Object.entries(plans).map(([id,p])=>({id,name:p.name,monthly_allowance_micros:p.monthly_allowance_micros,purchasable:!!(stripe&&p.stripe_price_id)})),
+   plans:Object.entries(plans).map(([id,p])=>({id,name:p.name,monthly_allowance_micros:p.monthly_allowance_micros,purchasable:!!(stripe&&p.stripe_price_id),annual:!!(stripe&&p.stripe_annual_price_id),monthly_price_cents:p.monthly_price_cents??null,annual_price_cents:p.annual_price_cents??null,trial_days:p.trial_days&&!row?.subscription_created?p.trial_days:null})),
+   topups:Object.entries(topups).map(([id,t])=>({id,name:t.name,allowance_micros:t.allowance_micros,price_cents:t.price_cents,purchasable:!!(stripe&&row&&PAYING_STATUSES.includes(row.status))})),
+   lead_cost_micros:config.leadCostMicros??null,
   };
  }
 
  async function checkout(user,input,origin){
   if(!stripe)throw fail(503,'Billing is not set up on this server yet.');
-  const planId=input?.plan,plan=plans[planId];
-  if(!plan?.stripe_price_id)throw fail(422,'Choose a plan that is available to buy.');
+  const planId=input?.plan,plan=plans[planId],interval=input?.interval==='annual'?'annual':'monthly';
+  const price=interval==='annual'?plan?.stripe_annual_price_id:plan?.stripe_price_id;
+  if(!price)throw fail(422,interval==='annual'?'That plan is not available yearly.':'Choose a plan that is available to buy.');
+  const choice=planId+':'+interval;
   // Serialised per advisor, and at most one open Checkout each: a second tab
   // or a double click reuses it, so nobody can start two subscriptions.
   return tx(pool,async c=>{
@@ -91,22 +96,57 @@ export function createBilling({pool,stripe,config,webhookSecret,logger=console})
     const open=await stripe.get('checkout/sessions/'+encodeURIComponent(pending.session_id));
     if(open.status==='complete')throw fail(409,'Your payment went through and your plan is being activated. Refresh in a minute.');
     if(open.status==='open'){
-     if(pending.plan===planId)return {url:pending.url};
+     if(pending.plan===choice)return {url:pending.url};
      await stripe.post('checkout/sessions/'+encodeURIComponent(pending.session_id)+'/expire',{});
     }
    }
    const expires=Math.floor(Date.now()/1000)+3600;
    const session=await stripe.post('checkout/sessions',{
-    mode:'subscription',line_items:[{price:plan.stripe_price_id,quantity:1}],expires_at:expires,
-    client_reference_id:user.uid,metadata:{uid:user.uid},subscription_data:{metadata:{uid:user.uid}},
+    mode:'subscription',line_items:[{price,quantity:1}],expires_at:expires,
+    // Founding-member and other discounts are Stripe promotion codes; nothing to configure here.
+    allow_promotion_codes:true,
+    client_reference_id:user.uid,metadata:{uid:user.uid},
+    // One free trial per advisor: only before their first subscription. Stripe still takes a card.
+    subscription_data:{metadata:{uid:user.uid},...(plan.trial_days&&!row?.subscription_created?{trial_period_days:plan.trial_days}:{})},
     ...(row?.stripe_customer_id?{customer:row.stripe_customer_id}:{customer_email:user.email}),
     success_url:origin+'/prospect?billing=success',cancel_url:origin+'/prospect?billing=cancelled',
    });
    if(typeof session.id!=='string'||typeof session.url!=='string'||!session.url.startsWith('https://'))throw fail(502,'Stripe did not return a checkout page.');
    await c.query(`INSERT INTO billing_checkouts(user_id,session_id,plan,url,expires_at) VALUES($1,$2,$3,$4,to_timestamp($5))
-    ON CONFLICT(user_id) DO UPDATE SET session_id=EXCLUDED.session_id,plan=EXCLUDED.plan,url=EXCLUDED.url,expires_at=EXCLUDED.expires_at,created_at=now()`,[user.uid,session.id,planId,session.url,expires]);
+    ON CONFLICT(user_id) DO UPDATE SET session_id=EXCLUDED.session_id,plan=EXCLUDED.plan,url=EXCLUDED.url,expires_at=EXCLUDED.expires_at,created_at=now()`,[user.uid,session.id,choice,session.url,expires]);
    return {url:session.url};
   });
+ }
+
+ // A top-up pack is a one-time payment. It is credited only by the signed
+ // webhook once Stripe reports it paid, never on the advisor's return.
+ async function topup(user,input,origin){
+  if(!stripe)throw fail(503,'Billing is not set up on this server yet.');
+  const packId=input?.pack,pack=topups[packId];
+  if(!pack)throw fail(422,'Choose a top-up pack.');
+  const row=await membershipRow(pool,user.uid);
+  if(!row?.stripe_customer_id||!PAYING_STATUSES.includes(row.status))throw fail(409,'Top-ups are for active plans. Choose a plan first, or update your billing.');
+  // Top-ups only count on a configured plan, so never sell one that would not.
+  if(!plans[row.plan])throw fail(409,'Your plan is not available right now, so a top-up would not count. Contact support.');
+  const session=await stripe.post('checkout/sessions',{
+   mode:'payment',line_items:[{price:pack.stripe_price_id,quantity:1}],customer:row.stripe_customer_id,
+   // The purchased terms travel with the session: a pack renamed, repriced or
+   // removed before payment completes still credits what was bought.
+   client_reference_id:user.uid,metadata:{uid:user.uid,kind:'topup',pack:packId,allowance_micros:String(pack.allowance_micros)},
+   success_url:origin+'/prospect?billing=topup',cancel_url:origin+'/prospect?billing=cancelled',
+  });
+  if(typeof session.url!=='string'||!session.url.startsWith('https://'))throw fail(502,'Stripe did not return a checkout page.');
+  return {url:session.url};
+ }
+
+ async function creditTopup(c,session){
+  const uid=session.metadata?.uid||session.client_reference_id,packId=String(session.metadata?.pack||''),allowance=Number(session.metadata?.allowance_micros);
+  if(!uid)return 'no_uid';
+  if(session.payment_status!=='paid')return 'unpaid';
+  // Only this server sets session metadata (with the secret key); a malformed value means a session it did not create.
+  if(!packId||!Number.isSafeInteger(allowance)||allowance<=0)return 'invalid_terms';
+  const added=(await c.query('INSERT INTO billing_topups(session_id,user_id,pack,allowance_micros) VALUES($1,$2,$3,$4) ON CONFLICT(session_id) DO NOTHING RETURNING session_id',[session.id,uid,packId,allowance])).rows.length;
+  return added?'topup_credited':'duplicate';
  }
 
  async function portal(user,origin){
@@ -143,6 +183,8 @@ export function createBilling({pool,stripe,config,webhookSecret,logger=console})
     monthly_allowance_micros=CASE WHEN prospect_memberships.plan IS DISTINCT FROM EXCLUDED.plan OR prospect_memberships.stripe_subscription_id IS DISTINCT FROM EXCLUDED.stripe_subscription_id THEN NULL ELSE prospect_memberships.monthly_allowance_micros END,
     plan=EXCLUDED.plan,stripe_customer_id=EXCLUDED.stripe_customer_id,stripe_subscription_id=EXCLUDED.stripe_subscription_id,status=EXCLUDED.status,current_period_end=EXCLUDED.current_period_end,subscription_created=EXCLUDED.subscription_created,cancels_at=EXCLUDED.cancels_at,updated_at=now()`,
    [uid,plan,typeof sub.customer==='string'?sub.customer:sub.customer?.id||null,sub.id,String(sub.status||'unknown'),at(periodEnd),at(sub.created),cancelsAt]);
+  // The checkout that led here is finished; a later choice starts a fresh one.
+  await c.query('DELETE FROM billing_checkouts WHERE user_id=$1',[uid]);
   return plan==='unmapped'?'unmapped_price':'applied';
  }
 
@@ -157,6 +199,8 @@ export function createBilling({pool,stripe,config,webhookSecret,logger=console})
   const outcome=await tx(pool,async c=>{
    const fresh=(await c.query('INSERT INTO billing_events(id,type) VALUES($1,$2) ON CONFLICT(id) DO NOTHING RETURNING id',[event.id,event.type])).rows.length;
    if(!fresh)return 'duplicate';
+   // Card top-ups complete paid; bank-debit ones complete later with async_payment_succeeded.
+   if(['checkout.session.completed','checkout.session.async_payment_succeeded'].includes(event.type)&&object.mode==='payment'&&object.metadata?.kind==='topup')return creditTopup(c,object);
    if(event.type==='checkout.session.completed'&&object.mode==='subscription'&&object.subscription)return applySubscription(c,typeof object.subscription==='string'?object.subscription:object.subscription.id,object.client_reference_id);
    if(['customer.subscription.created','customer.subscription.updated','customer.subscription.deleted','customer.subscription.paused','customer.subscription.resumed'].includes(event.type)&&object.id)return applySubscription(c,object.id,null);
    return 'ignored';
@@ -171,8 +215,9 @@ export function createBilling({pool,stripe,config,webhookSecret,logger=console})
   if(path==='/api/prospect/billing'&&method==='GET')return status(user);
   if(path==='/api/prospect/billing/checkout'&&method==='POST'){let input;try{input=await request.json();}catch{throw fail(422,'Invalid JSON.');}return checkout(user,input,url.origin);}
   if(path==='/api/prospect/billing/portal'&&method==='POST')return portal(user,url.origin);
+  if(path==='/api/prospect/billing/topup'&&method==='POST'){let input;try{input=await request.json();}catch{throw fail(422,'Invalid JSON.');}return topup(user,input,url.origin);}
   throw fail(404,'Not found.');
  }
 
- return {status,checkout,portal,webhook,route};
+ return {status,checkout,topup,portal,webhook,route};
 }

@@ -73,12 +73,21 @@ Advisors buy a plan through Stripe Checkout and manage it in Stripe's customer p
    - `STRIPE_SECRET_KEY`: a restricted key is enough, with write access to Checkout Sessions, Customers and Customer portal, and read access to Subscriptions.
    - `STRIPE_WEBHOOK_SECRET`: the endpoint's signing secret (`whsec_...`).
    - Billing stays off until both are set. One without the other stops the server at start-up.
-6. **Test first.** Use test-mode keys and prices with Stripe's test cards. To send events to a local server, use `stripe listen --forward-to localhost:8080/api/stripe/webhook`.
+6. **Yearly, trial, discounts and top-ups** (see [PRICING.md](PRICING.md)):
+   - **Yearly billing.** Give a plan a second, yearly price with `stripe_annual_price_id`.
+   - **Free trial.** `trial_days` (1–30) gives a free trial before an advisor's first subscription, with `trial_allowance_micros` as the trial's lookup allowance. Stripe still takes a card.
+   - **Founding and other discounts.** Create these as Stripe promotion codes. Checkout accepts them, so no configuration is needed here.
+   - **Top-up packs.** `PROSPECT_TOPUPS` maps a pack id to `name`, `stripe_price_id` (a one-time price), `allowance_micros` and `price_cents`. Packs are credited only by the webhook, once Stripe reports the payment paid. Add `checkout.session.async_payment_succeeded` to the webhook events if you accept bank debits.
+   - **Leads display.** `PROSPECT_LEAD_COST_MICROS` (the assumed cost of one fully worked lead) shows allowances as "about N leads". It is display only.
+   - **Generate the settings.** Put your Stripe price ids in a file shaped like `{"starter":{"monthly":"price_...","annual":"price_..."},"topup:small":"price_..."}`. Then `node scripts/pricing/pricing.mjs env that-file.json` prints `PROSPECT_PLANS`, `PROSPECT_TOPUPS`, `PROSPECT_DEFAULT_PLAN` and `PROSPECT_LEAD_COST_MICROS`, already validated.
+7. **Test first.** Use test-mode keys and prices with Stripe's test cards. To send events to a local server, use `stripe listen --forward-to localhost:8080/api/stripe/webhook`.
 
 | Variable | Meaning |
 |---|---|
 | `STRIPE_SECRET_KEY` | Stripe secret or restricted key (`sk_`/`rk_`, test or live) |
 | `STRIPE_WEBHOOK_SECRET` | Signing secret of the webhook endpoint above |
+| `PROSPECT_TOPUPS` | *(optional)* Top-up packs as JSON (see step 6) |
+| `PROSPECT_LEAD_COST_MICROS` | *(optional)* Assumed cost of one fully worked lead, for the "about N leads" display only |
 
 Each event is applied once (`billing_events`). The subscription is re-read from Stripe on every event, so deliveries that arrive out of order still leave the current state. A failed apply is rolled back and Stripe's retry applies it.
 

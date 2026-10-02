@@ -28,12 +28,37 @@ export function readPlans(env=process.env){
  const plans={};for(const [id,plan] of Object.entries(parsed)){
   const allowance=plan?.monthly_allowance_micros;
   if(!/^[a-z0-9_-]{1,40}$/.test(id)||!plan||typeof plan.name!=='string'||!plan.name.trim()||!Number.isSafeInteger(allowance)||allowance<0||allowance>100000000000)throw Error('Invalid PROSPECT_PLANS entry '+id);
-  if(plan.stripe_price_id!==undefined&&!/^price_[A-Za-z0-9]+$/.test(plan.stripe_price_id))throw Error('Invalid stripe_price_id for plan '+id);
-  plans[id]={name:plan.name.trim().slice(0,60),monthly_allowance_micros:allowance,...(plan.stripe_price_id?{stripe_price_id:plan.stripe_price_id}:{})};
+  for(const key of ['stripe_price_id','stripe_annual_price_id'])if(plan[key]!==undefined&&!/^price_[A-Za-z0-9]+$/.test(plan[key]))throw Error('Invalid '+key+' for plan '+id);
+  if(plan.trial_days!==undefined&&!(Number.isSafeInteger(plan.trial_days)&&plan.trial_days>=1&&plan.trial_days<=30))throw Error('Invalid trial_days for plan '+id);
+  if(plan.trial_allowance_micros!==undefined&&!(Number.isSafeInteger(plan.trial_allowance_micros)&&plan.trial_allowance_micros>=0&&plan.trial_allowance_micros<=allowance))throw Error('Invalid trial_allowance_micros for plan '+id);
+  if(plan.monthly_price_cents!==undefined&&!(Number.isSafeInteger(plan.monthly_price_cents)&&plan.monthly_price_cents>=0))throw Error('Invalid monthly_price_cents for plan '+id);
+  if(plan.annual_price_cents!==undefined&&!(Number.isSafeInteger(plan.annual_price_cents)&&plan.annual_price_cents>=0))throw Error('Invalid annual_price_cents for plan '+id);
+  plans[id]={name:plan.name.trim().slice(0,60),monthly_allowance_micros:allowance};
+  // Display prices only: Stripe's price is what is charged.
+  for(const key of ['stripe_price_id','stripe_annual_price_id','trial_days','trial_allowance_micros','monthly_price_cents','annual_price_cents'])if(plan[key]!==undefined)plans[id][key]=plan[key];
  }
  const defaultPlan=env.PROSPECT_DEFAULT_PLAN||Object.keys(plans)[0];
  if(!Object.hasOwn(plans,defaultPlan))throw Error('PROSPECT_DEFAULT_PLAN is not in PROSPECT_PLANS');
- return {plans,defaultPlan};
+ return {plans,defaultPlan,topups:readTopups(env),leadCostMicros:readLeadCost(env)};
+}
+// Top-up packs: one-time purchases that add paid-lookup allowance to the month
+// they are bought in. PROSPECT_TOPUPS maps a pack id to its name, Stripe price,
+// display price and the allowance it adds.
+export function readTopups(env=process.env){
+ const raw=env.PROSPECT_TOPUPS;if(raw===undefined||raw==='')return {};
+ let parsed;try{parsed=JSON.parse(raw);}catch{throw Error('Invalid PROSPECT_TOPUPS');}
+ if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw Error('Invalid PROSPECT_TOPUPS');
+ const packs={};for(const [id,pack] of Object.entries(parsed)){
+  if(!/^[a-z0-9_-]{1,40}$/.test(id)||!pack||typeof pack.name!=='string'||!pack.name.trim()||!/^price_[A-Za-z0-9]+$/.test(pack.stripe_price_id||'')||!Number.isSafeInteger(pack.allowance_micros)||pack.allowance_micros<=0||pack.allowance_micros>10000000000||!Number.isSafeInteger(pack.price_cents)||pack.price_cents<=0)throw Error('Invalid PROSPECT_TOPUPS entry '+id);
+  packs[id]={name:pack.name.trim().slice(0,60),stripe_price_id:pack.stripe_price_id,allowance_micros:pack.allowance_micros,price_cents:pack.price_cents};
+ }
+ return packs;
+}
+// The assumed cost of one fully worked lead, used only to show allowances as
+// "about N leads"; never used to charge or to enforce anything.
+export function readLeadCost(env=process.env){
+ const raw=env.PROSPECT_LEAD_COST_MICROS;if(raw===undefined||raw==='')return null;
+ const n=Number(raw);if(!Number.isSafeInteger(n)||n<=0||n>100000000)throw Error('Invalid PROSPECT_LEAD_COST_MICROS');return n;
 }
 export function providerJobConfig(env=process.env){
  const read=(key,fallback=null)=>{const value=env[key];if(value===undefined||value==='')return fallback;const n=Number(value);if(!Number.isSafeInteger(n)||n<0||n>1000000000)throw Error('Invalid '+key);return n;};
@@ -55,10 +80,15 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   // A Stripe subscription that is not paid up (past due, cancelled, paused)
   // allows nothing; rows assigned by hand have no status and are unaffected.
   const lapsed=!!row?.status&&!PAYING_STATUSES.includes(row.status);
-  const allowance=!plan||lapsed?0:row&&row.monthly_allowance_micros!=null?Number(row.monthly_allowance_micros):plan.monthly_allowance_micros;
+  let base=!plan||lapsed?0:row&&row.monthly_allowance_micros!=null?Number(row.monthly_allowance_micros):plan.monthly_allowance_micros;
+  // A free trial gets the plan's smaller trial allowance until the first payment.
+  if(row?.status==='trialing'&&plan?.trial_allowance_micros!=null)base=Math.min(base,plan.trial_allowance_micros);
+  // Top-ups bought this month add to it; like the plan, they pause while a subscription is lapsed.
+  const topups=!plan||lapsed?0:Number((await c.query(`SELECT COALESCE(sum(allowance_micros),0) AS n FROM billing_topups WHERE user_id=$1 AND purchased_at>=${monthStart}`,[userId])).rows[0].n);
+  const allowance=base+topups;
   const used=Number((await c.query(`SELECT COALESCE(sum(reserved_micros),0) AS n FROM prospect_charges WHERE user_id=$1 AND reserved_at>=${monthStart}`,[userId])).rows[0].n);
   const now=new Date(),resets=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth()+1,1));
-  return {id,name:plan?.name||'Plan not available',status:row?.status||null,monthly_allowance_micros:allowance,used_this_month_micros:used,remaining_micros:Math.max(0,allowance-used),resets_at:resets.toISOString()};
+  return {id,name:plan?.name||'Plan not available',status:row?.status||null,monthly_allowance_micros:allowance,plan_allowance_micros:base,topup_micros:topups,used_this_month_micros:used,remaining_micros:Math.max(0,allowance-used),resets_at:resets.toISOString(),lead_cost_micros:config.leadCostMicros??null};
  }
  // Serialised per advisor so two reservations cannot both fit the same remainder.
  async function allowanceRefusal(c,userId,amount){
@@ -66,7 +96,7 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`prospect-allowance:${userId}`]);
   const m=await membership(c,userId);
   if(m.status&&!PAYING_STATUSES.includes(m.status))return `Your ${m.name} subscription is not active (${m.status}), so paid lookups are paused. No request was sent and nothing was charged. Update it under Manage billing.`;
-  return m.used_this_month_micros+amount>m.monthly_allowance_micros?`Your ${m.name} plan's monthly allowance for paid lookups is used up. No request was sent and nothing was charged. It resets on ${m.resets_at.slice(0,10)}.`:null;
+  return m.used_this_month_micros+amount>m.monthly_allowance_micros?`Your ${m.name} plan's monthly allowance for paid lookups is used up. No request was sent and nothing was charged. Add a top-up pack under Plan & billing, or it resets on ${m.resets_at.slice(0,10)}.`:null;
  }
  async function summary(user){const charges=(await pool.query(`SELECT COALESCE(sum(reserved_micros),0) AS reserved FROM prospect_charges WHERE user_id=$1 AND reserved_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,[user.uid])).rows[0];return {providers:providers.readiness,prices:{...config.prices,check_domain:0},daily_budget_micros:config.dailyBudgetMicros,reserved_today_micros:Number(charges.reserved),plan:await membership(pool,user.uid),actions:Object.fromEntries(Object.keys(capabilities).map(a=>[a,ready(a)])),cost_basis:'Reserved maximum at configured prices, not actual provider billing. The daily cap is shared by this deployment.'};}
  async function enqueue(user,input){
