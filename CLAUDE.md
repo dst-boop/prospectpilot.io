@@ -60,6 +60,9 @@ Work as a senior engineering partner. The rules below come with reasons.
   shared daily cap.
 - **ZoomInfo is bring-your-own.** Never bundle one ZoomInfo subscription's
   data across advisors.
+- **Billing is Stripe** (`billing.mjs`). The signed webhook is the only
+  writer of an advisor's plan and subscription status. Card data never
+  reaches this server.
 
 ## Evidence and enrichment
 

@@ -20,7 +20,7 @@ COPY --from=build /app/generated ./generated
 COPY scripts ./scripts
 COPY advisor-workflow.mjs outreach-cadence.mjs forget.mjs web-research.mjs lab.html lab.css lab-client.js lead-quality.mjs age-band.mjs source-catalog.mjs plan-catalog.mjs rollover-playbooks.mjs lab-sources.mjs robots-policy.mjs research-lab.mjs ./
 COPY prospect.html prospect.css prospect-client.js prospect-workspace.mjs prospect-providers.mjs prospect-data-quality.mjs prospect-domain-check.mjs ./
-COPY prospect-jobs.mjs prospect-jobs-client.js ./
+COPY prospect-jobs.mjs prospect-jobs-client.js billing.mjs ./
 COPY prospect-preparation.mjs ./
 COPY migrations ./migrations
 COPY server.mjs http-server.mjs handler.mjs login-destination.mjs database.mjs migrate.mjs home.html site.css brand.svg login.html research-jobs.mjs research-worker.mjs warn.mjs warn.html warn-client.js native-research.mjs linkedin.mjs linkedin.html linkedin-client.js ./

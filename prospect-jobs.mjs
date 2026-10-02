@@ -3,6 +3,7 @@ import {hash,nameKey,linkedinURL} from './lead-quality.mjs';
 import {normalizeContact,contactIdentities,identityLookupKeys,searchFilters} from './prospect-workspace.mjs';
 import {CONTACT_ALIASES,contactEmail} from './prospect-data-quality.mjs';
 import {forgottenKeys} from './forget.mjs';
+import {PAYING_STATUSES} from './billing.mjs';
 import {DOMAIN_CHECK_STATUSES,DOMAIN_CHECK_LABELS,recentDomainFailure,isNonPublicMailDomain} from './prospect-domain-check.mjs';
 const fail=(status,message)=>Object.assign(Error(message),{status});
 const sig=contact=>hash(JSON.stringify(['first_name','last_name','company','email','linkedin_url'].map(k=>contact[k]||'')));
@@ -27,7 +28,8 @@ export function readPlans(env=process.env){
  const plans={};for(const [id,plan] of Object.entries(parsed)){
   const allowance=plan?.monthly_allowance_micros;
   if(!/^[a-z0-9_-]{1,40}$/.test(id)||!plan||typeof plan.name!=='string'||!plan.name.trim()||!Number.isSafeInteger(allowance)||allowance<0||allowance>100000000000)throw Error('Invalid PROSPECT_PLANS entry '+id);
-  plans[id]={name:plan.name.trim().slice(0,60),monthly_allowance_micros:allowance};
+  if(plan.stripe_price_id!==undefined&&!/^price_[A-Za-z0-9]+$/.test(plan.stripe_price_id))throw Error('Invalid stripe_price_id for plan '+id);
+  plans[id]={name:plan.name.trim().slice(0,60),monthly_allowance_micros:allowance,...(plan.stripe_price_id?{stripe_price_id:plan.stripe_price_id}:{})};
  }
  const defaultPlan=env.PROSPECT_DEFAULT_PLAN||Object.keys(plans)[0];
  if(!Object.hasOwn(plans,defaultPlan))throw Error('PROSPECT_DEFAULT_PLAN is not in PROSPECT_PLANS');
@@ -46,20 +48,24 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
  // The advisor's plan and month-to-date reserved spend; null when plans are off.
  async function membership(c,userId){
   if(!config.plans)return null;
-  const row=(await c.query('SELECT plan,monthly_allowance_micros FROM prospect_memberships WHERE user_id=$1',[userId])).rows[0];
+  const row=(await c.query('SELECT * FROM prospect_memberships WHERE user_id=$1',[userId])).rows[0];
   const id=row?.plan||config.defaultPlan,plan=config.plans[id];
   // A plan id that is no longer configured allows nothing rather than everything,
   // even when the advisor had an override on it.
-  const allowance=!plan?0:row&&row.monthly_allowance_micros!=null?Number(row.monthly_allowance_micros):plan.monthly_allowance_micros;
+  // A Stripe subscription that is not paid up (past due, cancelled, paused)
+  // allows nothing; rows assigned by hand have no status and are unaffected.
+  const lapsed=!!row?.status&&!PAYING_STATUSES.includes(row.status);
+  const allowance=!plan||lapsed?0:row&&row.monthly_allowance_micros!=null?Number(row.monthly_allowance_micros):plan.monthly_allowance_micros;
   const used=Number((await c.query(`SELECT COALESCE(sum(reserved_micros),0) AS n FROM prospect_charges WHERE user_id=$1 AND reserved_at>=${monthStart}`,[userId])).rows[0].n);
   const now=new Date(),resets=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth()+1,1));
-  return {id,name:plan?.name||'Plan not available',monthly_allowance_micros:allowance,used_this_month_micros:used,remaining_micros:Math.max(0,allowance-used),resets_at:resets.toISOString()};
+  return {id,name:plan?.name||'Plan not available',status:row?.status||null,monthly_allowance_micros:allowance,used_this_month_micros:used,remaining_micros:Math.max(0,allowance-used),resets_at:resets.toISOString()};
  }
  // Serialised per advisor so two reservations cannot both fit the same remainder.
  async function allowanceRefusal(c,userId,amount){
   if(!config.plans||!(amount>0))return null;
   await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`prospect-allowance:${userId}`]);
   const m=await membership(c,userId);
+  if(m.status&&!PAYING_STATUSES.includes(m.status))return `Your ${m.name} subscription is not active (${m.status}), so paid lookups are paused. No request was sent and nothing was charged. Update it under Manage billing.`;
   return m.used_this_month_micros+amount>m.monthly_allowance_micros?`Your ${m.name} plan's monthly allowance for paid lookups is used up. No request was sent and nothing was charged. It resets on ${m.resets_at.slice(0,10)}.`:null;
  }
  async function summary(user){const charges=(await pool.query(`SELECT COALESCE(sum(reserved_micros),0) AS reserved FROM prospect_charges WHERE user_id=$1 AND reserved_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,[user.uid])).rows[0];return {providers:providers.readiness,prices:{...config.prices,check_domain:0},daily_budget_micros:config.dailyBudgetMicros,reserved_today_micros:Number(charges.reserved),plan:await membership(pool,user.uid),actions:Object.fromEntries(Object.keys(capabilities).map(a=>[a,ready(a)])),cost_basis:'Reserved maximum at configured prices, not actual provider billing. The daily cap is shared by this deployment.'};}
