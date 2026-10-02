@@ -73,6 +73,7 @@
 !prospect-providers.mjs
 !prospect-jobs.mjs
 !prospect-jobs-client.js
+!billing.mjs
 !prospect-preparation.mjs
 !advisor-workflow.mjs
 !outreach-cadence.mjs

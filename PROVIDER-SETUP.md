@@ -58,6 +58,30 @@ UPDATE prospect_memberships SET monthly_allowance_micros=50000000, updated_at=no
 
 A plan id that is no longer in `PROSPECT_PLANS` allows nothing, so removing a plan never unlocks unlimited spend.
 
+### Stripe billing
+
+Advisors buy a plan through Stripe Checkout and manage it in Stripe's customer portal. Card details only ever go to Stripe. A signed webhook is the only thing that sets an advisor's plan and subscription status. While a subscription is anything other than active or trialing (past due, unpaid, cancelled, paused), paid lookups are paused for that advisor; nothing else in their workspace is locked. Plans assigned by hand with the SQL above have no status and are unaffected.
+
+1. **Prices.** In Stripe, create one product per plan with a monthly recurring price. Add each price id to its plan in `PROSPECT_PLANS`, for example `"pro":{"name":"Pro","monthly_allowance_micros":75000000,"stripe_price_id":"price_..."}`. A plan without `stripe_price_id` can't be bought; use that for internal plans.
+2. **Default plan.** Set `PROSPECT_DEFAULT_PLAN` to a plan with a zero allowance (for example `"none":{"name":"No plan","monthly_allowance_micros":0}`). Otherwise advisors who haven't paid get the default plan's lookups.
+3. **Customer portal.** In the Stripe Dashboard, turn on the customer portal. Allow card updates, invoices, cancellation, and switching between your plan products.
+4. **Webhook.** Add an endpoint at `https://prospectpilot.io/api/stripe/webhook` for these events:
+   - `checkout.session.completed`
+   - `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`
+   - `customer.subscription.paused`, `customer.subscription.resumed`
+5. **Keys.** Set these on the `prospectpilot` service only; the worker doesn't need them. Use Secret Manager references.
+   - `STRIPE_SECRET_KEY`: a restricted key is enough, with write access to Checkout Sessions, Customers and Customer portal, and read access to Subscriptions.
+   - `STRIPE_WEBHOOK_SECRET`: the endpoint's signing secret (`whsec_...`).
+   - Billing stays off until both are set. One without the other stops the server at start-up.
+6. **Test first.** Use test-mode keys and prices with Stripe's test cards. To send events to a local server, use `stripe listen --forward-to localhost:8080/api/stripe/webhook`.
+
+| Variable | Meaning |
+|---|---|
+| `STRIPE_SECRET_KEY` | Stripe secret or restricted key (`sk_`/`rk_`, test or live) |
+| `STRIPE_WEBHOOK_SECRET` | Signing secret of the webhook endpoint above |
+
+Each event is applied once (`billing_events`). The subscription is re-read from Stripe on every event, so deliveries that arrive out of order still leave the current state. A failed apply is rolled back and Stripe's retry applies it.
+
 ## Workflow
 
 1. Set professional filters and choose **Find new contacts**. Review the maximum record count, destination list and cost ceiling. Results are inserted into your directory with their provider provenance; duplicate and conflicting identities are counted.
