@@ -17,16 +17,52 @@ export const phoneCheckCurrent=contact=>!!contact.phone_check&&contact.phone_che
 export const webResearchFor=contact=>hash(JSON.stringify(['first_name','last_name','company','city','state'].map(k=>nameKey(contact[k]))));
 export const webResearchCurrent=contact=>!!contact.web_research&&contact.web_research.for===webResearchFor(contact);
 export const PHONE_STATUS_LABELS={owner_matched:'the number is listed under this contact’s name',wrong_person:'the number is listed under someone else — do not dial it for this contact',invalid:'the number is not a working line',checked:'the line is real but no owner name was returned'};
+// Plans are settings: PROSPECT_PLANS maps a plan id to its name and the paid
+// provider spend each advisor on it may reserve per calendar month (UTC).
+// Unset means no per-advisor allowance; the shared daily cap still applies.
+export function readPlans(env=process.env){
+ const raw=env.PROSPECT_PLANS;if(raw===undefined||raw==='')return {plans:null,defaultPlan:null};
+ let parsed;try{parsed=JSON.parse(raw);}catch{throw Error('Invalid PROSPECT_PLANS');}
+ if(!parsed||typeof parsed!=='object'||Array.isArray(parsed)||!Object.keys(parsed).length)throw Error('Invalid PROSPECT_PLANS');
+ const plans={};for(const [id,plan] of Object.entries(parsed)){
+  const allowance=plan?.monthly_allowance_micros;
+  if(!/^[a-z0-9_-]{1,40}$/.test(id)||!plan||typeof plan.name!=='string'||!plan.name.trim()||!Number.isSafeInteger(allowance)||allowance<0||allowance>100000000000)throw Error('Invalid PROSPECT_PLANS entry '+id);
+  plans[id]={name:plan.name.trim().slice(0,60),monthly_allowance_micros:allowance};
+ }
+ const defaultPlan=env.PROSPECT_DEFAULT_PLAN||Object.keys(plans)[0];
+ if(!Object.hasOwn(plans,defaultPlan))throw Error('PROSPECT_DEFAULT_PLAN is not in PROSPECT_PLANS');
+ return {plans,defaultPlan};
+}
 export function providerJobConfig(env=process.env){
  const read=(key,fallback=null)=>{const value=env[key];if(value===undefined||value==='')return fallback;const n=Number(value);if(!Number.isSafeInteger(n)||n<0||n>1000000000)throw Error('Invalid '+key);return n;};
- return {dailyBudgetMicros:read('PROSPECT_DAILY_BUDGET_MICROS',0),prices:{search:read('PDL_SEARCH_RECORD_COST_MICROS'),enrich:read('PDL_ENRICH_COST_MICROS'),verify:read('HUNTER_VERIFY_COST_MICROS'),check_phone:read('TRESTLE_PHONE_COST_MICROS'),web_research:read('WEB_RESEARCH_COST_MICROS'),profile_image:read('PROFILE_IMAGE_COST_MICROS')}};
+ return {dailyBudgetMicros:read('PROSPECT_DAILY_BUDGET_MICROS',0),...readPlans(env),prices:{search:read('PDL_SEARCH_RECORD_COST_MICROS'),enrich:read('PDL_ENRICH_COST_MICROS'),verify:read('HUNTER_VERIFY_COST_MICROS'),check_phone:read('TRESTLE_PHONE_COST_MICROS'),web_research:read('WEB_RESEARCH_COST_MICROS'),profile_image:read('PROFILE_IMAGE_COST_MICROS')}};
 }
 export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,prices:{}},dispatch=async()=>false,pacingMs={pdl:6100,hunter:250,dns:100,trestle:250,anthropic:1000}}){
  const capabilities={search:'search',enrich:'enrichment',verify:'email_verification',check_domain:'domain_check',check_phone:'phone_check',web_research:'web_research'};
  const providerFor=action=>({check_domain:'dns',verify:'hunter',check_phone:'trestle',web_research:'anthropic'})[action]||'pdl';
  const quote=(action,size=1)=>{if(action==='check_domain')return 0;const price=config.prices[action];if(!Number.isSafeInteger(price)||price<0)throw fail(503,'Configure a per-request or per-record price before using this provider.');return price*size;};
  const ready=action=>providers.readiness[capabilities[action]]===true&&(action==='check_domain'||Number.isSafeInteger(config.prices[action])&&config.prices[action]>=0);
- async function summary(user){const charges=(await pool.query(`SELECT COALESCE(sum(reserved_micros),0) AS reserved FROM prospect_charges WHERE user_id=$1 AND reserved_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,[user.uid])).rows[0];return {providers:providers.readiness,prices:{...config.prices,check_domain:0},daily_budget_micros:config.dailyBudgetMicros,reserved_today_micros:Number(charges.reserved),actions:Object.fromEntries(Object.keys(capabilities).map(a=>[a,ready(a)])),cost_basis:'Reserved maximum at configured prices, not actual provider billing. The daily cap is shared by this deployment.'};}
+ const monthStart="date_trunc('month',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'";
+ // The advisor's plan and month-to-date reserved spend; null when plans are off.
+ async function membership(c,userId){
+  if(!config.plans)return null;
+  const row=(await c.query('SELECT plan,monthly_allowance_micros FROM prospect_memberships WHERE user_id=$1',[userId])).rows[0];
+  const id=row?.plan||config.defaultPlan,plan=config.plans[id];
+  // A plan id that is no longer configured allows nothing rather than everything,
+  // even when the advisor had an override on it.
+  const allowance=!plan?0:row&&row.monthly_allowance_micros!=null?Number(row.monthly_allowance_micros):plan.monthly_allowance_micros;
+  const used=Number((await c.query(`SELECT COALESCE(sum(reserved_micros),0) AS n FROM prospect_charges WHERE user_id=$1 AND reserved_at>=${monthStart}`,[userId])).rows[0].n);
+  const now=new Date(),resets=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth()+1,1));
+  return {id,name:plan?.name||'Plan not available',monthly_allowance_micros:allowance,used_this_month_micros:used,remaining_micros:Math.max(0,allowance-used),resets_at:resets.toISOString()};
+ }
+ // Serialised per advisor so two reservations cannot both fit the same remainder.
+ async function allowanceRefusal(c,userId,amount){
+  if(!config.plans||!(amount>0))return null;
+  await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`prospect-allowance:${userId}`]);
+  const m=await membership(c,userId);
+  return m.used_this_month_micros+amount>m.monthly_allowance_micros?`Your ${m.name} plan's monthly allowance for paid lookups is used up. No request was sent and nothing was charged. It resets on ${m.resets_at.slice(0,10)}.`:null;
+ }
+ async function summary(user){const charges=(await pool.query(`SELECT COALESCE(sum(reserved_micros),0) AS reserved FROM prospect_charges WHERE user_id=$1 AND reserved_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,[user.uid])).rows[0];return {providers:providers.readiness,prices:{...config.prices,check_domain:0},daily_budget_micros:config.dailyBudgetMicros,reserved_today_micros:Number(charges.reserved),plan:await membership(pool,user.uid),actions:Object.fromEntries(Object.keys(capabilities).map(a=>[a,ready(a)])),cost_basis:'Reserved maximum at configured prices, not actual provider billing. The daily cap is shared by this deployment.'};}
  async function enqueue(user,input){
   if(!input||typeof input!=='object'||Array.isArray(input))throw fail(422,'Provide a provider job object.');
   const action=input.action;if(!Object.hasOwn(capabilities,action))throw fail(422,'Choose search, enrich, verify, check_domain, check_phone or web_research.');
@@ -95,6 +131,7 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   if(!charge){
    const spent=Number((await c.query("SELECT COALESCE(sum(reserved_micros),0) AS n FROM prospect_charges WHERE reserved_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'")).rows[0].n);
    if(task.payload.quote>0&&spent+task.payload.quote>config.dailyBudgetMicros){await finish(c,task,'skipped',{message:'The shared daily provider budget is exhausted. No request was sent.'});return {skipped:true};}
+   const refusal=await allowanceRefusal(c,task.user_id,task.payload.quote);if(refusal){await finish(c,task,'skipped',{message:refusal});return {skipped:true};}
    await c.query('INSERT INTO prospect_charges(task_id,user_id,provider,reserved_micros) VALUES($1,$2,$3,$4)',[task.id,task.user_id,task.provider,task.payload.quote]);
   }
   await c.query("INSERT INTO prospect_provider_pacing(provider,next_call_at) VALUES($1,now()+($2*interval '1 millisecond')) ON CONFLICT(provider) DO UPDATE SET next_call_at=EXCLUDED.next_call_at",[task.provider,pacingMs[task.provider]??6100]);
@@ -198,6 +235,7 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
    if(!row)throw fail(404,'Contact not found.');if(row.payload.suppressed)throw fail(422,'Suppressed contacts cannot be researched.');
    const spent=Number((await c.query("SELECT COALESCE(sum(reserved_micros),0) AS n FROM prospect_charges WHERE reserved_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'")).rows[0].n);
    if(price>0&&spent+price>config.dailyBudgetMicros)throw fail(422,'The shared daily provider budget is exhausted. The screenshot was not read.');
+   const refusal=await allowanceRefusal(c,user.uid,price);if(refusal)throw fail(422,refusal.replace('No request was sent','The screenshot was not read'));
    await c.query('INSERT INTO prospect_jobs(id,user_id,action,idempotency_key,input_hash,max_cost_micros) VALUES($1,$2,$3,$4,$5,$6)',[jobId,user.uid,'profile_image','image-'+jobId,hash(jobId),price]);
    await c.query("INSERT INTO prospect_tasks(id,job_id,user_id,action,provider,contact_id,payload,status,lease_token,lease_until) VALUES($1,$2,$3,'profile_image','anthropic',$4,$5::jsonb,'running',$6,now()+interval '2 minutes')",[taskId,jobId,user.uid,contactId,JSON.stringify({contact_id:contactId,quote:price,signature:sig(row.payload)}),taskId]);
    await c.query('INSERT INTO prospect_charges(task_id,user_id,provider,reserved_micros) VALUES($1,$2,$3,$4)',[taskId,user.uid,'anthropic',price]);

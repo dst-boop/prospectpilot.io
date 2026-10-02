@@ -50,6 +50,17 @@ Work as a senior engineering partner. The rules below come with reasons.
 3. **Configurable.** Targeting, source economics and cadence are settings, not
    code.
 
+## Provider accounts (MERGE-PLAN decision 8)
+
+- **AI and licensed data are built in.** Advisors use ProspectPilot's own
+  Claude key and licensed data providers. They never sign into Claude or
+  ChatGPT to power the app.
+- **Plan allowances:** every paid path reserves against `prospect_charges`
+  and the advisor's plan allowance (`allowanceRefusal`), as well as the
+  shared daily cap.
+- **ZoomInfo is bring-your-own.** Never bundle one ZoomInfo subscription's
+  data across advisors.
+
 ## Evidence and enrichment
 
 - **Qualification gates:** the five gates decide qualification: age,
