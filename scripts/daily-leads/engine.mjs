@@ -152,7 +152,7 @@ export const rankBasis = parts => `Trigger ${parts.trigger}/50 · Seniority ${pa
 // ZoomInfo matches company names loosely, so a search for Cisco also returns
 // Cisco Brewers. Long tenure only counts at the employer itself: the company
 // id most of the exact-name matches share.
-const companyKey = name => text(name).toLowerCase().replace(/[.,]/g, ' ').replace(/\b(the|inc|corp|corporation|co|company|llc|ltd|plc)\b/g, ' ').replace(/\s+/g, ' ').trim();
+const companyKey = name => text(name).toLowerCase().replace(/[.,]/g, ' ').replace(/\s+/g, ' ').trim().replace(/^the\s+/, '').replace(/(?:\s+(?:inc|corp|corporation|co|company|llc|ltd|plc))+$/, '').trim();
 export function sameEmployerId(candidates, employer) {
   const tally = new Map(), key = companyKey(employer);
   for (const c of candidates) if (c.company_id && companyKey(c.company) === key) tally.set(c.company_id, (tally.get(c.company_id) || 0) + 1);

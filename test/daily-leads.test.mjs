@@ -71,6 +71,7 @@ test('tenure rejects similarly named companies but accepts ordinary legal suffix
   assert.equal(matched.first,'2010-01-01');assert.equal(matched.years,10,'overlapping roles are counted once');
   assert.equal(stintAt([{companyName:'Cisco Brewers',fromDate:'1990-01-01'}],'Cisco',today),null);
   assert.equal(stintAt([{companyName:'Cisco',fromDate:'1990-01-01'}],'Cisco Brewers',today),null);
+  assert.equal(stintAt([{companyName:'Company Builders',fromDate:'1990-01-01'}],'Builders',today),null,'legal-looking words inside a brand are not stripped');
 });
 
 test('invalid or future career dates cannot invent tenure or a completed departure',()=>{
