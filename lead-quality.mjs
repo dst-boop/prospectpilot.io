@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import {estimateAgeBand} from './age-band.mjs';
 
 export const QUALITY_VERSION = 'retirement-evidence-2';
-export const qualificationVersion = target => target === 'rollover_100k' ? 'retirement-movable-1' : QUALITY_VERSION;
+export const qualificationVersion = target => target === 'rollover_100k' ? 'retirement-movable-2' : QUALITY_VERSION;
 export const US_STATES = new Set('AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC'.split(' '));
 const clean = value => String(value ?? '').normalize('NFKC').trim();
 export const nameKey = value => clean(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
@@ -137,6 +137,12 @@ export function assessLead(lead, observations = [], {now = new Date(), plans = [
       gates[field] = gate('confirmed', field === 'retirement' ? 'Disclosed individual assets and transfer eligibility reviewed.' : field === 'net_worth' ? 'Disclosed net worth lower bound meets $250,000; home excluded and liabilities considered.' : 'Evidence reviewed.', o);
     } catch { gates[field] = gate('unknown', 'Evidence is incomplete or invalid; review again.', o); }
   }
+  // The amount review includes the entire transfer review. Reuse its provenance
+  // only when no separate transfer observation exists; never override a review.
+  const separateTransferReview = observations.some(o => o.field === 'retirement');
+  if (target === 'rollover_100k' && !separateTransferReview && gates.movable_assets.state === 'confirmed') {
+    gates.retirement = gate('confirmed', 'Transfer eligibility confirmed in the retained-assets review.', gates.movable_assets.evidence);
+  }
   if (target === 'rollover_100k' && gates.movable_assets.state === 'confirmed' && gates.retirement.state === 'confirmed') {
     const amount = gates.movable_assets.evidence.value, transfer = gates.retirement.evidence.value;
     if (['account_type','route','destination_type'].some(key => amount[key] !== transfer[key])) gates.movable_assets = gate('unknown', 'Amount and transfer reviews describe different accounts or transfer routes. Reconcile the evidence.', gates.movable_assets.evidence);
@@ -151,7 +157,13 @@ export function assessLead(lead, observations = [], {now = new Date(), plans = [
   const candidates = required.filter(f => gates[f].state === 'candidate').length;
   const excluded = required.some(f => gates[f].state === 'failed') || nameKey(lead.company).includes('equitable');
   const status = excluded ? 'excluded' : identityConflict ? 'identity_review' : confirmed === required.length ? 'verified' : confirmed + candidates >= 3 ? 'promising' : 'incomplete';
-  return {version: target === 'legacy' ? QUALITY_VERSION : 'retirement-movable-1', target, required_fields:required, status, identity_signature: identity, score: excluded ? 0 : Math.round((confirmed + candidates / 4) * 100 / required.length), score_basis: 'Evidence completeness, not a calibrated probability or wealth estimate.', gates, channels, warnings, plans, age_band: ageBand, gaps: required.filter(f => gates[f].state !== 'confirmed'), evaluated_at: now.toISOString()};
+  const gaps = required.filter(f => gates[f].state !== 'confirmed');
+  // Offer the combined review first instead of making users enter it twice.
+  if (target === 'rollover_100k' && !separateTransferReview && gaps.includes('movable_assets') && gaps.includes('retirement')) {
+    gaps.splice(gaps.indexOf('movable_assets'), 1);
+    gaps.splice(gaps.indexOf('retirement'), 0, 'movable_assets');
+  }
+  return {version: qualificationVersion(target), target, required_fields:required, status, identity_signature: identity, score: excluded ? 0 : Math.round((confirmed + candidates / 4) * 100 / required.length), score_basis: 'Evidence completeness, not a calibrated probability or wealth estimate.', gates, channels, warnings, plans, age_band: ageBand, gaps, evaluated_at: now.toISOString()};
 }
 
 export const SOURCE_STRENGTH=[[/zoominfo/i,6,'Licensed export'],[/review/i,6,'Reviewed'],[/sec proxy|sec filing|edgar/i,5,'Regulatory filing'],[/csv|import|export/i,4,'Imported list'],
