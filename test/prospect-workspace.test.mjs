@@ -127,3 +127,22 @@ test('filters bind values, malformed imports are reported, and saved searches is
  const call=(method,who,body)=>app.route(new Request('https://example.com/api/prospect/saved-searches',{method,...(body?{body:JSON.stringify(body)}:{})}),who);
  await call('POST',user,{name:'Directors',filters:{title:'Director',unexpected:'discard'}});const searches=await call('GET',user);assert.equal(searches.searches.length,1);assert.equal(searches.searches[0].filters.unexpected,undefined);assert.equal((await call('GET',other)).searches.length,0);
 }));
+
+
+test('unresolved source conflicts survive routine imports and corrections beyond history limit',()=>fixture(async(app,db)=>{
+ await app.importCSV(user,{csv});
+ const contact=(await app.search(user)).contacts[0],url='https://example.com/api/prospect/contacts/'+contact.id;
+ const get=async()=>(await app.route(new Request(url),user)).contact;
+ await app.importCSV(user,{csv:csv.replace('Operations Director','VP Operations'),source:'Conflicting source'});
+ const conflict=(await get()).source_history.find(e=>e.proposed_values);
+ // Fill routine history at the retention boundary without repeated database imports.
+ const routine=Array.from({length:20},(_,i)=>({source:'Synthetic routine '+i,kind:'import'}));
+ await db.query("UPDATE prospect_contacts SET payload=jsonb_set(payload,'{source_history}',$1::jsonb) WHERE id=$2",[JSON.stringify([conflict,...routine]),contact.id]);
+ await app.importCSV(user,{csv,source:'Latest routine source'});
+ let c=await get();assert.equal(c.source_history.length,21);assert.deepEqual(c.source_history[0].proposed_values,conflict.proposed_values);
+ await app.route(new Request(url,{method:'PATCH',body:JSON.stringify({fields:{title:'Reviewed title'},revision:c.edit_revision,reason:'Synthetic manual correction'})}),user);
+ c=await get();assert.equal(c.source_history.length,21);assert.equal(c.source_history[0].source,'Conflicting source');
+ assert.equal(c.source_history[0].resolution,undefined);
+ await app.route(new Request(url,{method:'PATCH',body:JSON.stringify({resolve_history_index:0,decision:'keep',revision:c.edit_revision,reason:'Synthetic conflict review'})}),user);
+ c=await get();assert.equal(c.title,'Reviewed title');assert.ok(!c.source_history.some(e=>e.proposed_values&&!e.resolution));
+}));
