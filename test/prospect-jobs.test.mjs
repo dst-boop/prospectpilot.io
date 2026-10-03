@@ -193,4 +193,10 @@ test('provider enrichment preserves older unresolved conflicts and queues mobile
  const after=(await app.search(user)).contacts[0];assert.equal(after.source_history.length,21);assert.deepEqual(after.source_history[0],pending);
  assert.equal(after.mobile_phone,'+12125550123');assert.equal(after.source_history.at(-1).proposed_values.mobile_phone,'+12125550456');
  assert.equal((await jobs.summary(user)).reserved_today_micros,2000);
+ providers.search=async()=>({contacts:[record],retrieved:1,total:1,checked_at:new Date().toISOString()});
+ const search=await jobs.enqueue(user,{action:'search',filters:{company:'Example'},size:1,max_cost_micros:1000,idempotency_key:'retained-search-review'});await jobs.tick();
+ assert.equal((await jobs.jobs(user,search.id)).tasks[0].status,'completed');
+ const searched=(await app.search(user)).contacts[0];assert.deepEqual(searched.source_history[0],pending);
+ assert.ok(searched.source_history.some(event=>event.proposed_values?.mobile_phone==='+12125550456'&&!event.resolution));
+ assert.equal(searched.mobile_phone,'+12125550123');assert.equal((await jobs.summary(user)).reserved_today_micros,3000);
 }));
