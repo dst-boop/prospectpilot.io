@@ -6,7 +6,7 @@ import {readFileSync} from 'node:fs';
 function client(){
  const elements=new Map(),pending=[];
  const create=id=>{const value={textContent:'',innerHTML:'',disabled:false,open:false,value:'Reviewed source',dataset:{},
-  insertAdjacentHTML(){},append(element){this.lastChild=element;},scrollIntoView(){this.scrolled=true;},focus(){this.focused=true;},querySelectorAll(){return [elements.get('firstField')];},querySelector(){return elements.get('firstField');},showModal(){this.open=true;},addEventListener(event,fn){this[event+'Handler']=fn;},close(){this.open=false;this.closeHandler?.();}};elements.set(id,value);return value;};
+  insertAdjacentHTML(position,html){this.innerHTML+=html;},append(element){this.lastChild=element;},scrollIntoView(){this.scrolled=true;},focus(){this.focused=true;},querySelectorAll(){return [elements.get('firstField')];},querySelector(){return elements.get('firstField');},showModal(){this.open=true;},addEventListener(event,fn){this[event+'Handler']=fn;},close(){this.open=false;this.closeHandler?.();}};elements.set(id,value);return value;};
  for(const id of ['contactTitle','contactBody','contactError','toggleSuppression','deletePerson','closeContact','correctionForm','conflictReason0','contactHistory','contactHistoryBody','editContact','reviewContactConflicts','contactConflicts','correctionPanel','firstField','retryContact'])create(id);
  const conflict=create('conflict');conflict.dataset={conflict:'0',decision:'keep'};
  const context=vm.createContext({selected:new Set(),$:id=>elements.get(id),esc:String,notice(){},load:async()=>{},
@@ -124,4 +124,16 @@ for(const role of ['editor','viewer'])test(`shared ${role} contact controls matc
  assert.equal(c.elements.get('toggleSuppression').disabled,role==='viewer');
  assert.equal(c.elements.get('editContact').disabled,role==='viewer');
  if(role==='viewer')assert.equal(c.elements.get('conflict').disabled,true);
+});
+
+
+test('trimmed conflict source decisions remain visible from the correction snapshot',async()=>{
+ for(const decision of ['accept','keep']) {
+  const c=client(),opening=c.open('A'),data=record('A');
+  data.contact.source_history=[{kind:'manual_review',reason:'Reviewed role',source_resolution:{source:'Original provider',observed_at:'2026-09-01',proposed_values:{title:'Operations Manager'},resolution:{decision,reviewed_at:'2026-10-01'}}}];
+  c.pending[0].resolve(data);await opening;
+  const html=c.elements.get('contactHistoryBody').innerHTML;
+  assert.match(html,/Reviewed source: Original provider/);assert.match(html,/Source title: Operations Manager/);
+  assert.ok(html.includes(decision==='accept'?'Accepted source values':'Kept current values'));
+ }
 });
