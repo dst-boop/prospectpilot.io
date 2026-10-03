@@ -5,11 +5,14 @@
 // the inputs and results of provider tasks about them, and their name in
 // import reports.
 //
-// Three things deliberately survive, each without the person in it:
+// Four things deliberately survive, each without the person in it:
 //  - a do-not-call block keeps the phone and the reason (an opt-out that
 //    vanished with the record would let the number be dialled again);
 //  - provider charges keep the amount spent (the budget ledger), while the
 //    task that holds the person's details is blanked;
+//  - the lead ledger (lead_acquisitions) keeps the lead's date and source and
+//    its charges keep pointing at it, so cost per lead does not change after
+//    the fact; its link to the contact or lab lead becomes NULL;
 //  - a tombstone of HASHED identity keys, so an import or a research run
 //    cannot quietly bring the person back. Hashes, not keys: the deletion
 //    record must not itself be a copy of the person.
