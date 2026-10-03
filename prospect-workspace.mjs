@@ -12,7 +12,7 @@ export function contactIdentities(c){return [c.zoominfo?.contact_id&&`zoominfo:$
 export function identityLookupKeys(c){return [...new Set([...contactIdentities(c),...(c.company?countryAliases(c.country).flatMap(country=>stateAliases(c.state,c.country).map(state=>`person:${nameKey(c.first_name)}|${nameKey(c.last_name)}|${nameKey(c.company)}|${nameKey(country)}|${nameKey(state)}|${nameKey(c.city)}`)):[])])];}
 const identities=contactIdentities;
 // Recent routine history is bounded; pending source decisions must survive until reviewed.
-const retainSourceHistory=history=>history.filter((event,index)=>index>=history.length-20||(event.proposed_values&&!event.resolution));
+export const retainSourceHistory=history=>history.filter((event,index)=>index>=history.length-20||(event.proposed_values&&!event.resolution));
 const editableFields=['first_name','last_name','title','company','company_domain','industry','seniority','city','state','country','email','phone','mobile_phone','linkedin_url'];
 export function searchFilters(input={}) {
  const allowed=['q','title','company','country','state','city','industry','seniority','email_status','has_email','has_phone','list_id','suppressed','source','quality_issue'];

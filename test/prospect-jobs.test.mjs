@@ -180,3 +180,17 @@ test('a new definitive domain failure invalidates an older valid badge but retai
  await jobs.enqueue(user,{action:'check_domain',ids:[contact.id],max_cost_micros:0,idempotency_key:'domain-newer-result'});await jobs.tick();
  const after=(await app.search(user)).contacts[0];assert.equal(after.email_status,'unverified');assert.deepEqual(after.email_verification,verification);
 }));
+
+
+test('provider enrichment preserves older unresolved conflicts and queues mobile differences',()=>fixture(async({app,jobs,providers,db})=>{
+ await app.importCSV(user,{csv:'First Name,Last Name,Company,Email,Phone,Mobile Phone\nJamie,Rivera,Example,jamie@example.com,+12125551234,+12125550123'});
+ const before=(await app.search(user)).contacts[0];
+ const pending={source:'Earlier source',proposed_values:{title:'Manager'}};
+ await db.query("UPDATE prospect_contacts SET payload=jsonb_set(payload,'{source_history}',$1::jsonb) WHERE id=$2",[JSON.stringify([pending,...Array.from({length:20},()=>({source:'Routine import'}))]),before.id]);
+ providers.enrich=async()=>({contact:{...record,mobile_phone:'+12125550456'},checked_at:new Date().toISOString()});
+ const job=await jobs.enqueue(user,{action:'enrich',ids:[before.id],max_cost_micros:2000,idempotency_key:'retained-source-review'});await jobs.tick();
+ assert.equal((await jobs.jobs(user,job.id)).tasks[0].status,'completed');
+ const after=(await app.search(user)).contacts[0];assert.equal(after.source_history.length,21);assert.deepEqual(after.source_history[0],pending);
+ assert.equal(after.mobile_phone,'+12125550123');assert.equal(after.source_history.at(-1).proposed_values.mobile_phone,'+12125550456');
+ assert.equal((await jobs.summary(user)).reserved_today_micros,2000);
+}));
