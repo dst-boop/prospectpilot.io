@@ -13,26 +13,19 @@
 //    only when PROSPECT_ZOOMINFO_CREDIT_MICROS is set, at that current rate.
 // Cost per lead for a period is that period's spend over that period's new
 // leads. Counts and money only: nothing here names a person.
-import {hash} from './lead-quality.mjs';
-
 const fail=(status,message)=>Object.assign(Error(message),{status});
 export const PERIODS={day:{default:30,max:400},week:{default:12,max:260},month:{default:6,max:120}};
 export const MIN_SAMPLE=10;
 export const LEAD_SOURCES=['csv_import','zoominfo_import','daily_leads','provider_search','research_lab'];
 export const LOOKUP_ACTIONS=['search','enrich','verify','check_phone','web_research','profile_image'];
 
-// One credit-usage key per advisor, person and delivery day, so the same
-// delivery imported twice is counted once. Without a ZoomInfo id or day it
-// falls back to the import row. Matches the backfill in 027-lead-ledger.sql.
-export function creditUsageKey(uid,zoominfoId,deliveredOn,importId,row){
- return /^-?\d{1,20}$/.test(String(zoominfoId||''))&&/^\d{4}-\d{2}-\d{2}$/.test(String(deliveredOn||''))
-  ?hash(`zoominfo-credit|${uid}|${zoominfoId}|${deliveredOn}`):hash(`zoominfo-credit-row|${uid}|${importId}|${row}`);
-}
+// A YYYY-MM-DD string that is a real calendar day, or null. Date.parse alone
+// accepts 2026-02-30.
+export const calendarDay=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&Number.isFinite(Date.parse(value+'T00:00:00Z'))&&new Date(value+'T00:00:00Z').toISOString().slice(0,10)===value?value:null;
 export function readZoomInfoCreditCost(env=process.env){
  const raw=env.PROSPECT_ZOOMINFO_CREDIT_MICROS;if(raw===undefined||raw==='')return null;
  const n=Number(raw);if(!Number.isSafeInteger(n)||n<0||n>100000000)throw Error('Invalid PROSPECT_ZOOMINFO_CREDIT_MICROS');return n;
 }
-const validDay=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&new Date(value+'T00:00:00Z').toISOString().slice(0,10)===value;
 const zones=new Set([...(Intl.supportedValuesOf?.('timeZone')||[]),'UTC']);
 const shift=(day,period,n)=>{const d=new Date(day+'T00:00:00Z');if(period==='month')d.setUTCMonth(d.getUTCMonth()+n,1);else d.setUTCDate(d.getUTCDate()+n*(period==='week'?7:1));return d.toISOString().slice(0,10);};
 const startOf=(day,period)=>{const d=new Date(day+'T00:00:00Z');if(period==='month')d.setUTCDate(1);if(period==='week')d.setUTCDate(d.getUTCDate()-(d.getUTCDay()+6)%7);return d.toISOString().slice(0,10);};
@@ -42,7 +35,7 @@ export function leadCostWindow(input={},now=new Date()){
  const period=input.period||'month';if(!Object.hasOwn(PERIODS,period))throw fail(422,'Choose day, week or month.');
  const tz=input.tz||'America/New_York';if(!zones.has(tz))throw fail(422,'Choose a valid time zone.');
  const today=new Intl.DateTimeFormat('en-CA',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit'}).format(now);
- for(const key of ['from','to'])if(input[key]!==undefined&&input[key]!==''&&!validDay(input[key]))throw fail(422,`Use YYYY-MM-DD for ${key}.`);
+ for(const key of ['from','to'])if(input[key]!==undefined&&input[key]!==''&&!calendarDay(input[key]))throw fail(422,`Use YYYY-MM-DD for ${key}.`);
  const to=input.to||today,from=startOf(input.from||shift(startOf(to,period),period,1-PERIODS[period].default),period);
  if(from>to)throw fail(422,'The start date is after the end date.');
  let periods=[];for(let day=from;day<=to&&periods.length<=PERIODS[period].max;day=shift(day,period,1))periods.push(day);

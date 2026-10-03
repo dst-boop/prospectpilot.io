@@ -52,9 +52,10 @@ FROM prospect_contacts ON CONFLICT DO NOTHING;
 -- Usage of an advisor's own provider subscription (ZoomInfo is bring-your-own),
 -- as reported by the import that delivered it: the daily-leads CSV states the
 -- enrichment credits each row cost. Self-reported, so kept apart from
--- prospect_charges, which the server reserves itself. usage_key is a hash, so
--- re-importing the same delivery into another list is not counted twice; it
--- is not a copy of the person.
+-- prospect_charges, which the server reserves itself. usage_key stops the
+-- same delivery, imported into a second list, from counting twice: it is built
+-- from the lead's random ledger id and the delivery day (or, for a row tied to
+-- no lead, the import and row), never from anything about the person.
 CREATE TABLE IF NOT EXISTS prospect_external_usage (
  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
  user_id TEXT NOT NULL,
@@ -70,15 +71,19 @@ CREATE TABLE IF NOT EXISTS prospect_external_usage (
 CREATE INDEX IF NOT EXISTS prospect_external_usage_user_date ON prospect_external_usage(user_id,recorded_at);
 
 -- Credits already recorded on daily-leads deliveries. Reports date usage by
--- usage_date (the delivery day) when it is known.
+-- usage_date (the delivery day). A delivery day that is not a real calendar
+-- day (it was only warned about on import) is kept as no date; the CASE keeps
+-- the casts behind the format check.
+WITH credits AS (
+ SELECT c.user_id,a.id AS lead_id,d.key AS list_id,(d.value->'signal'->>'credits')::int AS units,
+  CASE WHEN d.value->'signal'->>'delivered_on' ~ '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$'
+   THEN CASE WHEN to_char((substr(d.value->'signal'->>'delivered_on',1,7)||'-01')::date+(substr(d.value->'signal'->>'delivered_on',9,2)::int-1),'YYYY-MM-DD')=d.value->'signal'->>'delivered_on'
+    THEN (d.value->'signal'->>'delivered_on')::date END END AS day
+ FROM prospect_contacts c
+ CROSS JOIN LATERAL jsonb_each(CASE WHEN jsonb_typeof(c.payload->'deliveries')='object' THEN c.payload->'deliveries' ELSE '{}'::jsonb END) d
+ JOIN lead_acquisitions a ON a.contact_id=c.id
+ WHERE d.value->'signal'->>'credits' ~ '^[1-9][0-9]?$'
+)
 INSERT INTO prospect_external_usage(user_id,provider,usage_key,units,usage_date,lead_id)
-SELECT c.user_id,'zoominfo',
- encode(sha256(convert_to('zoominfo-credit|'||c.user_id||'|'||(c.payload->'zoominfo'->>'contact_id')||'|'||(d.value->'signal'->>'delivered_on'),'UTF8')),'hex'),
- (d.value->'signal'->>'credits')::int,(d.value->'signal'->>'delivered_on')::date,a.id
-FROM prospect_contacts c
-CROSS JOIN LATERAL jsonb_each(CASE WHEN jsonb_typeof(c.payload->'deliveries')='object' THEN c.payload->'deliveries' ELSE '{}'::jsonb END) d
-LEFT JOIN lead_acquisitions a ON a.contact_id=c.id
-WHERE c.payload->'zoominfo'->>'contact_id' ~ '^-?[0-9]{1,20}$'
- AND d.value->'signal'->>'delivered_on' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
- AND d.value->'signal'->>'credits' ~ '^[1-9][0-9]?$'
-ON CONFLICT DO NOTHING;
+SELECT user_id,'zoominfo',CASE WHEN day IS NOT NULL THEN 'lead:'||lead_id||':'||day ELSE 'lead:'||lead_id||':list:'||list_id END,units,day,lead_id
+FROM credits ON CONFLICT DO NOTHING;

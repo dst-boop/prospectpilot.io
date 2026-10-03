@@ -52,7 +52,7 @@ A period with fewer than 10 new leads is marked **few leads**. The change from o
 
 The ledgers hold ids, dates, counts and money. They hold no names, emails or phone numbers. "Delete this person" removes the person. Their lead row stays, with its link to the contact or lab lead set to NULL. Their charges keep the lead they belong to.
 
-Past periods therefore keep their counts and spend after a deletion. A deleted person can't be found again through these tables. The ZoomInfo usage key is a hash, so it is not a copy of the person.
+Past periods therefore keep their counts and spend after a deletion. A deleted person can't be found again through these tables. The ZoomInfo usage key is built from the lead's random ledger id and the delivery day, never from anything about the person.
 
 ## Known limits
 

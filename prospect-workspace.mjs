@@ -3,7 +3,7 @@ import {createDomainChecker} from './prospect-domain-check.mjs';
 import {buildPreparation,preparationRevision} from './prospect-preparation.mjs';
 import {nameKey,hash,csvCell,publicURL} from './lead-quality.mjs';
 import {forgetPerson,forgottenKeys} from './forget.mjs';
-import {creditUsageKey,leadCosts} from './lead-costs.mjs';
+import {calendarDay,leadCosts} from './lead-costs.mjs';
 import {normalizeContact,parseContactCSV,normalizeCountry,normalizeState,countryAliases,stateAliases,sharedMailbox,SHARED_MAILBOX_PATTERN,contactQuality,sourceFreshnessCutoff,phoneReadiness} from './prospect-data-quality.mjs';
 export {normalizeContact} from './prospect-data-quality.mjs';
 const fail=(status,message)=>Object.assign(Error(message),{status});
@@ -177,8 +177,8 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
     const {contact,keys}=record;
     const signal=contact.signal;delete contact.signal;
     // Enrichment credits the delivery says this row cost on the advisor's own
-    // ZoomInfo subscription, recorded once per person and delivery day.
-    if(signal?.credits>0)usage.push({key:creditUsageKey(user.uid,contact.zoominfo?.contact_id,signal.delivered_on,result.id,record.row),units:signal.credits,date:signal.delivered_on||null,contact_id:null});
+    // ZoomInfo subscription, recorded once per lead and delivery day.
+    if(signal?.credits>0)usage.push({row:record.row,units:signal.credits,date:calendarDay(signal.delivered_on),contact_id:null});
     const matches=[...new Set(keys.flatMap(key=>[...(byKey.get(key)||[])]))].map(id=>byId.get(id));
     if(matches.length>1){result.conflicts++;report(record.row,'conflict','Identifiers match more than one existing contact. Review the identity before importing.',contact);continue;}
     let id=matches[0]?.id||randomUUID();
@@ -233,8 +233,9 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
     result.zoominfo_credits=usage.reduce((n,u)=>n+u.units,0);
     // A row that conflicted changed no contact, so its spend is not tied to one.
     if(!preview)await c.query(`INSERT INTO prospect_external_usage(user_id,provider,usage_key,units,usage_date,import_id,lead_id)
-     SELECT $1,'zoominfo',u->>'key',(u->>'units')::int,(u->>'date')::date,$2,(SELECT id FROM lead_acquisitions WHERE contact_id=u->>'contact_id')
-     FROM jsonb_array_elements($3::jsonb) u ON CONFLICT DO NOTHING`,[user.uid,result.id,JSON.stringify(usage.map(u=>({...u,contact_id:changed.has(u.contact_id)?u.contact_id:null})))]);
+     SELECT $1,'zoominfo',CASE WHEN a.id IS NOT NULL AND u->>'date' IS NOT NULL THEN 'lead:'||a.id||':'||(u->>'date') ELSE 'row:'||$2||':'||(u->>'row') END,
+      (u->>'units')::int,(u->>'date')::date,$2,a.id
+     FROM jsonb_array_elements($3::jsonb) u LEFT JOIN lead_acquisitions a ON a.contact_id=u->>'contact_id' ON CONFLICT DO NOTHING`,[user.uid,result.id,JSON.stringify(usage.map(u=>({...u,contact_id:changed.has(u.contact_id)?u.contact_id:null})))]);
    }
    if(!preview)await c.query('INSERT INTO prospect_imports(id,user_id,fingerprint,source,result) VALUES($1,$2,$3,$4,$5::jsonb)',[result.id,user.uid,fingerprint,source,JSON.stringify(result)]);return result;
   });

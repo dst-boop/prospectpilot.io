@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
 import {createProspectJobs} from '../prospect-jobs.mjs';
 import {createProspectWorkspace} from '../prospect-workspace.mjs';
-import {leadCosts,leadCostWindow,leadCostCSV,LEAD_COST_COLUMNS,creditUsageKey,readZoomInfoCreditCost} from '../lead-costs.mjs';
+import {leadCosts,leadCostWindow,leadCostCSV,LEAD_COST_COLUMNS,calendarDay,readZoomInfoCreditCost} from '../lead-costs.mjs';
 import {reportArgs,report} from '../scripts/lead-costs/report.mjs';
 import {leadCostContent} from '../prospect-jobs-client.js';
 
@@ -60,8 +60,12 @@ test('ZoomInfo credits from a delivery are recorded once per person and day, and
  const priced=(await leadCosts(db,{period:'month',from:'2026-10-01',to:'2026-10-31'},{userId:advisor.uid,creditMicros:400000,now})).users[0].rows[0];
  assert.equal(priced.spend.zoominfo_micros,800000);assert.equal(priced.spend.total_micros,800000);
  assert.equal(priced.leads.total,3);assert.equal(priced.cost_per_lead_micros,266667);assert.equal(priced.contacts_cost_per_lead_micros,266667);
- assert.equal(creditUsageKey('u','101','2026-10-02','i',2),(await one(db,"SELECT encode(sha256(convert_to('zoominfo-credit|u|101|2026-10-02','UTF8')),'hex') AS k")).k,'JS and SQL keys agree');
- assert.notEqual(creditUsageKey('u','','2026-10-02','i',2),creditUsageKey('u','','2026-10-02','i',3));
+ // The key says nothing about the person: a random lead id and the day.
+ for(const {usage_key,lead_id} of (await db.query('SELECT usage_key,lead_id FROM prospect_external_usage')).rows)assert.equal(usage_key,`lead:${lead_id}:2026-10-02`);
+ // A delivery day that is not a real date is warned about on import, not fatal; its credits stay undated.
+ const odd=await ws.importCSV(advisor,{csv:daily([['Dana','Odd','104',1]],'2026-02-30'),format:'zoominfo',list_id:a.id});
+ assert.equal(odd.added,1);assert.equal(odd.zoominfo_credits,1);
+ assert.equal((await one(db,"SELECT usage_date FROM prospect_external_usage u JOIN lead_acquisitions l ON l.id=u.lead_id JOIN prospect_contacts c ON c.id=l.contact_id WHERE c.payload->>'first_name'='Dana'")).usage_date,null);
 }));
 
 test('a charge records what was bought, what a search returned, and the lead it was spent on',()=>fixture(async({db,jobs,ws})=>{
@@ -149,20 +153,25 @@ test('the migrations describe what was already there',async()=>{
   for(const file of before)await db.exec(readFileSync(new URL('../'+file,import.meta.url),'utf8'));
   await db.query(`INSERT INTO prospect_contacts(id,user_id,payload,created_at) VALUES
    ('c1','advisor-a','{"source_kind":"provider","source_history":[{"job_id":"j1"}]}','2026-08-10T12:00:00Z'),
-   ('c2','advisor-a','{"source_kind":"zoominfo_csv","zoominfo":{"contact_id":"101"},"deliveries":{"list":{"signal":{"delivered_on":"2026-08-11","credits":1}}}}','2026-08-11T12:00:00Z')`);
+   ('c2','advisor-a','{"source_kind":"zoominfo_csv","zoominfo":{"contact_id":"101"},"deliveries":{"list":{"signal":{"delivered_on":"2026-08-11","credits":1}},"copy":{"signal":{"delivered_on":"2026-08-11","credits":1}}}}','2026-08-11T12:00:00Z'),
+   ('c3','advisor-a','{"source_kind":"zoominfo_csv","deliveries":{"a":{"signal":{"delivered_on":"2026-02-30","credits":2}}}}','2026-08-12T12:00:00Z')`);
   await db.query("INSERT INTO prospect_jobs(id,user_id,action,idempotency_key,input_hash,max_cost_micros) VALUES('j1','advisor-a','search','k','h',6000),('j2','advisor-a','enrich','k2','h',5000)");
   await db.query(`INSERT INTO prospect_tasks(id,job_id,user_id,action,provider,contact_id,payload,status,result) VALUES
    ('t1','j1','advisor-a','search','pdl',NULL,'{"filters":{"size":3},"quote":6000}','completed','{"retrieved":1}'),
    ('t2','j2','advisor-a','enrich','pdl','c2','{"quote":5000}','completed','{}')`);
   await db.query("INSERT INTO prospect_charges(task_id,user_id,provider,reserved_micros) VALUES('t1','advisor-a','pdl',6000),('t2','advisor-a','pdl',5000)");
   for(const file of after)await db.exec(readFileSync(new URL('../'+file,import.meta.url),'utf8'));
-  assert.deepEqual((await db.query("SELECT contact_id,source,acquired_at::text AS at FROM lead_acquisitions ORDER BY contact_id")).rows.map(r=>[r.contact_id,r.source]),[['c1','provider_search'],['c2','daily_leads']]);
+  assert.deepEqual((await db.query("SELECT contact_id,source,acquired_at::text AS at FROM lead_acquisitions ORDER BY contact_id")).rows.map(r=>[r.contact_id,r.source]),[['c1','provider_search'],['c2','daily_leads'],['c3','daily_leads']]);
   const charges=(await db.query('SELECT task_id,action,units,unit_price_micros::int AS unit,delivered_units,lead_id IS NOT NULL AS linked FROM prospect_charges ORDER BY task_id')).rows;
   assert.deepEqual(charges,[{task_id:'t1',action:'search',units:3,unit:2000,delivered_units:1,linked:false},{task_id:'t2',action:'enrich',units:1,unit:5000,delivered_units:null,linked:true}]);
-  assert.deepEqual((await db.query('SELECT units,usage_date::text AS day,usage_key FROM prospect_external_usage')).rows,[{units:1,day:'2026-08-11',usage_key:creditUsageKey('advisor-a','101','2026-08-11')}]);
+  const lead=(await one(db,"SELECT id FROM lead_acquisitions WHERE contact_id='c3'")).id;
+  assert.deepEqual((await db.query('SELECT units,usage_date::text AS day,usage_key FROM prospect_external_usage ORDER BY units')).rows,[
+   {units:1,day:'2026-08-11',usage_key:`lead:${(await one(db,"SELECT id FROM lead_acquisitions WHERE contact_id='c2'")).id}:2026-08-11`},
+   {units:2,day:null,usage_key:`lead:${lead}:list:a`}],'one delivery in two lists counts once; an impossible day is kept undated');
   // Running them again changes nothing.
   for(const file of after)await db.exec(readFileSync(new URL('../'+file,import.meta.url),'utf8'));
-  assert.equal((await one(db,'SELECT count(*)::int AS n FROM lead_acquisitions')).n,2);
+  assert.equal((await one(db,'SELECT count(*)::int AS n FROM lead_acquisitions')).n,3);
+  assert.equal((await one(db,'SELECT count(*)::int AS n FROM prospect_external_usage')).n,2);
  }finally{await db.close();}
 });
 
@@ -171,6 +180,7 @@ test('report windows, settings and the panel',()=>{
  assert.equal(leadCostWindow({period:'week'},now).periods[0],'2026-07-27');assert.equal(leadCostWindow({period:'week'},now).periods.length,12);
  assert.equal(leadCostWindow({period:'day',tz:'Pacific/Kiritimati'},new Date('2026-10-15T23:00:00Z')).to,'2026-10-16');
  assert.equal(leadCostWindow({period:'month',from:'2026-09-17',to:'2026-10-02'}).from,'2026-09-01');
+ assert.deepEqual(['2026-02-28','2026-02-30','2026-13-01','26-1-1',null].map(calendarDay),['2026-02-28',null,null,null,null]);
  assert.equal(readZoomInfoCreditCost({}),null);assert.equal(readZoomInfoCreditCost({PROSPECT_ZOOMINFO_CREDIT_MICROS:'350000'}),350000);
  assert.throws(()=>readZoomInfoCreditCost({PROSPECT_ZOOMINFO_CREDIT_MICROS:'-1'}),/Invalid/);
  assert.deepEqual(reportArgs(['--period','week','--tz','UTC']),{period:'week',tz:'UTC'});assert.throws(()=>reportArgs(['--user','x']),/Usage/);
