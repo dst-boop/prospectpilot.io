@@ -3,6 +3,7 @@ import {createDomainChecker} from './prospect-domain-check.mjs';
 import {buildPreparation,preparationRevision} from './prospect-preparation.mjs';
 import {nameKey,hash,csvCell,publicURL} from './lead-quality.mjs';
 import {forgetPerson,forgottenKeys} from './forget.mjs';
+import {calendarDay,leadCosts} from './lead-costs.mjs';
 import {normalizeContact,parseContactCSV,normalizeCountry,normalizeState,countryAliases,stateAliases,sharedMailbox,SHARED_MAILBOX_PATTERN,contactQuality,sourceFreshnessCutoff,phoneReadiness} from './prospect-data-quality.mjs';
 export {normalizeContact} from './prospect-data-quality.mjs';
 const fail=(status,message)=>Object.assign(Error(message),{status});
@@ -170,14 +171,18 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
     result.rows.push({row,status,message,...review,name:contact?`${contact.first_name} ${contact.last_name}`:'',issues:contact?contactQuality(contact).issues:[]});
     if(['rejected','conflict'].includes(status)&&result.errors.length<50)result.errors.push({row,message});
    };
-   const now=new Date().toISOString();
+   const now=new Date().toISOString(),usage=[];
    for(const record of prepared){
     if(record.error){result.rejected++;report(record.row,'rejected',record.error);continue;}
     const {contact,keys}=record;
     const signal=contact.signal;delete contact.signal;
+    // Enrichment credits the delivery says this row cost on the advisor's own
+    // ZoomInfo subscription, recorded once per lead and delivery day.
+    if(signal?.credits>0)usage.push({row:record.row,units:signal.credits,date:calendarDay(signal.delivered_on),contact_id:null});
     const matches=[...new Set(keys.flatMap(key=>[...(byKey.get(key)||[])]))].map(id=>byId.get(id));
     if(matches.length>1){result.conflicts++;report(record.row,'conflict','Identifiers match more than one existing contact. Review the identity before importing.',contact);continue;}
     let id=matches[0]?.id||randomUUID();
+    if(signal?.credits>0)usage.at(-1).contact_id=id;
     const evidence={...(scope?{actor_uid:scope.actor}:{}),source,kind:contact.source_kind,import_id:result.id,row:record.row,imported_at:now,observed_at:observed||null,url:sourceURL||null,zoominfo:contact.zoominfo,phone_import:contact.phone_import,phone_restrictions:contact.phone_restrictions,import_warnings:contact.import_warnings};
     contact.source_observed_at=observed||null;contact.last_seen_at=now;
     if(matches.length){const old=matches[0].payload;
@@ -223,6 +228,14 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
      ON CONFLICT(id) DO UPDATE SET payload=EXCLUDED.payload,identity_keys=EXCLUDED.identity_keys,updated_at=now()
      WHERE prospect_contacts.user_id=$1`,[user.uid,JSON.stringify(writes.slice(start,start+100))]);
     if(input.list_id&&writes.length)await c.query('INSERT INTO prospect_list_members(list_id,contact_id) SELECT $1,unnest($2::text[]) ON CONFLICT DO NOTHING',[input.list_id,writes.map(row=>row.id)]);
+   }
+   if(usage.length){
+    result.zoominfo_credits=usage.reduce((n,u)=>n+u.units,0);
+    // A row that conflicted changed no contact, so its spend is not tied to one.
+    if(!preview)await c.query(`INSERT INTO prospect_external_usage(user_id,provider,usage_key,units,usage_date,import_id,lead_id)
+     SELECT $1,'zoominfo',CASE WHEN a.id IS NOT NULL AND u->>'date' IS NOT NULL THEN 'lead:'||a.id||':'||(u->>'date') ELSE 'row:'||$2||':'||(u->>'row') END,
+      (u->>'units')::int,(u->>'date')::date,$2,a.id
+     FROM jsonb_array_elements($3::jsonb) u LEFT JOIN lead_acquisitions a ON a.contact_id=u->>'contact_id' ON CONFLICT DO NOTHING`,[user.uid,result.id,JSON.stringify(usage.map(u=>({...u,contact_id:changed.has(u.contact_id)?u.contact_id:null})))]);
    }
    if(!preview)await c.query('INSERT INTO prospect_imports(id,user_id,fingerprint,source,result) VALUES($1,$2,$3,$4,$5::jsonb)',[result.id,user.uid,fingerprint,source,JSON.stringify(result)]);return result;
   });
@@ -379,6 +392,8 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
   const scoped=path.match(/^\/api\/prospect\/lists\/([^/]+)\/(contacts(?:\/[^/]+(?:\/prepare)?)?|import(?:\/preview)?|export|members)$/);
   if(!scope&&scoped)return scopedRoute(request,user,scoped[1],scoped[2]);
   if(jobs && (path==='/api/prospect/providers'||path.startsWith('/api/prospect/jobs')))return jobs.route(request,user);
+  // Cost per lead for the signed-in advisor only; never someone else's.
+  if(!scope&&path==='/api/prospect/lead-costs'&&method==='GET')return leadCosts(pool,Object.fromEntries(url.searchParams),{userId:user.uid});
   if(path==='/api/prospect/contacts'&&method==='GET'){if(!scope&&url.searchParams.get('list_id'))return scopedRoute(request,user,url.searchParams.get('list_id'),'contacts');return search(user,Object.fromEntries(url.searchParams));}
   if(path==='/api/prospect/data-quality'&&method==='GET')return qualitySummary(user);
   const importReport=path.match(/^\/api\/prospect\/imports\/([^/]+)$/);

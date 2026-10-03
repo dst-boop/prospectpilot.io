@@ -88,6 +88,7 @@ Advisors buy a plan through Stripe Checkout and manage it in Stripe's customer p
 | `STRIPE_WEBHOOK_SECRET` | Signing secret of the webhook endpoint above |
 | `PROSPECT_TOPUPS` | *(optional)* Top-up packs as JSON (see step 6) |
 | `PROSPECT_LEAD_COST_MICROS` | *(optional)* Assumed cost of one fully worked lead, for the "about N leads" display only |
+| `PROSPECT_ZOOMINFO_CREDIT_MICROS` | *(optional)* What one ZoomInfo credit costs you, to include delivered ZoomInfo credits in cost per lead ([LEAD-COSTS.md](LEAD-COSTS.md)) |
 
 Each event is applied once (`billing_events`). The subscription is re-read from Stripe on every event, so deliveries that arrive out of order still leave the current state. A failed apply is rolled back and Stripe's retry applies it.
 
@@ -106,6 +107,7 @@ Each event is applied once (`billing_events`). The subscription is re-read from 
 - Each job has an explicit maximum reservation based on its quoted size. Enrichment/verification batches are limited to 500 selected contacts; provider searches to 100 records per page.
 - A database transaction reserves the quoted maximum **before** each provider request. The daily limit covers the whole deployment. The user interface shows the current user's reservations and the shared cap.
 - Reservations are conservative, not actual charges: a ten-record search reserves ten records even when fewer are returned. No automatic refunds are inferred from missing data or network errors. Reconcile actual invoices separately.
+- Each reservation also records its action, units, unit price, the lead it was spent on and, for a search, the records returned. Cost per lead by advisor and period is reported from these records and the lead ledger. See [LEAD-COSTS.md](LEAD-COSTS.md).
 - Pending Hunter verification responses can be polled up to five times with one reservation. Hunter documents these polls as one charged verification. Other uncertain requests are not automatically replayed.
 - A lost worker lease or provider failure produces **needs attention** with cost retained. Check provider billing before deliberately submitting a new job. Idempotency keys prevent the same submission from making duplicate jobs, and active contact/action tasks are deduplicated.
 - PDL requests are paced at least 6.1 seconds apart across workers. Hunter requests are paced at least 250 ms apart. Provider HTTP 429 remains a visible failure; it does not trigger an uncontrolled retry loop.
