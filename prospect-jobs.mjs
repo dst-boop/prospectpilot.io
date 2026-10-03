@@ -211,6 +211,7 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   const contact={...row.payload};
   if(result.suppressed){contact.suppressed=true;await c.query('UPDATE prospect_contacts SET payload=$1::jsonb,updated_at=now() WHERE id=$2',[JSON.stringify(contact),task.contact_id]);await finish(c,task,'skipped',{message:'Provider reported a suppression; the contact is now suppressed.'});return;}
   if(task.action==='web_research'){
+   if(webResearchFor(contact)!==webResearchFor(task.contact)){await finish(c,task,'skipped',{message:'Research identity or location changed while the search ran. Results were not applied.'});return;}
    if(!validObservationTime(result.checked_at)||!Array.isArray(result.findings))throw fail(502,'Invalid web research result.');
    // Unreviewed by design: stored beside the contact, changing no field. A
    // search that found nothing is recorded too, so it is not bought twice.
