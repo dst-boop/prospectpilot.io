@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {hash,nameKey,linkedinURL} from './lead-quality.mjs';
-import {normalizeContact,contactIdentities,identityLookupKeys,searchFilters} from './prospect-workspace.mjs';
+import {normalizeContact,contactIdentities,identityLookupKeys,searchFilters,retainSourceHistory} from './prospect-workspace.mjs';
 import {CONTACT_ALIASES,contactEmail} from './prospect-data-quality.mjs';
 import {forgottenKeys} from './forget.mjs';
 import {PAYING_STATUSES} from './billing.mjs';
@@ -194,7 +194,7 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
    }
    const evidence={source:'People Data Labs',kind:'provider',job_id:task.job_id,imported_at:result.checked_at||new Date().toISOString(),observed_at:null,provider_id:raw.provider_id||null};
    let id=matches[0]?.id;if(id){duplicates++;
-    const old=matches[0].payload,differing=['title','company','country','state','city','phone'].filter(key=>old[key]&&contact[key]&&nameKey(old[key])!==nameKey(contact[key]));
+    const old=matches[0].payload,differing=['title','company','country','state','city','phone','mobile_phone'].filter(key=>old[key]&&contact[key]&&nameKey(old[key])!==nameKey(contact[key]));
     const updated={...old,last_seen_at:evidence.imported_at,source_history:[...(old.source_history||[]),{...evidence,differing_fields:differing,...differing.length?{proposed_values:Object.fromEntries(differing.map(key=>[key,contact[key]]))}:{}}].slice(-20)};
     await c.query('UPDATE prospect_contacts SET payload=$1::jsonb,updated_at=now() WHERE id=$2 AND user_id=$3',[JSON.stringify(updated),id,task.user_id]);
    }else{id=randomUUID();contact={...contact,source_kind:'provider',provider_id:raw.provider_id,source_observed_at:null,last_seen_at:evidence.imported_at,source_history:[evidence],field_sources:Object.fromEntries(Object.keys(CONTACT_ALIASES).filter(key=>contact[key]).map(key=>[key,evidence]))};await c.query('INSERT INTO prospect_contacts(id,user_id,payload,identity_keys) VALUES($1,$2,$3::jsonb,$4::jsonb)',[id,task.user_id,JSON.stringify(contact),JSON.stringify(keys)]);added++;}
@@ -247,9 +247,9 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
    const collision=(await c.query('SELECT id FROM prospect_contacts WHERE user_id=$1 AND id<>$2 AND identity_keys ?| $3::text[]',[task.user_id,task.contact_id,contactIdentities(prospective)])).rows;
    if(collision.length){await finish(c,task,'skipped',{message:'Enriched identifiers match another contact. Review the identity before merging.'});return;}
    const evidence={source:'People Data Labs',kind:'provider',job_id:task.job_id,imported_at:result.checked_at||new Date().toISOString(),observed_at:null,match_likelihood:result.match_likelihood||null};
-   const differing=['title','company','country','state','city','phone'].filter(key=>contact[key]&&candidate[key]&&nameKey(contact[key])!==nameKey(candidate[key]));
+   const differing=['title','company','country','state','city','phone','mobile_phone'].filter(key=>contact[key]&&candidate[key]&&nameKey(contact[key])!==nameKey(candidate[key]));
    prospective.field_sources={...(contact.field_sources||{})};for(const key of Object.keys(CONTACT_ALIASES))if(!contact[key]&&candidate[key])prospective.field_sources[key]=evidence;
-   prospective.source_history=[...(contact.source_history||[]),{...evidence,differing_fields:differing,...differing.length?{proposed_values:Object.fromEntries(differing.map(key=>[key,candidate[key]]))}:{}}].slice(-20);prospective.last_seen_at=evidence.imported_at;
+   prospective.source_history=retainSourceHistory([...(contact.source_history||[]),{...evidence,differing_fields:differing,...differing.length?{proposed_values:Object.fromEntries(differing.map(key=>[key,candidate[key]]))}:{}}]);prospective.last_seen_at=evidence.imported_at;
    Object.assign(contact,prospective);if(!row.payload.email&&contact.email)contact.email_status='unverified';if(!row.payload.phone&&contact.phone)contact.phone_status='unverified';contact.enrichment={provider:'pdl',checked_at:result.checked_at,match_likelihood:result.match_likelihood||null};
   }
   await c.query('UPDATE prospect_contacts SET payload=$1::jsonb,identity_keys=$2::jsonb,updated_at=now() WHERE id=$3',[JSON.stringify(contact),JSON.stringify(contactIdentities(contact)),task.contact_id]);
