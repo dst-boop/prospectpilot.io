@@ -125,3 +125,14 @@ test('a failed reading keeps its reserved cost visible and reports the failure',
   assert.equal((await jobs.jobs(user,latest.id)).tasks[0].status,'needs_attention');
   assert.equal((await jobs.summary(user)).reserved_today_micros,20000);
 },[{stop_reason:'refusal',content:[]}]));
+
+
+test('location corrected during web research cannot receive findings for the previous location',()=>fixture(async({db,id,providers,run,read,jobs,user})=>{
+ providers.webResearch=async()=>{
+  await db.query("UPDATE prospect_contacts SET payload=jsonb_set(payload,'{city}','\"Boston\"') WHERE id=$1",[id]);
+  return {findings:[{field:'title',value:'Old location role',quote:'Synthetic quote',url:page}],summary:'Synthetic old-location result',checked_at:new Date().toISOString()};
+ };
+ const task=await run();assert.equal(task.status,'skipped');assert.match(task.result.message,/location changed/);
+ const after=await read();assert.equal(after.city,'Boston');assert.equal(after.web_research,undefined);
+ assert.equal((await jobs.summary(user)).reserved_today_micros,50000);
+},[]));
