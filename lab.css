@@ -104,3 +104,5 @@ header{flex-wrap:wrap}header nav{flex-wrap:wrap;align-items:center}.workspace-me
 .age-facts{display:grid;grid-template-columns:max-content 1fr;gap:4px 12px;margin:8px 0}
 .age-facts dt{font-weight:600}
 .age-facts dd{margin:0}
+
+.work-progress{margin:16px 0}.work-progress>summary{padding:12px 0}.work-progress .work-metrics{margin-top:12px}.work-name{font-size:16px;overflow-wrap:anywhere}.score-line{margin-top:8px;font-size:13px}.score-line summary{font-size:13px;padding:0}.score-line p{font-size:13px}
