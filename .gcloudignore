@@ -16,3 +16,6 @@ outputs/**
 *.csv
 *.xlsx
 *.pptx
+
+# Required by the worker configuration regression test in the Docker build.
+!setup-research-worker.sh
