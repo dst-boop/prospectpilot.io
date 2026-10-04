@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 
-function client({activity=false}={}){
+function client({activity=false,dashboard=false}={}){
   const elements=new Map(),pending=[];
   const element=id=>{
     if(!elements.has(id))elements.set(id,{value:'',textContent:'',innerHTML:'',disabled:false,open:false,dataset:{},
@@ -17,7 +17,7 @@ function client({activity=false}={}){
     fetch:(url,options)=>new Promise(resolve=>pending.push({url,options,respond:(data,status=200)=>resolve({status,ok:status===200,headers:{get:()=> 'application/json'},json:async()=>data})}))});
   vm.runInContext(readFileSync(new URL('../lab-client.js',import.meta.url),'utf8').replace(/init\(\);\s*$/,''),context);
   // Isolate dialog interactions from the independent dashboard refresh.
-  vm.runInContext('refresh=async()=>{}'+(activity?'':';loadActivity=async()=>{}'),context);
+  vm.runInContext((dashboard?'':'refresh=async()=>{};')+(activity?'':'loadActivity=async()=>{}'),context);
   return {element,pending,run:code=>vm.runInContext(code,context)};
 }
 const lead=name=>({lead:{id:name,first_name:name,last_name:'Example',evidence:[]},quality:{gates:{},warnings:[],plans:[],identity_signature:name}});
@@ -412,4 +412,58 @@ test('ineligible enrichment export shows the server explanation instead of downl
  await exporting;
  assert.match(c.element('notice').textContent,/No selected prospects are eligible/);
  assert.doesNotMatch(c.element('notice').textContent,/CSV prepared/);
+});
+
+
+test('default refresh fetches actionable data and job status but no collapsed reports',async()=>{
+ const c=client({dashboard:true});c.element('workView').value='today';
+ const refresh=c.run('refresh()');
+ assert.equal(c.pending.length,3);
+ for(const request of c.pending){
+  if(request.url.startsWith('/api/lab/worklist?'))request.respond(emptyQueue);
+  else if(request.url==='/api/lab/identity-reviews')request.respond({total:0,reviews:[]});
+  else {assert.equal(request.url,'/api/lab/runs');request.respond({runs:[]});}
+ }
+ await refresh;
+ assert.equal(c.pending.length,3);
+ assert.equal(c.element('startNext').disabled,false);
+ assert.match(c.element('notice').textContent,/Worklist updated/);
+});
+
+test('optional research loads on open, shares in-flight requests and retries failed reports',async()=>{
+ const c=client();c.run('workspaceReady=true');
+ c.element('researchTools').toggleHandler();assert.equal(c.pending.length,0);
+ c.element('researchTools').open=true;c.element('researchTools').toggleHandler();
+ const loading=c.run('loadResearchReports()');assert.equal(c.pending.length,2);
+ c.pending[0].respond({detail:'Temporary report failure'},503);
+ c.pending[1].respond({leads:[],total:0});
+ await assert.rejects(loading,/Temporary report failure/);
+ assert.equal(c.element('researchRetry').hidden,false);
+ const retry=c.element('researchRetry').onclick();assert.equal(c.pending.length,4);
+ c.pending[2].respond({totals:{verified_per_calendar_day:0},daily:[],inventory:[],catalog:{},sources:[]});
+ c.pending[3].respond({leads:[],total:0});await retry;
+ assert.equal(c.element('researchRetry').hidden,true);
+ assert.equal(c.element('researchStatus').textContent,'');
+});
+
+test('funnel requests are deferred until opened and refresh with visible worklist',async()=>{
+ const c=client();c.run('workspaceReady=true');c.element('workView').value='today';
+ c.element('funnelPanel').toggleHandler();assert.equal(c.pending.length,0);
+ c.element('funnelPanel').open=true;c.element('funnelPanel').toggleHandler();
+ assert.equal(c.pending[0].url,'/api/lab/scoreboard?days=30');
+ c.pending[0].respond({measured:[],meetings:{note:''},basis:'First'});await settle();
+ const loading=c.run('loadWorklist()');c.pending[1].respond(emptyQueue);await loading;
+ assert.equal(c.pending[2].url,'/api/lab/scoreboard?days=30');
+ c.pending[2].respond({measured:[],meetings:{note:''},basis:'Updated'});await settle();
+ assert.equal(c.element('scoreboardBasis').textContent,'Updated');
+});
+
+test('work cards show one open action and disclose separate scores on demand',async()=>{
+ const c=client();c.element('workView').value='today';
+ const loading=c.run('loadWorklist()');
+ c.pending[0].respond({...emptyQueue,total:1,items:[{...lead('A'),scores:{priority:{score:42},qualification:1,opportunity:2,confidence:3,contactability:4},action:{bucket:'review',label:'Review evidence',reason:'Confirm contact'}}]});await loading;
+ const html=c.element('workList').innerHTML;
+ assert.equal((html.match(/data-work-open=/g)||[]).length,1);
+ assert.match(html,/<details class="score-line"><summary>Priority 42/);
+ assert.match(html,/Qualification 1 · Opportunity 2 · Confidence 3 · Contact 4/);
 });

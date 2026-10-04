@@ -52,7 +52,8 @@ function renderRuns(data){runs=data.runs;$('runs').innerHTML=runs.length?runs.ma
 }
 async function refresh(showNotice=true){
   if(busy)return;busy=true;clearTimeout(pollTimer);$('refresh').disabled=true;
-  const sections=[['Summary',()=>request('/api/lab/summary').then(renderSummary)],['Run history',()=>request('/api/lab/runs').then(renderRuns)],['Lead results',loadLeads],['Next actions',loadWorklist],['Possible duplicates',loadIdentityReviews]];
+  const sections=[['Next actions',loadWorklist],['Possible duplicates',loadIdentityReviews],['Run history',()=>request('/api/lab/runs').then(renderRuns)]];
+  if($('researchTools').open)sections.push(['Research reports',loadResearchReports]);
   try{
     const results=await Promise.allSettled(sections.map(([,load])=>load()));
     const failures=results.flatMap((r,i)=>r.status==='rejected'?[sections[i][0]+': '+r.reason.message]:[]);
@@ -63,6 +64,32 @@ async function refresh(showNotice=true){
     if(!document.hidden&&runs.some(r=>['queued','running'].includes(r.status)))pollTimer=setTimeout(()=>refresh(false),8000);
   }
 }
+// Keep optional reports off the worklist's critical path; deduplicate opening
+// the disclosure while a refresh is already fetching the same reports.
+let researchReportsPending=null;
+function loadResearchReports(){
+  if(researchReportsPending)return researchReportsPending;
+  $('researchStatus').textContent='Loading research reports…';
+  $('researchRetry').hidden=true;
+  researchReportsPending=(async()=>{
+    const results=await Promise.allSettled([request('/api/lab/summary').then(renderSummary),loadLeads()]);
+    const failures=results.filter(r=>r.status==='rejected');
+    if(failures.length){
+      $('researchStatus').textContent='Some research reports could not load. '+failures.map(r=>r.reason.message).join(' ');
+      $('researchRetry').hidden=false;
+      throw Error($('researchStatus').textContent);
+    }
+    $('researchStatus').textContent='';
+  })().finally(()=>{researchReportsPending=null;});
+  return researchReportsPending;
+}
+$('researchTools').addEventListener('toggle',()=>{
+  if($('researchTools').open&&workspaceReady)loadResearchReports().catch(()=>{});
+});
+$('researchRetry').onclick=()=>loadResearchReports().catch(()=>{});
+$('funnelPanel').addEventListener('toggle',()=>{
+  if($('funnelPanel').open&&workspaceReady)loadScoreboard().catch(()=>{});
+});
 // Form 5500 benefit codes 2J and 2L mark a 401(k) feature and a 403(b) arrangement.
 const planType=p=>{const c=p.benefit_codes||[],t=[c.includes('2J')&&'401(k)',c.includes('2L')&&'403(b)'].filter(Boolean);return t.length?' · '+t.join(' / '):'';};
 async function openLead(id){
@@ -234,7 +261,7 @@ async function loadWorklist(){
   try{
   const data=await request('/api/lab/worklist?'+new URLSearchParams({view:$('workView').value,search:$('workSearch').value,offset:workOffset,limit:24}));if(serial!==workRequest)return;
   if(workOffset>0&&workOffset>=data.total){workOffset=0;return loadWorklist();}
-  loadScoreboard().catch(()=>{});
+  if($('funnelPanel').open)loadScoreboard().catch(()=>{});
   workTotal=data.total;$('workDue').textContent=num(data.counts.due);$('workReady').textContent=num(data.counts.ready);$('workConversations').textContent=num(data.activity.conversations);$('workMeetings').textContent=num(data.activity.meetings);
   if(data.dials){$('workDials').textContent=num(data.dials.remaining);$('workDialsNote').textContent=data.dials.reason;}
   const first=data.items.find(item=>!terminal(item.action));
@@ -246,7 +273,7 @@ async function loadWorklist(){
   $('startNext').onclick=first?()=>openLead(first.lead.id):()=>$('quickImport').click();
   const [emptyTitle,emptyBody]=emptyMessages[$('workView').value];
   for(const item of data.items)if(terminal(item.action))workSelected.delete(item.lead.id);
-  $('workList').innerHTML=data.items.length?data.items.map(({lead:l,quality:q,scores:s,action:a})=>`<article class="work-card"><label class="select-lead"><input type="checkbox" data-work-select="${esc(l.id)}" aria-label="Select ${esc(l.first_name)} ${esc(l.last_name)} for enrichment" ${workSelected.has(l.id)?'checked':''} ${terminal(a)?'disabled':''}></label><div><button class="person-button" data-work-open="${esc(l.id)}">${esc(l.first_name)} ${esc(l.last_name)}</button><p class="muted">${esc(l.current_title||'Title unknown')} · ${esc(l.company||'Employer unknown')}</p>${l.location?`<p class="muted">${esc(l.location)}</p>`:''}${badge(q.status)} <span class="muted">${(q.required_fields||Object.keys(q.gates)).filter(f=>q.gates[f].state==='confirmed').length}/${(q.required_fields||Object.keys(q.gates)).length} criteria reviewed</span>${s?`<p class="score-line"><b>Priority ${esc(s.priority.score)}</b> <span class="muted">Qualification ${esc(s.qualification)} · Opportunity ${esc(s.opportunity)} · Confidence ${esc(s.confidence)} · Contact ${esc(s.contactability)}</span></p>`:''}</div><div class="work-reason"><p class="next-step">${esc(a.label)}</p><p class="muted">${esc(a.reason)}</p>${a.due_at?`<p class="due-label">${esc(when(a.due_at))}</p>`:''}${a.cadence?`<p class="muted">${esc(a.cadence.touches.count)}/${esc(a.cadence.touches.cap)} touches · ${esc(a.cadence.step?a.cadence.step.label:a.cadence.status)}</p>`:''}${l.notes?`<p class="muted">Last note: ${esc(l.notes.split('\n').filter(Boolean).at(-1)?.slice(0,240))}</p>`:''}</div><button class="secondary work-open" data-work-open="${esc(l.id)}">Open brief</button></article>`).join(''):`<div class="work-empty"><h3>${esc($('workSearch').value?'No matching prospects.':emptyTitle)}</h3><p class="muted">${esc($('workSearch').value?'Try a different full name or employer.':emptyBody)}</p></div>`;
+  $('workList').innerHTML=data.items.length?data.items.map(({lead:l,quality:q,scores:s,action:a})=>`<article class="work-card"><label class="select-lead"><input type="checkbox" data-work-select="${esc(l.id)}" aria-label="Select ${esc(l.first_name)} ${esc(l.last_name)} for enrichment" ${workSelected.has(l.id)?'checked':''} ${terminal(a)?'disabled':''}></label><div><strong class="work-name">${esc(l.first_name)} ${esc(l.last_name)}</strong><p class="muted">${esc(l.current_title||'Title unknown')} · ${esc(l.company||'Employer unknown')}</p>${l.location?`<p class="muted">${esc(l.location)}</p>`:''}${badge(q.status)} <span class="muted">${(q.required_fields||Object.keys(q.gates)).filter(f=>q.gates[f].state==='confirmed').length}/${(q.required_fields||Object.keys(q.gates)).length} criteria reviewed</span>${s?`<details class="score-line"><summary>Priority ${esc(s.priority.score)} · score details</summary><p class="muted">Qualification ${esc(s.qualification)} · Opportunity ${esc(s.opportunity)} · Confidence ${esc(s.confidence)} · Contact ${esc(s.contactability)}</p></details>`:''}</div><div class="work-reason"><p class="next-step">${esc(a.label)}</p><p class="muted">${esc(a.reason)}</p>${a.due_at?`<p class="due-label">${esc(when(a.due_at))}</p>`:''}${a.cadence?`<p class="muted">${esc(a.cadence.touches.count)}/${esc(a.cadence.touches.cap)} touches · ${esc(a.cadence.step?a.cadence.step.label:a.cadence.status)}</p>`:''}${l.notes?`<p class="muted">Last note: ${esc(l.notes.split('\n').filter(Boolean).at(-1)?.slice(0,240))}</p>`:''}</div><button class="secondary work-open" data-work-open="${esc(l.id)}">Open brief</button></article>`).join(''):`<div class="work-empty"><h3>${esc($('workSearch').value?'No matching prospects.':emptyTitle)}</h3><p class="muted">${esc($('workSearch').value?'Try a different full name or employer.':emptyBody)}</p></div>`;
   document.querySelectorAll('[data-work-open]').forEach(e=>e.onclick=()=>openLead(e.dataset.workOpen));
   document.querySelectorAll('[data-work-select]').forEach(e=>e.onchange=()=>{e.checked?workSelected.add(e.dataset.workSelect):workSelected.delete(e.dataset.workSelect);selectionLabel();});
   $('workPageInfo').textContent=(data.total?`${num(workOffset+1)}–${num(Math.min(workOffset+24,data.total))} of ${num(data.total)}`:'0 prospects')+(data.truncated?` · Showing a working set of ${num(data.scanned)} / ${num(data.scope_total)}; search to narrow.`:'');
