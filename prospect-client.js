@@ -352,7 +352,7 @@ async function loadDailyItem(id){
  const fresh=await dailyApi('daily-review?list_id='+encodeURIComponent(daily.list.id));
  const item=fresh.items.find(x=>x.id===id);if(item)replaceDaily(item);
 }
-$('dailyOpen').onclick=()=>{$('dailyDialog').showModal();loadDaily($('dailyList').value||'');};
+$('dailyOpen').onclick=()=>location.assign('/lab');
 $('dailyList').onchange=()=>loadDaily($('dailyList').value);
 $('dailyView').onchange=()=>{dailyIndex=0;$('dailyStatus').textContent='';renderDaily();};
 $('dailyKeep').onclick=()=>decideDaily('keep');
@@ -377,4 +377,4 @@ $('dailyDownload').onclick=()=>{const rows=daily.items.filter(i=>i.review?.statu
  $('dailyStatus').textContent=`Downloaded ${rows.length}. Upload it to ZoomInfo, export with mobile and email, then choose Import ZoomInfo export.`;};
 $('dailyImportExport').onclick=()=>{$('dailyDialog').close();if(daily.list){$('importList').value=daily.list.id;autoList='';}$('importDialog').showModal();};
 // The badge shows today’s unreviewed leads without opening the review.
-dailyApi('daily-review').then(d=>{daily=d;renderDailyProgress();}).catch(()=>{});
+// Daily prospecting starts in Worklist; the legacy delivery API remains available.

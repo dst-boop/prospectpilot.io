@@ -10,7 +10,11 @@ test('primary workspaces retain unique action targets and consistent navigation'
   const primary=nav.split('<details')[0];assert.deepEqual([...primary.matchAll(/href="([^"]+)"/g)].map(m=>m[1]),['/lab','/prospect']);
   assert.match(nav,/<summary>Settings &amp; tools<\/summary>/);assert.match(nav,/href="\/settings\/linkedin"/);
  }
- const lab=read('lab.html');assert.doesNotMatch(lab,/id="startImport"|data-queue=|Choose directory contacts|Open contact directory/);
+ const lab=read('lab.html');assert.doesNotMatch(lab,/id="startImport"|Choose directory contacts|Open contact directory/);
  assert.match(lab,/id="quickImport"/);assert.match(lab,/id="profileOpen"/);assert.match(lab,/id="workView"/);
  assert.match(read('prospect.html'),/id="dailyOpen"/);assert.match(read('prospect.html'),/id="sendToWorklist"/);
+});
+
+test('daily work has three primary queues and directory daily action returns to worklist',()=>{
+ const html=read('lab.html');assert.deepEqual([...html.matchAll(/data-queue="([^"]+)"/g)].map(m=>m[1]),['research','ready','followups']);assert.match(html,/<summary>Other views<\/summary>/);assert.match(html,/<summary>View evidence and corrections<\/summary>/);assert.match(read('prospect-client.js'),/dailyOpen.*location.assign\('\/lab'\)/);
 });

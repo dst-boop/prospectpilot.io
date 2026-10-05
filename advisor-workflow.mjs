@@ -1,3 +1,4 @@
+import {prospectBrief,workflowViewMatches,contextualDraft} from './prospect-brief.mjs';
 import {randomUUID} from 'node:crypto';
 import {assessLead, leadIdentity, hash, csvCell, leadScores} from './lead-quality.mjs';
 import {cadenceState, admitTouch, restPeriod, nextFollowUp, composeTouch, firstTouchSLA, dialBudget, TOUCH_OUTCOMES, INBOUND_OUTCOMES} from './outreach-cadence.mjs';
@@ -169,10 +170,10 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const rows=(await pool.query('SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows;
     const quality=assessLead(lead,rows.map(r=>parse(r.payload)),{now:now(),target:await targetFor(user)});
     const cadence=await cadenceFor(user,id,lead,quality,pool,await dialsToday(user));
-    const action=nextAction(lead,quality,now(),cadence);
-    return {action,cadence,
+    const action=nextAction(lead,quality,now(),cadence),brief=prospectBrief(lead,quality,rows.map(r=>parse(r.payload)),now());
+    return {action,cadence,brief,
       // The words for the next touch, not a description of them.
-      draft:TERMINAL_BUCKETS.has(action.bucket)||!cadence.step?null:composeTouch(cadence.step,{lead,advisor:await profile(user),now:now(),sent:cadence.progress.done}),
+      draft:TERMINAL_BUCKETS.has(action.bucket)||!cadence.step?null:contextualDraft(composeTouch(cadence.step,{lead,advisor:await profile(user),now:now(),sent:cadence.progress.done}),brief),
       schedules:TERMINAL_BUCKETS.has(action.bucket)?null:nextFollowUp(cadence,{now:now()}),
       // This list has always carried every advisor's entries and never said so,
       // which reads as your own history and makes a shared cap inexplicable.
@@ -183,7 +184,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
         WHERE a.lead_id=$1 ORDER BY a.created_at DESC,a.id DESC LIMIT 30`,[id,user.uid])).rows};
   }
   async function worklist(user,{view='today',search='',offset=0,limit=24}={}) {
-    if(!['today','ready','due','review','enrich','scheduled','meetings','resting','clients','closed','all'].includes(view))throw fail(422,'Choose a worklist view.');
+    if(!['today','research','followups','ready','due','review','enrich','scheduled','meetings','resting','clients','closed','all'].includes(view))throw fail(422,'Choose a worklist view.');
     offset=Number(offset);limit=Number(limit);
     if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(limit)||limit<1||limit>100)throw fail(422,'Invalid worklist page.');
     const term=String(search).trim().slice(0,100).replace(/[%_\\]/g,'');
@@ -215,13 +216,13 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       const cadence=cadenceState({activities:history.get(r.id)||[],lead,quality,rest:resting.get(r.id)||null,now:now(),dials});
       const s=leadScores(lead,quality,{now:now(),weights});
       const scores={priority:s.priority,qualification:s.qualification.score,opportunity:s.opportunity.score,confidence:s.confidence.score,contactability:s.contactability.score};
-      return {lead:{id:lead.id,first_name:lead.first_name,last_name:lead.last_name,company:lead.company,current_title:lead.current_title,location:lead.location||[lead.city,lead.state].filter(Boolean).join(', '),notes:lead.notes||''},quality,scores,action:nextAction(lead,quality,now(),cadence)};});
+      return {lead:{id:lead.id,first_name:lead.first_name,last_name:lead.last_name,company:lead.company,current_title:lead.current_title,location:lead.location||[lead.city,lead.state].filter(Boolean).join(', '),notes:lead.notes||''},quality,scores,signal:prospectBrief(lead,quality,observations.get(r.id)||[],now()).signal,action:nextAction(lead,quality,now(),cadence)};});
     // Review and enrich share one group; the advisor's priority orders it.
     const group=action=>action.rank>=30&&action.rank<=40?30:action.rank;
-    all.sort((a,b)=>group(a.action)-group(b.action)||(a.action.due_at||'').localeCompare(b.action.due_at||'')||b.scores.priority.score-a.scores.priority.score||b.quality.score-a.quality.score||a.lead.id.localeCompare(b.lead.id));
+    all.sort((a,b)=>group(a.action)-group(b.action)||(a.action.due_at||'').localeCompare(b.action.due_at||'')||b.signal.rank-a.signal.rank||(a.signal.rank===2?b.signal.date.localeCompare(a.signal.date):0)||b.scores.priority.score-a.scores.priority.score||b.quality.score-a.quality.score||a.lead.id.localeCompare(b.lead.id));
     const counts={today:0,ready:0,due:0,review:0,enrich:0,scheduled:0,meetings:0,resting:0,clients:0,closed:0,all:all.length};
     for(const r of all){counts[r.action.bucket]++;if(['due','ready','review','enrich'].includes(r.action.bucket))counts.today++;}
-    const filtered=all.filter(r=>view==='all'||(view==='today'?['due','ready','review','enrich'].includes(r.action.bucket):r.action.bucket===view));
+    const filtered=all.filter(r=>workflowViewMatches(view,r.action.bucket));
     const activity=(await pool.query(`SELECT count(*) FILTER(WHERE a.direction IS DISTINCT FROM 'inbound')::int AS attempts,
       count(*) FILTER(WHERE a.outcome IN ('connected','follow_up','meeting_booked','meeting_held'))::int AS conversations,
       count(DISTINCT a.lead_id) FILTER(WHERE a.outcome='meeting_booked')::int AS meetings FROM advisor_activities a

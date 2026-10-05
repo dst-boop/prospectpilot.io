@@ -12,12 +12,12 @@ const FREE_SOURCES = Object.freeze(['public_web', 'sec', 'warn']);
 export const PLAYBOOKS = Object.freeze([
   {
     id: 'former_employees',
-    label: 'Staff at employers with large balances left behind',
+    label: 'Research employers with retained retirement accounts',
     accounts: ['401(k)', '403(b)'],
     triggers: ['Job change', 'Separation', 'Retirement'],
     // Public pages name current staff, not former ones: the plan data picks
     // employers where people leave with sizeable accounts behind.
-    description: 'Employers whose plan filings show many former employees still holding accounts, averaging $100K or more. People are found on company pages and SEC filings, so they are current staff whose next move is likely a rollover.',
+    description: 'Employers whose plan filings show many former employees still holding accounts, averaging $100K or more. People found on company pages and SEC filings may be current staff. A personal job change, retained account and eligibility remain unconfirmed.',
     needs: 'states',
     configuration: {sources: FREE_SOURCES, plan_filter: {order: 'former_employees', min_average: 100000}},
   },
@@ -38,7 +38,7 @@ export const PLAYBOOKS = Object.freeze([
     // Few filings report in-service distributions, so that is a preference,
     // never a filter. Reported ages under 59 are dropped; unknown ages stay
     // for review, since the age gate decides, not this list.
-    description: 'Employers whose plans average $100K or more, favoring plans that report in-service withdrawals (most 401(k)s allow them at 59½). People whose reported age is under 59 are left out; anyone with no age yet is kept for your review.',
+    description: 'Employers whose plans average $100K or more, favoring plans that report in-service withdrawals. Plan permission and individual eligibility still require confirmation. People whose reported age is under 59 are left out; anyone with no age yet is kept for your review.',
     needs: 'states',
     configuration: {sources: FREE_SOURCES, plan_filter: {min_average: 100000}, minimum_age: 59},
   },

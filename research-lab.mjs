@@ -246,6 +246,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       const {lead}=await accessible(user,id,client,true),identity=leadIdentity(lead);
       if(input.identity_signature!==identity)throw fail(409,'This lead changed. Reload it before saving evidence.');
       const observation=validateObservation(input,{userId:user.uid,identity,now:now()});
+      if(input.field==='personal_event'){const previous=(await observations(user,id,client)).find(o=>o.field==='personal_event');if(previous){const {previous_reviews,...entry}=previous;observation.previous_reviews=[entry,...(previous_reviews||[])];}}
       await client.query(`INSERT INTO lab_observations(lead_id,user_id,field,payload) VALUES($1,$2,$3,$4::jsonb)
         ON CONFLICT(lead_id,user_id,field) DO UPDATE SET payload=EXCLUDED.payload,updated_at=now()`,[id,user.uid,observation.field,JSON.stringify(observation)]);
       return {quality:await evaluate(user,lead,client)};

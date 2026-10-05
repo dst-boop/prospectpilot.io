@@ -106,3 +106,5 @@ header{flex-wrap:wrap}header nav{flex-wrap:wrap;align-items:center}.workspace-me
 .age-facts dd{margin:0}
 
 .work-progress{margin:16px 0}.work-progress>summary{padding:12px 0}.work-progress .work-metrics{margin-top:12px}.work-name{font-size:16px;overflow-wrap:anywhere}.score-line{margin-top:8px;font-size:13px}.score-line summary{font-size:13px;padding:0}.score-line p{font-size:13px}
+
+[data-queue][aria-pressed="true"]{background:#173b70;color:white;border-color:#173b70}.brief-summary{border-bottom:1px solid #dbe3ee;padding-bottom:1rem;margin-bottom:1rem}.contact-review-route{padding:.75rem;border:1px solid #dbe3ee;border-radius:.5rem;margin:.5rem 0}#prepareDetails,#outcomeDetails,#evidenceDetails{margin-top:1rem}#draftBody{min-height:9rem}
