@@ -24,7 +24,7 @@ test('directory DNC restrictions remain effective after handoff and after a late
 const now=new Date('2026-09-12T15:00:00Z');
 const lead={id:'fixture',first_name:'Jamie',last_name:'Rivera',company:'Example Manufacturing',email:'jamie@example.com',estimated_age_range:'62',country:'US'};
 const csv='First Name,Last Name,Company,Title,Email,Estimated Age Range,Country\nJamie,Rivera,Example Manufacturing,Director,jamie@example.com,62,US';
-async function fixture(){const db=new PGlite();for(const file of ['generated/schema.sql','migrations/006-research-lab.sql','migrations/007-quality-v2.sql','migrations/008-prospect-workspace.sql','migrations/012-plan-catalog-summary.sql','migrations/013-advisor-workflow.sql','migrations/014-outreach-cadence.sql', 'migrations/015-dial-budget.sql', 'migrations/016-inbound-contact.sql','migrations/017-forget.sql','migrations/022-identity-reviews.sql'])await db.exec(readFileSync(new URL('../'+file,import.meta.url),'utf8'));const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};const user={uid:'owner',email:'owner@example.com'},lab=createResearchLab({pool,now:()=>now,sources:{readiness:{}}});await lab.importCSV(user,{csv});const id=(await lab.list(user)).leads[0].lead.id;return {db,lab,user,id};}
+async function fixture(){const db=new PGlite();for(const file of ['generated/schema.sql','migrations/006-research-lab.sql','migrations/007-quality-v2.sql','migrations/008-prospect-workspace.sql','migrations/012-plan-catalog-summary.sql','migrations/013-advisor-workflow.sql','migrations/014-outreach-cadence.sql', 'migrations/015-dial-budget.sql', 'migrations/016-inbound-contact.sql','migrations/017-forget.sql','migrations/022-identity-reviews.sql','migrations/030-personal-events.sql'])await db.exec(readFileSync(new URL('../'+file,import.meta.url),'utf8'));const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};const user={uid:'owner',email:'owner@example.com'},lab=createResearchLab({pool,now:()=>now,sources:{readiness:{}}});await lab.importCSV(user,{csv});const id=(await lab.list(user)).leads[0].lead.id;return {db,lab,user,id};}
 async function reviewBasics(lab,user,id){const d=await lab.detail(user,id);for(const [field,value] of Object.entries({age:{min:62,max:62},residence:{country:'US',scope:'residence'},contact:{channel:'email',address:'jamie@example.com',identity_confirmed:true}}))await lab.review(user,id,{field,value,verdict:'confirmed',source:'Synthetic authorized fixture',note:'Synthetic evidence only.',observed_at:now.toISOString(),identity_signature:d.quality.identity_signature});}
 test('next actions never equate contact details or financial estimates with verified qualification',()=>{const q=assessLead(lead,[],{now});assert.equal(nextAction(lead,q,now).bucket,'review');assert.equal(nextAction(lead,q,now).contact,null);const noContact={...lead,email:''};assert.equal(nextAction(noContact,assessLead(noContact,[],{now}),now).bucket,'enrich');const dnc={...lead,suppressed:true,follow_up_date:'2026-09-01T12:00:00Z'};assert.equal(nextAction(dnc,assessLead(dnc,[],{now}),now).bucket,'closed');assert.equal(nextAction({...lead,follow_up_status:'Not a Fit'},q,now).bucket,'closed');});
 test('worklist uses live evidence, prioritizes due work, and supports full-name search',async()=>{const {db,lab,user,id}=await fixture();try{await reviewBasics(lab,user,id);let work=await lab.advisor.worklist(user,{view:'ready',search:'Jamie Rivera'});assert.equal(work.total,1);assert.notEqual(work.items[0].quality.status,'verified');assert.equal(work.items[0].action.contact.address,'jamie@example.com');await db.query(`UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{follow_up_date}','"2026-09-10T10:00:00Z"')::text WHERE id=$1`,[id]);work=await lab.advisor.worklist(user,{view:'due'});assert.equal(work.total,1);assert.equal(work.items[0].action.rank,0);await db.query(`UPDATE lab_observations SET payload=jsonb_set(payload,'{observed_at}','"2020-01-01"') WHERE lead_id=$1 AND field='contact'`,[id]);assert.equal((await lab.advisor.worklist(user,{view:'due'})).items[0].action.contact,null);assert.equal((await lab.advisor.worklist(user,{search:'missing'})).total,0);}finally{await db.close();}});
@@ -325,5 +325,34 @@ test('unresolved identity pauses drafts, follow-up suggestions and contact loggi
   await db.query("UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{identity_status}','\"matched\"')::text WHERE id=$1",[id]);
   d=await lab.advisor.detail(user,id);assert.ok(d.draft);assert.notEqual(d.cadence.status,'blocked');
   assert.match(await (await lab.advisor.exportEnrichment(user,{ids:[id]})).text(),/Jamie/);
+ }finally{await db.close();}
+});
+
+
+test('personal events persist with history, cannot qualify assets, and expire after identity changes',async()=>{
+ const {db,lab,user,id}=await fixture();try{
+  const before=await lab.detail(user,id);
+  const input={field:'personal_event',verdict:'confirmed',source:'Synthetic company announcement',url:'https://example.com/announcement',note:'Joined Example Manufacturing as Director.',observed_at:'2026-09-10',identity_signature:before.quality.identity_signature,value:{type:'job_change',event_date:'2026-09-01',identity_confirmed:true,identity_basis:'Company and Director role match the professional profile.'}};
+  await lab.review(user,id,input);
+  const after=await lab.detail(user,id);assert.equal(after.quality.score,before.quality.score);
+  let brief=(await lab.advisor.detail(user,id)).brief;assert.equal(brief.signal.rank,2);assert.match(brief.qualification,/not confirmed/);
+  assert.equal((await lab.advisor.worklist(user,{view:'research'})).total,1);
+  await lab.review(user,id,{...input,verdict:'unknown',note:'Source no longer establishes this person.'});
+  brief=(await lab.advisor.detail(user,id)).brief;assert.equal(brief.signal.rank,0);assert.equal(brief.event_history.length,2);
+  await assert.rejects(lab.review(user,id,{...input,value:{...input.value,identity_confirmed:false}}),{status:422});
+  await assert.rejects(lab.advisor.detail({uid:'other',email:'other@example.com'},id),{status:404});
+ }finally{await db.close();}
+});
+
+
+test('30 synthetic candidates retain identity and rank reviewed events without inventing qualification',async()=>{
+ const {db,lab,user}=await fixture();try{
+  const rows=Array.from({length:30},(_,i)=>`Pilot${i},Candidate,Example${i},Director,pilot${i}@example.com,US`);
+  await lab.importCSV(user,{source:'Synthetic pilot',csv:'First Name,Last Name,Company,Title,Email,Country\n'+rows.join('\n')});
+  let sample=await lab.advisor.worklist(user,{view:'research',search:'Pilot',limit:50});assert.equal(sample.total,30);assert.equal(new Set(sample.items.map(i=>i.lead.id)).size,30);
+  const ids=sample.items.slice(-3).map(i=>i.lead.id);
+  for(const id of ids){const d=await lab.detail(user,id);await lab.review(user,id,{field:'personal_event',verdict:'confirmed',source:'Synthetic dated announcement',url:'https://example.com/fixture',observed_at:'2026-09-10',note:'Fictional professional role change.',identity_signature:d.quality.identity_signature,value:{type:'job_change',event_date:'2026-09-01',identity_confirmed:true,identity_basis:'Fictional employer and professional role match.'}});}
+  sample=await lab.advisor.worklist(user,{view:'research',search:'Pilot',limit:50});assert.equal(sample.total,30);assert.deepEqual(new Set(sample.items.slice(0,3).map(i=>i.lead.id)),new Set(ids));
+  assert.equal(sample.items.filter(i=>i.signal.rank===2).length,3);assert.ok(sample.items.every(i=>i.quality.status!=='verified'));assert.ok(sample.items.every(i=>i.action.contact===null));
  }finally{await db.close();}
 });

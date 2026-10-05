@@ -1,3 +1,4 @@
+import {validatePersonalEvent} from './prospect-brief.mjs';
 import {createHash} from 'node:crypto';
 import {estimateAgeBand} from './age-band.mjs';
 
@@ -70,7 +71,7 @@ export function validateFinancialEvidence(field, inputValue, {asOf = new Date()}
 }
 
 export function validateObservation(input, {userId, identity, now = new Date()} = {}) {
-  if (![...QUALITY_FIELDS, 'movable_assets'].includes(input.field)) throw Object.assign(Error('Choose a supported qualification criterion.'), {status: 422});
+  if (![...QUALITY_FIELDS, 'movable_assets', 'personal_event'].includes(input.field)) throw Object.assign(Error('Choose a supported qualification criterion.'), {status: 422});
   if (!['confirmed', 'rejected', 'unknown'].includes(input.verdict)) throw Object.assign(Error('Choose confirmed, does not meet, or unknown.'), {status: 422});
   const source = clean(input.source).slice(0, 180), note = clean(input.note).slice(0, 1500), url = publicURL(input.url);
   const observed = validDate(input.observed_at);
@@ -79,6 +80,7 @@ export function validateObservation(input, {userId, identity, now = new Date()} 
   if (excludedSource(`${source} ${url}`)) throw Object.assign(Error('This source is not enabled for individual lead qualification. Use professional or participant-provided evidence.'), {status: 422});
   let value = input.value;
   if (input.verdict === 'confirmed') {
+    if(input.field==='personal_event'){if(!url)throw Object.assign(Error('A source URL is required for a documented personal event.'),{status:422});value=validatePersonalEvent(value,observed.toISOString());}
     if (input.field === 'age') {
       const min = Number(value?.min), max = Number(value?.max);
       if (value?.min==null || value?.max==null || value.min==='' || value.max==='' || !Number.isInteger(min) || !Number.isInteger(max) || min < 0 || max > 120 || min > max) throw Object.assign(Error('Enter attained age in whole years or a supported whole-year range, from 0 to 120.'), {status: 422});
