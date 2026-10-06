@@ -213,6 +213,9 @@ test('the command line keeps work files out of the repository and writes the day
   const dir=mkdtempSync(join(tmpdir(),'daily-leads-'));
   writeFileSync(join(dir,'scoops-moves.json'),JSON.stringify(scoops));
   writeFileSync(join(dir,'search-a-0.json'),JSON.stringify(search('A','',[person(101,'Avery','Sample','Chief Operating Officer','Beta Labs')])));
+  assert.equal(JSON.parse(execFileSync(process.execPath,[cli,'plan','--date',today,'--cap','25']).toString()).credit_cap,25,'the advisor chooses the cap');
+  assert.throws(()=>execFileSync(process.execPath,[cli,'plan','--date',today,'--cap','lots'],{stdio:'pipe'}),/--cap/);
+  assert.deepEqual(JSON.parse(execFileSync(process.execPath,[cli,'select','--work',dir,'--date',today,'--cap','0']).toString()).enrich_batches,[],'a cap of 0 enriches nobody');
   const chosen=JSON.parse(execFileSync(process.execPath,[cli,'select','--work',dir,'--date',today]).toString());
   assert.deepEqual(chosen.enrich_batches,[['101']]);assert.equal(chosen.counts.selected,1);
   writeFileSync(join(dir,'enrich-0.json'),JSON.stringify({contact_1:{success:true,data:{id:101,email:'a@b.example',mobilePhone:'2125550100'}}}));

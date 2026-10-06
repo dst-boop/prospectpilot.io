@@ -7,15 +7,17 @@ description: Source the advisor's daily rollover leads from ZoomInfo and deliver
 
 Deliver likely-rollover prospects each weekday, **only ones with a mobile
 number in hand**, so the advisor keeps 50 quality leads after reviewing
-LinkedIn. Up to 80 are selected and enriched; the delivered count is however
-many come back with a usable US mobile. The target is a buffer, not a cap. The deterministic work is in `scripts/daily-leads/` (engine, CLI,
+LinkedIn. Up to the advisor's chosen cap (`ENRICH_CAP`) are selected and
+enriched; the delivered count is however many come back with a usable US
+mobile. The target is a buffer, not a cap. The deterministic work is in `scripts/daily-leads/` (engine, CLI,
 `config.json`); this skill is the procedure around the ZoomInfo, Drive and
 Gmail calls.
 
 ## Hard rules
 
 - **Credits.** Searches are free. `enrich_contacts` spends ZoomInfo bulk
-  credits: approved up to `enrich_credit_cap` (80) per day, never more. Count
+  credits: approved up to `ENRICH_CAP` per day, never more. The advisor
+  chooses that number; never raise it yourself. Count
   every successful enrichment as one credit. Re-enriching someone within a
   year is free, but count it anyway.
 - **Nothing is sent to prospects.** No email, message, call or connection
@@ -34,6 +36,10 @@ Gmail calls.
 
 - `DRIVE_FOLDER_ID`: the "Daily leads" folder in the Lead Qualifier shared drive.
 - `DIGEST_TO`: the advisor's email address.
+- `ENRICH_CAP`: the most successful ZoomInfo enrichments the advisor approves
+  per day. If the routine gives none, use `config.json`'s
+  `enrich_credit_cap` and say so in the report. Pass it as `--cap` to `plan`,
+  `select` and `finalize`.
 
 ## Procedure
 
@@ -45,13 +51,13 @@ directory such as `W=$(mktemp -d)/daily-leads-$D`, then `mkdir -p $W`.
 2. **Ledger.** In `DRIVE_FOLDER_ID`, find the newest file titled
    `daily-leads-ledger-*.csv`. Download it (base64) and decode it to
    `$W/ledger-in.csv`. If there is none, skip; the first day has no ledger.
-3. **Signals.** Run `node scripts/daily-leads/run.mjs plan --date $D` and
+3. **Signals.** Run `node scripts/daily-leads/run.mjs plan --date $D --cap $ENRICH_CAP` and
    execute its two `search_scoops` queries with the exact `params`. Save each
    response as `$W/<file>` in the shape `{"meta": <meta>, "response": <raw
    response>}`. Save the raw response unmodified: the engine parses it,
    including double-encoded JSON.
 4. **Plan the day.** Run
-   `node scripts/daily-leads/run.mjs plan --date $D --extra "$(node scripts/daily-leads/run.mjs layoff-employers --work $W)"`.
+   `node scripts/daily-leads/run.mjs plan --date $D --cap $ENRICH_CAP --extra "$(node scripts/daily-leads/run.mjs layoff-employers --work $W)"`.
 5. **Named departures.** Run `node scripts/daily-leads/run.mjs scoop-ids --work $W`.
    For each batch, call `search_contacts` with `personIdList` set to the batch,
    plus the printed `params`. Save as `$W/search-a-<n>.json` with the printed
@@ -61,9 +67,9 @@ directory such as `W=$(mktemp -d)/daily-leads-$D`, then `mkdir -p $W`.
    If one errors, retry it once, then continue without it. Do not invent
    parameters.
 7. **Select.** Run
-   `node scripts/daily-leads/run.mjs select --work $W --date $D --ledger $W/ledger-in.csv`.
-   It prints counts and `enrich_batches` (at most 80 ids, 10 per batch). If
-   `counts.selected` is under 60, run page 2 of the B queries (`page: 2`),
+   `node scripts/daily-leads/run.mjs select --work $W --date $D --ledger $W/ledger-in.csv --cap $ENRICH_CAP`.
+   It prints counts and `enrich_batches` (at most `ENRICH_CAP` ids, 10 per batch). If
+   `counts.selected` is under `ENRICH_CAP`, run page 2 of the B queries (`page: 2`),
    save the results as more `search-*` files, and select again.
 8. **Enrich**, within the cap. For each batch, call `enrich_contacts` with
    `contacts: [{personId}]` and `requiredFields`: firstName, lastName, email,
@@ -74,8 +80,8 @@ directory such as `W=$(mktemp -d)/daily-leads-$D`, then `mkdir -p $W`.
      failure there costs nothing.
    - Retry each such contact once, individually, after all batches are done.
      Save the retries as `enrich-r<n>.json`.
-   - Stop enriching after three consecutive calls with no success, or once 80
-     have succeeded.
+   - Stop enriching after three consecutive calls with no success, or once
+     `ENRICH_CAP` have succeeded.
    - Only enriched leads with a usable US mobile number are delivered. An
      email is welcome but not required.
    - Someone enriched without a usable mobile, or found abroad, is written to
@@ -83,7 +89,7 @@ directory such as `W=$(mktemp -d)/daily-leads-$D`, then `mkdir -p $W`.
      enriched (ZoomInfo refused, or the cap was reached) is not delivered and
      stays eligible for a later day; nothing was spent on them.
 9. **Build.** Run
-   `node scripts/daily-leads/run.mjs finalize --work $W --date $D --ledger $W/ledger-in.csv`.
+   `node scripts/daily-leads/run.mjs finalize --work $W --date $D --ledger $W/ledger-in.csv --cap $ENRICH_CAP`.
 10. **Deliver.**
     - Upload `$W/daily-leads-$D.csv` to `DRIVE_FOLDER_ID` with
       `contentMimeType: text/csv` and `disableConversionToGoogleType: true`,
@@ -92,7 +98,7 @@ directory such as `W=$(mktemp -d)/daily-leads-$D`, then `mkdir -p $W`.
     - Upload `$W/daily-leads-run-$D.json` (counts and credits used, no names)
       as `daily-leads-run-$D.json` in the same folder. Each lead's own row also
       carries its credits into ProspectPilot, so spend survives this session.
-    - Re-run `finalize` with `--csv-url <the CSV's viewUrl>` so the digest
+    - Re-run `finalize` (same `--cap`) with `--csv-url <the CSV's viewUrl>` so the digest
       links to the file.
     - Send the digest to `DIGEST_TO`: subject from finalize's output, `htmlBody`
       from `$W/digest.html`, `body` from `$W/digest.txt`. Do not attach the CSV.

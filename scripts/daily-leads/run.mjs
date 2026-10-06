@@ -2,11 +2,11 @@
 // Daily rollover leads: the steps the morning routine runs around its
 // ZoomInfo calls. Work files live in a scratch directory, never in the repo.
 //
-//   node scripts/daily-leads/run.mjs plan      --date 2026-09-28
+//   node scripts/daily-leads/run.mjs plan      --date 2026-09-28 [--cap N]
 //   node scripts/daily-leads/run.mjs layoff-employers --work DIR
 //   node scripts/daily-leads/run.mjs scoop-ids --work DIR
-//   node scripts/daily-leads/run.mjs select    --work DIR --date D [--ledger FILE]
-//   node scripts/daily-leads/run.mjs finalize  --work DIR --date D [--ledger FILE] [--csv-url U] [--app-url U]
+//   node scripts/daily-leads/run.mjs select    --work DIR --date D [--ledger FILE] [--cap N]
+//   node scripts/daily-leads/run.mjs finalize  --work DIR --date D [--ledger FILE] [--cap N] [--csv-url U] [--app-url U]
 import {sourcingPlan} from './rollover.mjs';
 import {readFileSync, writeFileSync, readdirSync, existsSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
@@ -23,6 +23,14 @@ const minus = (days, from = day) => new Date(Date.parse(from) - days * 86400000)
 const readJSON = file => JSON.parse(readFileSync(file, 'utf8'));
 const work = () => { if (!args.work || !existsSync(args.work)) fail('Use --work with an existing scratch directory.'); if (resolve(args.work).startsWith(resolve(fileURLToPath(new URL('../..', import.meta.url))))) fail('Keep work files outside the repository: lead data is never committed.'); return args.work; };
 const files = (dir, prefix) => readdirSync(dir).filter(f => f.startsWith(prefix) && f.endsWith('.json')).sort().map(f => readJSON(join(dir, f)));
+// The daily enrichment cap is the advisor's choice, passed by the routine as
+// --cap; config.json holds only the default used when none is given.
+const creditCap = (() => {
+  if (args.cap === undefined) return config.enrich_credit_cap;
+  const n = Number(args.cap);
+  if (!Number.isInteger(n) || n < 0 || n > 1000) fail('Use --cap with a whole number of credits from 0 to 1000.');
+  return n;
+})();
 const ledgerText = () => args.ledger && existsSync(args.ledger) ? readFileSync(args.ledger, 'utf8') : '';
 
 if (command === 'plan') {
@@ -41,7 +49,7 @@ if (command === 'plan') {
       {file: `search-c-${i}.json`, tool: 'search_contacts', meta: {kind: 'search', tier: 'C', employer, layoff: extra.includes(employer)}, params: {...common, companyName: employer, companyPastOrPresent: 'present', positionStartDateMax: minus(Math.round(config.tenure_years_min * 365.25)), managementLevelList: ['C Level Exec', 'VP Level Exec', 'Director'], pageSize: 10}},
     ]),
   ];
-  console.log(JSON.stringify({date: day, rollover_sourcing:sourcingPlan({employers,schools:config.alumni_schools||[],today:day,target:config.rollover_target}), employers, credit_cap: config.enrich_credit_cap, deliver_target: config.deliver_target, kept_goal: config.kept_goal, queries}, null, 1));
+  console.log(JSON.stringify({date: day, rollover_sourcing:sourcingPlan({employers,schools:config.alumni_schools||[],today:day,target:config.rollover_target}), employers, credit_cap: creditCap, deliver_target: config.deliver_target, kept_goal: config.kept_goal, queries}, null, 1));
 } else if (command === 'layoff-employers') {
   // Employers named in recent layoff scoops, fed to `plan --extra`.
   const names = [];
@@ -55,13 +63,13 @@ if (command === 'plan') {
   console.log(JSON.stringify({count: all.length, batches, params: {requiredFieldsList: config.required_fields, state: config.states, pageSize: 50}, meta: {kind: 'search', tier: 'A'}}));
 } else if (command === 'select') {
   const dir = work(), ledger = readLedger(ledgerText(), {today: day, days: config.ledger_days});
-  const result = select([...files(dir, 'scoops-'), ...files(dir, 'search-'), ...files(dir, 'evidence-')], {config, ledger, today: day, target: Number(args.target) || config.deliver_target});
+  const result = select([...files(dir, 'scoops-'), ...files(dir, 'search-'), ...files(dir, 'evidence-')], {config, ledger, today: day, target: Number(args.target) || creditCap});
   writeFileSync(join(dir, 'selected.json'), JSON.stringify(result.selected));
   writeFileSync(join(dir, 'select-counts.json'), JSON.stringify(result.counts));
   const ids = result.selected.map(c => c.person_id), batches = [];
-  for (let i = 0; i < Math.min(ids.length, config.enrich_credit_cap); i += 10) batches.push(ids.slice(i, Math.min(i + 10, config.enrich_credit_cap)));
+  for (let i = 0; i < Math.min(ids.length, creditCap); i += 10) batches.push(ids.slice(i, Math.min(i + 10, creditCap)));
   // Counts only on stdout: names and numbers stay in the work files.
-  console.log(JSON.stringify({date: day, counts: result.counts, excluded_reasons: result.excluded.reduce((m, e) => ({...m, [e.reason]: (m[e.reason] || 0) + 1}), {}), layoff_employers_seen: result.layoff_employers, enrich_batches: batches}));
+  console.log(JSON.stringify({date: day, credit_cap: creditCap, counts: result.counts, excluded_reasons: result.excluded.reduce((m, e) => ({...m, [e.reason]: (m[e.reason] || 0) + 1}), {}), layoff_employers_seen: result.layoff_employers, enrich_batches: batches}));
 } else if (command === 'finalize') {
   const dir = work(), selected = readJSON(join(dir, 'selected.json'));
   const enrichment = new Map();
@@ -77,7 +85,7 @@ if (command === 'plan') {
   writeFileSync(join(dir, 'digest.html'), mail.html); writeFileSync(join(dir, 'digest.txt'), mail.text);
   writeFileSync(join(dir, 'ledger.csv'), appendLedger(ledgerText(), recorded, {today: day}));
   // Counts only, kept with the day's files so spend is never lost with the scratch directory.
-  const run = {date: day, delivered: leads.length, with_mobile_and_email: leads.filter(l => l.enriched).length, dropped_no_mobile: outcome('no_mobile'), dropped_abroad: outcome('abroad'), not_enriched: waiting.length, credits_used: all.reduce((n, l) => n + l.credits, 0)};
+  const run = {date: day, delivered: leads.length, with_mobile_and_email: leads.filter(l => l.enriched).length, dropped_no_mobile: outcome('no_mobile'), dropped_abroad: outcome('abroad'), not_enriched: waiting.length, credits_used: all.reduce((n, l) => n + l.credits, 0), ...(args.cap !== undefined ? {credit_cap: creditCap} : {})};
   writeFileSync(join(dir, `daily-leads-run-${day}.json`), JSON.stringify(run));
   console.log(JSON.stringify({...run, csv: join(dir, csvName), subject: mail.subject, tiers: ['A', 'B', 'C'].map(t => [t, leads.filter(l => l.tier === t).length])}));
 } else fail('Commands: plan, layoff-employers, scoop-ids, select, finalize.');
