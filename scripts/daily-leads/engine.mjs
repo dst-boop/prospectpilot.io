@@ -220,7 +220,9 @@ export function enrichmentRecords(response, {records = new Map(), source = 'resp
     if (node.success === false) return;
     const id = personId(node.id ?? node.personId ?? node.input?.personId ?? inputId);
     const flat = {...node, ...(node.attributes || {})};
-    if (id && ('mobilePhone' in flat || 'email' in flat || 'externalUrls' in flat)) {
+    // Any contact field marks a record: a success that returns only a direct
+    // phone or profile fields still spent the credit and must be recorded.
+    if (id && [...fields, 'mobilePhoneDoNotCall', 'directPhoneDoNotCall', 'contactAccuracyScore'].some(f => f in flat)) {
       const prior = out.get(id), merged = {...prior, ...flat};
       const observations = structuredClone(prior?.enrichment_observations || {});
       const conflicts = {};
@@ -240,7 +242,10 @@ export function enrichmentRecords(response, {records = new Map(), source = 'resp
       out.set(id, merged);
       return;
     }
-    for (const [key, value] of Object.entries(node)) if (key !== 'input') visit(value, personId(node.input?.personId) || inputId);
+    const childId = personId(node.input?.personId) || inputId;
+    for (const [key, value] of Object.entries(node)) if (key !== 'input') visit(value, childId);
+    // A reported success with no contact fields at all still cost a credit.
+    if (node.success === true && childId && !out.has(childId)) out.set(childId, {enrichment_observations: {}, enrichment_conflicts: {}});
   };
   visit(root, '');
   return out;

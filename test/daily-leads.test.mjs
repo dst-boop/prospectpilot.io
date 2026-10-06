@@ -185,6 +185,15 @@ test('the ledger keeps a person out for the configured window',()=>{
   assert.match(appendLedger('zoominfo_contact_id,delivered_on\n1,2026-01-01\n',[{person_id:'3'}],{today}),/^zoominfo_contact_id,delivered_on,outcome\n1,2026-01-01\n3,2026-09-28,delivered\n$/,'an older two-column ledger keeps its rows');
 });
 
+test('a successful enrichment without mobile, email or LinkedIn is still a spent credit',()=>{
+  const records=enrichmentRecords([{success:true,data:{id:201,phone:'2125550100',jobTitle:'Director'}},{success:true,input:{personId:202},data:{}},{success:false,input:{personId:203},error:'Limit exceeded'}]);
+  assert.deepEqual([...records.keys()].sort(),['201','202'],'a failure costs nothing and is not recorded');
+  const base=id=>({person_id:id,first_name:'A',last_name:'B',tier:'B',signal:{employer:'Example'}});
+  const {recorded,waiting}=deliveries(finalize(['201','202','203'].map(base),records,{today}));
+  assert.deepEqual(recorded.map(l=>[l.person_id,l.outcome,l.credits]),[['201','no_mobile',1],['202','no_mobile',1]]);
+  assert.deepEqual(waiting.map(l=>l.person_id),['203']);
+});
+
 test('only leads with a mobile number are delivered; enriched misses are recorded, never re-enriched',()=>{
   const base=id=>({person_id:id,first_name:'A',last_name:'B',tier:'B',signal:{employer:'Example'}});
   const all=finalize(['1','2','3','4'].map(base),new Map([
