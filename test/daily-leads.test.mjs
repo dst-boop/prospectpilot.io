@@ -6,7 +6,7 @@ import {readFileSync,mkdtempSync,writeFileSync,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
-import {deepParse,select,finalize,toCSV,digest,readLedger,appendLedger,enrichmentRecords,tenureAt,seniority,csvCell,scoreParts,stintAt,scoopSignals} from '../scripts/daily-leads/engine.mjs';
+import {deepParse,select,finalize,deliveries,toCSV,digest,readLedger,appendLedger,enrichmentRecords,tenureAt,seniority,csvCell,scoreParts,stintAt,scoopSignals} from '../scripts/daily-leads/engine.mjs';
 import {createProspectWorkspace} from '../prospect-workspace.mjs';
 
 // Every name here is fictional. Real lead data never enters this repository.
@@ -117,7 +117,7 @@ test('the CSV cannot carry formulas, and the digest carries no phone or email',(
   assert.match(csv,/"'=cmd\|x"/);
   const mail=digest(leads,{today,counts:{found:1,already_delivered:0,excluded:0,employers:1},goal:50,links:{csv:'https://drive.example/csv',app:'https://prospectpilot.io/prospect'}});
   assert.doesNotMatch(mail.html+mail.text,/2125550100|a@b\.example/);
-  assert.match(mail.subject,/1 rollover prospects \(1 with contact details\)/);assert.match(mail.summary,/^Short day: only 1 new prospects/);assert.match(mail.html,/not verified balances/);
+  assert.match(mail.subject,/1 rollover prospects with mobile numbers$/);assert.match(mail.summary,/^Short day: only 1 new prospects/);assert.match(mail.html,/not verified balances/);
 });
 
 test('search duplicates retain restrictions from excluded rows in either file order',()=>{
@@ -181,7 +181,26 @@ test('the ledger keeps a person out for the configured window',()=>{
   const csv=appendLedger('',[{person_id:'1'},{person_id:'-2'}],{today:'2026-01-01'});
   assert.deepEqual([...readLedger(csv,{today,days:365})],['1','-2']);
   assert.equal(readLedger(csv,{today,days:180}).size,0);
-  assert.match(appendLedger(csv,[{person_id:'3'}],{today}),/^zoominfo_contact_id,delivered_on\n1,2026-01-01\n-2,2026-01-01\n3,2026-09-28\n$/);
+  assert.match(appendLedger(csv,[{person_id:'3',outcome:'no_mobile'}],{today}),/^zoominfo_contact_id,delivered_on,outcome\n1,2026-01-01,delivered\n-2,2026-01-01,delivered\n3,2026-09-28,no_mobile\n$/);
+  assert.match(appendLedger('zoominfo_contact_id,delivered_on\n1,2026-01-01\n',[{person_id:'3'}],{today}),/^zoominfo_contact_id,delivered_on,outcome\n1,2026-01-01\n3,2026-09-28,delivered\n$/,'an older two-column ledger keeps its rows');
+});
+
+test('only leads with a mobile number are delivered; enriched misses are recorded, never re-enriched',()=>{
+  const base=id=>({person_id:id,first_name:'A',last_name:'B',tier:'B',signal:{employer:'Example'}});
+  const all=finalize(['1','2','3','4'].map(base),new Map([
+    ['1',{mobilePhone:'2125550100'}],
+    ['2',{email:'b@x.example'}],
+    ['3',{mobilePhone:'+65 9138 0756',email:'c@x.example'}],
+  ]),{today});
+  const {leads,recorded,waiting}=deliveries(all);
+  assert.deepEqual(leads.map(l=>l.person_id),['1'],'a mobile without an email is delivered; an email alone is not');
+  assert.deepEqual(recorded.map(l=>[l.person_id,l.outcome]),[['1','delivered'],['2','no_mobile'],['3','abroad']]);
+  assert.deepEqual(waiting.map(l=>l.person_id),['4'],'not enriched: no credit spent, eligible again');
+  const ledger=readLedger(appendLedger('',recorded,{today}),{today,days:180});
+  assert.deepEqual([...ledger].sort(),['1','2','3']);
+  const mail=digest(leads,{today,counts:{found:4,already_delivered:0,excluded:0,employers:1,no_mobile:1,waiting:1},goal:1});
+  assert.match(mail.summary,/1 rollover prospects for .*, each with a mobile number \(0 also with email\)/);
+  assert.match(mail.html,/1 enriched without a usable mobile, left off · 1 not enriched today/);
 });
 
 test('the command line keeps work files out of the repository and writes the day',()=>{

@@ -22,13 +22,13 @@ See [the advisor workflow release](ADVISOR-WORKFLOW-RELEASE.md) for the short us
 
 ## Daily leads and the Daily review
 
-Each weekday morning a scheduled Claude routine runs `.claude/skills/daily-leads`. By 8:00 a.m. ET it delivers about 80 likely-rollover prospects: a ProspectPilot CSV in the Lead Qualifier shared drive and a digest email.
+Each weekday morning a scheduled Claude routine runs `.claude/skills/daily-leads`. By 8:00 a.m. ET it delivers likely-rollover prospects, each with a mobile number in hand (up to 80 are enriched a day): a ProspectPilot CSV in the Lead Qualifier shared drive and a digest email.
 
-- **Sources.** People come from ZoomInfo: named departures in the news, long tenure at large employers, and former staff of large employers in new roles. Every person has a mobile and an email on file in ZoomInfo.
+- **Sources.** People come from ZoomInfo: named departures in the news, long tenure at large employers, and former staff of large employers in new roles. Only people whose ZoomInfo enrichment returned a usable US mobile are delivered. People enriched without one are recorded in the ledger and not enriched again.
 - **Engine.** Ranking, exclusions and the per-employer cap are in `scripts/daily-leads/`. Targeting is set in `config.json`.
 - **Review.** Drop the CSV onto Contacts and the Daily review opens. For each person you:
   - open their LinkedIn profile;
-  - confirm or add the mobile and email;
+  - confirm the mobile, and add the email if it is missing;
   - keep or pass them.
 - **Goal.** A lead counts toward the goal of 50 only once it is kept and has both a mobile and an email. The goal is a number to reach, not a limit on what arrives.
 - **Caveat.** Leads are likely rollovers, never verified balances. Nothing is sent to anyone.

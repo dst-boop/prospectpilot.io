@@ -5,9 +5,10 @@ description: Source the advisor's daily rollover leads from ZoomInfo and deliver
 
 # Daily rollover leads
 
-Deliver about 80 likely-rollover prospects each weekday so the advisor keeps 50
-quality leads after reviewing LinkedIn and enriching. The target is a buffer,
-not a cap. The deterministic work is in `scripts/daily-leads/` (engine, CLI,
+Deliver likely-rollover prospects each weekday, **only ones with a mobile
+number in hand**, so the advisor keeps 50 quality leads after reviewing
+LinkedIn. Up to 80 are selected and enriched; the delivered count is however
+many come back with a usable US mobile. The target is a buffer, not a cap. The deterministic work is in `scripts/daily-leads/` (engine, CLI,
 `config.json`); this skill is the procedure around the ZoomInfo, Drive and
 Gmail calls.
 
@@ -75,8 +76,12 @@ directory such as `W=$(mktemp -d)/daily-leads-$D`, then `mkdir -p $W`.
      Save the retries as `enrich-r<n>.json`.
    - Stop enriching after three consecutive calls with no success, or once 80
      have succeeded.
-   - Anyone not enriched still has a mobile and an email on file in ZoomInfo.
-     The advisor fills them in from ZoomInfo during review.
+   - Only enriched leads with a usable US mobile number are delivered. An
+     email is welcome but not required.
+   - Someone enriched without a usable mobile, or found abroad, is written to
+     the ledger and never enriched again within the ledger window. Someone not
+     enriched (ZoomInfo refused, or the cap was reached) is not delivered and
+     stays eligible for a later day; nothing was spent on them.
 9. **Build.** Run
    `node scripts/daily-leads/run.mjs finalize --work $W --date $D --ledger $W/ledger-in.csv`.
 10. **Deliver.**
@@ -91,8 +96,9 @@ directory such as `W=$(mktemp -d)/daily-leads-$D`, then `mkdir -p $W`.
       links to the file.
     - Send the digest to `DIGEST_TO`: subject from finalize's output, `htmlBody`
       from `$W/digest.html`, `body` from `$W/digest.txt`. Do not attach the CSV.
-11. **Report.** In the session, give counts only: delivered, with mobile and
-    email, credits used, employers, and anything that failed.
+11. **Report.** In the session, give counts only: delivered (all with a
+    mobile), of those with email, enriched without a mobile, abroad, not
+    enriched, credits used, employers, and anything that failed.
 
 ## If something fails
 
@@ -102,8 +108,7 @@ directory such as `W=$(mktemp -d)/daily-leads-$D`, then `mkdir -p $W`.
     and why. Point them to *Find new prospects* in ProspectPilot, whose public
     sources keep working without ZoomInfo.
   - Do not substitute public-source names into this list. The daily list
-    promises a mobile and an email on file for everyone, and only ZoomInfo
-    supplies both.
+    promises a mobile number for everyone, and only ZoomInfo supplies it.
   - Never send an empty or partial list presented as complete.
 - **Drive upload fails.** Keep the digest, but say in it that the CSV could not
   be saved and must be re-run. Do not attach lead data to the email instead.

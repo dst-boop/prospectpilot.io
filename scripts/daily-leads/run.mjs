@@ -11,7 +11,7 @@ import {sourcingPlan} from './rollover.mjs';
 import {readFileSync, writeFileSync, readdirSync, existsSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {join, resolve} from 'node:path';
-import {select, finalize, toCSV, digest, readLedger, appendLedger, enrichmentRecords, scoopSignals} from './engine.mjs';
+import {select, finalize, deliveries, toCSV, digest, readLedger, appendLedger, enrichmentRecords, scoopSignals} from './engine.mjs';
 
 const config = JSON.parse(readFileSync(new URL('./config.json', import.meta.url), 'utf8'));
 const [command, ...rest] = process.argv.slice(2);
@@ -66,17 +66,18 @@ if (command === 'plan') {
   const dir = work(), selected = readJSON(join(dir, 'selected.json'));
   const enrichment = new Map();
   for (const f of readdirSync(dir).filter(f => f.startsWith('enrich-') && f.endsWith('.json')).sort()) enrichmentRecords(readFileSync(join(dir, f), 'utf8'), {records: enrichment, source: f});
-  // Enrichment can show someone is based abroad; they leave the day's list.
-  const all = finalize(selected, enrichment, {today: day}), leads = all.filter(l => !l.abroad);
+  // Only leads with a mobile number in hand are delivered (see `deliveries`).
+  const all = finalize(selected, enrichment, {today: day}), {leads, recorded, waiting} = deliveries(all);
+  const outcome = name => recorded.filter(l => l.outcome === name).length;
   const csvName = `daily-leads-${day}.csv`;
   writeFileSync(join(dir, csvName), toCSV(leads, {today: day}));
   const selectSummary = existsSync(join(dir, 'select-counts.json')) ? readJSON(join(dir, 'select-counts.json')) : null;
-  const counts = selectSummary || {found: leads.length, already_delivered: 0, excluded: 0, employers: new Set(leads.map(l => (l.signal?.employer || l.company).toLowerCase())).size};
+  const counts = {...(selectSummary || {found: leads.length, already_delivered: 0, excluded: 0, employers: new Set(leads.map(l => (l.signal?.employer || l.company).toLowerCase())).size}), no_mobile: outcome('no_mobile'), waiting: waiting.length};
   const mail = digest(leads, {today: day, counts, goal: config.kept_goal, links: {csv: args['csv-url'], app: args['app-url'] || 'https://prospectpilot.io/prospect'}});
   writeFileSync(join(dir, 'digest.html'), mail.html); writeFileSync(join(dir, 'digest.txt'), mail.text);
-  writeFileSync(join(dir, 'ledger.csv'), appendLedger(ledgerText(), leads, {today: day}));
+  writeFileSync(join(dir, 'ledger.csv'), appendLedger(ledgerText(), recorded, {today: day}));
   // Counts only, kept with the day's files so spend is never lost with the scratch directory.
-  const run = {date: day, delivered: leads.length, with_mobile_and_email: leads.filter(l => l.enriched).length, dropped_abroad: all.length - leads.length, credits_used: all.reduce((n, l) => n + l.credits, 0)};
+  const run = {date: day, delivered: leads.length, with_mobile_and_email: leads.filter(l => l.enriched).length, dropped_no_mobile: outcome('no_mobile'), dropped_abroad: outcome('abroad'), not_enriched: waiting.length, credits_used: all.reduce((n, l) => n + l.credits, 0)};
   writeFileSync(join(dir, `daily-leads-run-${day}.json`), JSON.stringify(run));
   console.log(JSON.stringify({...run, csv: join(dir, csvName), subject: mail.subject, tiers: ['A', 'B', 'C'].map(t => [t, leads.filter(l => l.tier === t).length])}));
 } else fail('Commands: plan, layoff-employers, scoop-ids, select, finalize.');
