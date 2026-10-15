@@ -220,7 +220,9 @@ export function enrichmentRecords(response, {records = new Map(), source = 'resp
     if (node.success === false) return;
     const id = personId(node.id ?? node.personId ?? node.input?.personId ?? inputId);
     const flat = {...node, ...(node.attributes || {})};
-    if (id && ('mobilePhone' in flat || 'email' in flat || 'externalUrls' in flat)) {
+    // Any contact field marks a record: a success that returns only a direct
+    // phone or profile fields still spent the credit and must be recorded.
+    if (id && [...fields, 'mobilePhoneDoNotCall', 'directPhoneDoNotCall', 'contactAccuracyScore'].some(f => f in flat)) {
       const prior = out.get(id), merged = {...prior, ...flat};
       const observations = structuredClone(prior?.enrichment_observations || {});
       const conflicts = {};
@@ -240,7 +242,10 @@ export function enrichmentRecords(response, {records = new Map(), source = 'resp
       out.set(id, merged);
       return;
     }
-    for (const [key, value] of Object.entries(node)) if (key !== 'input') visit(value, personId(node.input?.personId) || inputId);
+    const childId = personId(node.input?.personId) || inputId;
+    for (const [key, value] of Object.entries(node)) if (key !== 'input') visit(value, childId);
+    // A reported success with no contact fields at all still cost a credit.
+    if (node.success === true && childId && !out.has(childId)) out.set(childId, {enrichment_observations: {}, enrichment_conflicts: {}});
   };
   visit(root, '');
   return out;
@@ -302,9 +307,8 @@ export function whyNow(lead) {
   return `Reported former employer: ${s.employer || 'unknown'}; current role ${lead.title || 'unknown'} at ${lead.company}. Confirm departure timing and whether any retirement account remains.`;
 }
 
-// Merge enrichment into the selection. Nothing is dropped for a missing
-// number: ZoomInfo holds both for everyone selected, so the advisor can fill
-// them from ZoomInfo, and only a lead with both counts toward the day's goal.
+// Merge enrichment into the selection. Every lead comes back, delivered or
+// not: `deliveries` decides who is on the day's list.
 export function finalize(selected, enrichment, {today}) {
   return selected.map(c => {
     const e = enrichment.get(c.person_id) || {};
@@ -330,6 +334,22 @@ export function finalize(selected, enrichment, {today}) {
   });
 }
 
+// Only a lead with a usable US mobile number in hand is delivered. Someone
+// whose enrichment came back abroad or without a mobile is recorded in the
+// ledger, so the spent credit is never spent on them again; someone not
+// enriched (ZoomInfo refused, or the cap was reached) cost nothing and stays
+// eligible for a later day.
+export function deliveries(all) {
+  const leads = [], recorded = [], waiting = [];
+  for (const lead of all) {
+    if (lead.abroad) recorded.push({...lead, outcome: 'abroad'});
+    else if (lead.mobile) { leads.push(lead); recorded.push({...lead, outcome: 'delivered'}); }
+    else if (lead.credits) recorded.push({...lead, outcome: 'no_mobile'});
+    else waiting.push(lead);
+  }
+  return {leads, recorded, waiting};
+}
+
 // CSV cells are text, never formulas.
 export function csvCell(value) {
   let s = String(value ?? '');
@@ -350,7 +370,8 @@ export function toCSV(leads, {today}) {
   return '﻿' + [CSV_HEADERS, ...rows].map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
 }
 
-// Previously delivered people, so nobody arrives twice within the window.
+// Previously delivered or checked people, so nobody arrives twice, and nobody
+// already enriched is enriched again, within the window.
 export function readLedger(csv, {today, days}) {
   const ids = new Set();
   for (const line of String(csv || '').split(/\r?\n/).slice(1)) {
@@ -359,9 +380,11 @@ export function readLedger(csv, {today, days}) {
   }
   return ids;
 }
+const LEDGER_HEADER = 'zoominfo_contact_id,delivered_on,outcome';
 export function appendLedger(csv, leads, {today}) {
-  const head = String(csv || '').trim() ? String(csv).replace(/\s+$/, '') : 'zoominfo_contact_id,delivered_on';
-  return head + '\n' + leads.map(l => `${l.person_id},${today}`).join('\n') + '\n';
+  // Older ledgers have two columns; their rows read the same under the new header.
+  const head = String(csv || '').trim() ? String(csv).replace(/\s+$/, '').replace(/^zoominfo_contact_id,delivered_on(?=\r?\n|$)/, LEDGER_HEADER) : LEDGER_HEADER;
+  return head + '\n' + leads.map(l => `${l.person_id},${today},${l.outcome || 'delivered'}`).join('\n') + '\n';
 }
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
@@ -369,17 +392,17 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;'
 // The digest names people and why they matter; phones and emails stay in the
 // CSV on the shared drive and in ProspectPilot.
 export function digest(leads, {today, counts, links = {}, goal}) {
-  const ready = leads.filter(l => l.enriched).length, byTier = t => leads.filter(l => l.tier === t);
-  const short = leads.length < goal ? `Short day: only ${leads.length} new prospects met the filters. ` : '';
-  const summary = `${short}${leads.length} rollover prospects for ${today}: ${ready} with mobile and email, ${leads.length - ready} to enrich in ZoomInfo. Goal: ${goal} quality leads kept after your LinkedIn review.`;
+  const withEmail = leads.filter(l => l.email).length, byTier = t => leads.filter(l => l.tier === t);
+  const short = leads.length < goal ? `Short day: only ${leads.length} new prospects came back with a mobile number. ` : '';
+  const summary = `${short}${leads.length} rollover prospects for ${today}, each with a mobile number (${withEmail} also with email). Goal: ${goal} quality leads kept after your LinkedIn review.`;
   const section = (tier, rows) => rows.length ? `<h3 style="margin:18px 0 6px;color:#0c2149">${esc(TIERS[tier].label)} · ${rows.length}</h3><ol start="${rows[0].rank}" style="padding-left:22px;margin:0">${rows.map(l => `<li style="margin:4px 0"><b>${esc(l.first_name)} ${esc(l.last_name)}</b> — ${esc(l.title)}, ${esc(l.company)}<br><span style="color:#51607a">${esc(l.why_now)}</span>${l.signal?.url ? ` <a href="${esc(l.signal.url)}">Source</a>` : ''}</li>`).join('')}</ol>` : '';
   const html = `<div style="font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:#0f1f3d;max-width:720px">
 <p style="margin:0 0 4px;color:#1570ef;font-weight:700;letter-spacing:1px;font-size:12px">PROSPECTPILOT · DAILY LEADS</p>
 <h2 style="margin:0 0 8px">${esc(summary)}</h2>
 <p>${links.app ? `<a href="${esc(links.app)}" style="background:#1570ef;color:#fff;padding:9px 14px;border-radius:8px;text-decoration:none">Open Daily review</a>` : ''} ${links.csv ? `&nbsp; <a href="${esc(links.csv)}">Today's CSV</a>` : ''}</p>
-<p style="color:#51607a;font-size:13px">Sourced ${counts.found} · already delivered before ${counts.already_delivered} · excluded ${counts.excluded} (Equitable, advisors, no mobile or email on file) · ${counts.employers} employers.</p>
+<p style="color:#51607a;font-size:13px">Sourced ${counts.found} · already delivered or checked before ${counts.already_delivered} · excluded ${counts.excluded} (Equitable, advisors, no mobile or email on file) · ${counts.employers} employers${counts.no_mobile ? ` · ${counts.no_mobile} enriched without a usable mobile, left off` : ''}${counts.waiting ? ` · ${counts.waiting} not enriched today, kept for a later day` : ''}.</p>
 ${Object.keys(TIERS).map(t => section(t, byTier(t))).join('')}
 <p style="color:#51607a;font-size:12px;margin-top:20px">Likely rollovers, not verified balances: confirm the account and amount in conversation. Nothing has been sent to anyone. Check do-not-call before phoning; mobile numbers carry stricter calling rules. Outreach templates need Equitable approval.</p></div>`;
   const plain = [summary, '', ...leads.map(l => `${l.rank}. ${l.first_name} ${l.last_name} — ${l.title}, ${l.company}. ${l.why_now}`)].join('\n');
-  return {subject: `Daily leads ${today}: ${leads.length} rollover prospects (${ready} with contact details)`, html, text: plain, summary};
+  return {subject: `Daily leads ${today}: ${leads.length} rollover prospects with mobile numbers`, html, text: plain, summary};
 }

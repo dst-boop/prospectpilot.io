@@ -1,5 +1,5 @@
 {
-  "comment": "Daily rollover-lead sourcing. Targeting is data, not code: edit here, never in engine.mjs.",
+  "comment": "Daily rollover-lead sourcing. Targeting is data, not code: edit here, never in engine.mjs. enrich_credit_cap is only the default: the advisor chooses the daily cap, passed by the routine as --cap.",
   "deliver_target": 80,
   "kept_goal": 50,
   "enrich_credit_cap": 80,
