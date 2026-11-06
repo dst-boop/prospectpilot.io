@@ -14,4 +14,7 @@ const queue=createResearchJobs({pool,runSource:async(job,source)=>{
  const response=await worker.fetch(new Request('https://prospectpilot.io/api/research/auto',{method:'POST',headers:{'content-type':'application/json','oai-authenticated-user-id':job.user_id,'oai-authenticated-user-email':job.user_email},body:JSON.stringify({lead_id:job.lead_id,source,identity_signature:job.identity_signature})}),{DB:db,NATIVE_RESEARCH:native});
  const data=await response.json();if(!response.ok){const e=Error('Research source failed');e.status=response.status;throw e;}return data;
 }});
-try{await lab.scheduleDue();const until=Date.now()+12*60*1000;let idle=0;while(!stop&&Date.now()<until){const work=[await autopilot.tick(),await prospectJobs.tick(),await lab.tick(),await queue.tick()];if(work.some(Boolean)){idle=0;continue;}if(++idle>16)break;await new Promise(r=>setTimeout(r,5000));}}finally{await pool.end();}
+try{await lab.scheduleDue();const until=Date.now()+12*60*1000;let idle=0;while(!stop&&Date.now()<until){// Autopilot last: the loop re-runs immediately whenever any tick did work, so
+// a step queued at the end of a pass is picked up at the start of the next one,
+// and a fault here cannot stop the three established queues from draining.
+ const work=[await prospectJobs.tick(),await lab.tick(),await queue.tick(),await autopilot.tick()];if(work.some(Boolean)){idle=0;continue;}if(++idle>16)break;await new Promise(r=>setTimeout(r,5000));}}finally{await pool.end();}

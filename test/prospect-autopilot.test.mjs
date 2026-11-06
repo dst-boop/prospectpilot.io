@@ -249,9 +249,65 @@ test('the quote states the order, the worst case, and that it is a worst case',a
   assert.match(line,/\$0\.0006 of \$0\.0046 approved reserved/);
   assert.match(line,/role="status"/,'a paused run is announced, not styled as a muted aside');
   assert.match(line,/Still to run: Verify the email address/);
-  assert.doesNotMatch(line,/Stop autopilot/,'a paused run offers a fresh setup, not a stop');
+  // A paused run blocks a new one and there is no resume, so it must stay
+  // clearable from the page rather than offering a button that can only 409.
+  assert.match(line,/data-autopilot-stop="r1"/);
+  assert.match(line,/Clear this run/);
+  assert.doesNotMatch(line,/id="autopilotPlan"/,'a paused run cannot be replaced until it is cleared');
+  assert.match(autopilotRunContent({...run,status:'done'}),/id="autopilotPlan"/);
+  assert.match(autopilotRunContent({...run,status:'stopped'}),/id="autopilotPlan"/);
   assert.match(autopilotRunContent({...run,status:'running'}),/data-autopilot-stop="r1"/);
   assert.match(autopilotRunContent(null),/no page open/);
   // HTML in a note cannot reach the page as markup.
   assert.match(autopilotRunContent({...run,note:'<img src=x onerror=1>'}),/&lt;img/);
 });
+
+// --- raised in review on 8d1355d ----------------------------------------------
+
+test('spend from every step counts towards the ceiling, not just the last one',()=>fixture(async({app,jobs,autopilot,config})=>{
+  // Three steps, which is where storing only the newest step's job ids shows:
+  // with two, the one step already queued happened to be the whole history.
+  // Equal prices so the ladder is check_phone, enrich, verify.
+  config.prices.check_phone=1000;config.prices.enrich=1000;config.prices.verify=1000;
+  await seed(app,['Jamie,Rivera,jamie@example.com,5165550142,Northline']);
+  const quoted=await autopilot.plan(user,{steps:['check_phone','enrich','verify']});
+  assert.deepEqual(quoted.steps.map(s=>s.action),['check_phone','enrich','verify']);
+  assert.equal(quoted.worst_case_micros,3000);
+  await autopilot.start(user,{steps:['check_phone','enrich','verify'],approved_micros:3000});
+
+  await jobs.tick();                                  // step 1 runs
+  assert.equal(await autopilot.tick(),true);          // step 2 queued
+  await jobs.tick();                                  // step 2 runs
+  assert.equal((await autopilot.state(user,{})).run.reserved_micros,2000,
+    'the run reports what it has reserved across both finished steps');
+
+  // A second contact arrives before the last step, so that step costs 2,000.
+  // Counted from the whole run that is 4,000 against an approval of 3,000.
+  await seed(app,['Sam,Ortiz,sam@example.com,5165550143,Northline']);
+  assert.equal(await autopilot.tick(),true);
+  const state=await autopilot.state(user,{});
+  assert.equal(state.run.status,'paused');
+  assert.ok(state.run.reserved_micros<=state.run.approved_micros,
+    `the run reserved ${state.run.reserved_micros} against an approved ${state.run.approved_micros}`);
+  assert.equal(state.run.reserved_micros,2000,'the last step was never sent');
+}));
+
+test('a provider that disappears mid-run pauses the run instead of killing the worker',()=>fixture(async({app,jobs,autopilot,config,providers})=>{
+  config.prices.check_phone=1000;config.prices.enrich=1000;
+  await seed(app,['Jamie,Rivera,jamie@example.com,5165550142,Northline']);
+  await autopilot.start(user,{steps:['check_phone','enrich'],approved_micros:2000});
+  await jobs.tick();
+  // Credentials withdrawn between approval and the step that needs them. The
+  // queue refuses the job; the run must absorb that rather than throw, because
+  // the worker loop has no handler and the other queues tick after this one.
+  providers.readiness.enrichment=false;
+  let threw=null;
+  try{assert.equal(await autopilot.tick(),true);}catch(e){threw=e;}
+  assert.equal(threw,null,'tick must not throw: it runs first in the worker loop');
+  const state=await autopilot.state(user,{});
+  assert.equal(state.run.status,'paused');
+  assert.match(state.run.note,/no longer available|not configured/i);
+  assert.equal(state.run.reserved_micros,1000,'nothing was reserved for the refused step');
+  // And it does not come back every pass as a run still waiting to fail.
+  assert.equal(await autopilot.tick(),false);
+}));

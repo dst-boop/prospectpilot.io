@@ -146,12 +146,15 @@ export function autopilotRunContent(run){
  const money=v=>(Number(v)/1000000).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:4});
  if(!run)return '<p class="muted">Autopilot runs the checks in order, cheapest first, with one approval and no page open.</p>'
   +'<button type="button" id="autopilotPlan" class="secondary">Set up autopilot</button>';
- const live=run.status==='running';
+ // Stoppable while it is running, and also while it is paused: a paused run
+ // blocks a new one, and there is no resume, so without this the operator is
+ // offered a setup button that can only answer 409.
+ const open=run.status==='running'||run.status==='paused';
  const label={running:'Running',paused:'Paused',done:'Finished',stopped:'Stopped'}[run.status]||run.status;
  return `<p><strong>Autopilot: ${esc(label)}</strong> · step ${esc(Math.min(run.step,run.total_steps))} of ${esc(run.total_steps)}`
   +`${run.current?' · '+esc(run.current.label):''} · ${money(run.reserved_micros)} of ${money(run.approved_micros)} approved reserved</p>`
   +`<p${run.status==='paused'?' role="status"':' class="muted"'}>${esc(run.note)}</p>`
   +(run.remaining.length?'<p class="muted">Still to run: '+run.remaining.map(s=>esc(s.label)).join(' → ')+'</p>':'')
-  +(live?`<button type="button" class="secondary" data-autopilot-stop="${esc(run.id)}">Stop autopilot</button>`
+  +(open?`<button type="button" class="secondary" data-autopilot-stop="${esc(run.id)}">${run.status==='paused'?'Clear this run':'Stop autopilot'}</button>`
         :'<button type="button" id="autopilotPlan" class="secondary">Set up autopilot</button>');
 }

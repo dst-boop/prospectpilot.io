@@ -151,14 +151,30 @@ export function createProspectAutopilot({pool,jobs,config={prices:{}}}) {
       return true;
     }
     const queued=[];
-    for(let i=0;i<contacts.length;i+=CHUNK) {
-      const slice=contacts.slice(i,i+CHUNK);
-      const job=await jobs.enqueue(user,{action:current.action,ids:slice,
-        max_cost_micros:current.price_micros*slice.length,
-        idempotency_key:`ap-${run.id}-${run.cursor}-${i/CHUNK}`});
-      queued.push(job.id);
+    try {
+      for(let i=0;i<contacts.length;i+=CHUNK) {
+        const slice=contacts.slice(i,i+CHUNK);
+        const job=await jobs.enqueue(user,{action:current.action,ids:slice,
+          max_cost_micros:current.price_micros*slice.length,
+          idempotency_key:`ap-${run.id}-${run.cursor}-${i/CHUNK}`});
+        queued.push(job.id);
+      }
+    } catch(e) {
+      // Paused, not skipped on to the next step. The operator approved this
+      // ladder in this order, and the step that is missing is the cheap one
+      // more often than not -- carrying on would run the dear steps against
+      // everyone the cheap one would have ruled out. Pausing also stops the
+      // run coming back every pass to fail again.
+      await finishRun(c,run,'paused',
+        `${STEP_LABELS[current.action]} is no longer available: ${e.message} `
+        +'Nothing was sent for it. Start a new run once the provider is configured again.');
+      return true;
     }
-    await c.query('UPDATE prospect_autopilot_runs SET cursor=cursor+1,job_ids=$1::jsonb,note=$2,updated_at=now() WHERE id=$3',
+    // Appended, never replaced. `spent` reads these ids, so dropping the
+    // earlier steps would make the run's own ceiling blind to everything but
+    // the step it had just queued -- which is the whole property this is for.
+    await c.query(`UPDATE prospect_autopilot_runs SET cursor=cursor+1,
+      job_ids=COALESCE(job_ids,'[]'::jsonb)||$1::jsonb,note=$2,updated_at=now() WHERE id=$3`,
       [JSON.stringify(queued),`${STEP_LABELS[current.action]} is running for ${contacts.length} contact${contacts.length===1?'':'s'}.`,run.id]);
     return true;
   }
