@@ -33,6 +33,38 @@ Each weekday morning a scheduled Claude routine runs `.claude/skills/daily-leads
 - **Goal.** A lead counts toward the goal of 50 only once it is kept and has both a mobile and an email. The goal is a number to reach, not a limit on what arrives.
 - **Caveat.** Leads are likely rollovers, never verified balances. Nothing is sent to anyone.
 
+## Autopilot
+
+**Approve a budget once and the checks run themselves, cheapest first.** Pick
+the steps you want on a list — check the email domain, check the phone line,
+fill in missing details, verify the email, research them on the web — and you
+are shown the most the run can reserve before anything is sent. Approve that
+figure and the run queues the steps in price order, free ahead of paid, each
+one only after the one before it has finished.
+
+The order is the saving. A free domain check that finds no mail route makes the
+paid verification skip that contact and reserve nothing; a phone listed under
+somebody else's name is not worth researching. Pay for the cheap answer first
+and the expensive question is asked of fewer people, so the figure you approved
+is an upper bound and real spend comes in under it.
+
+The approved figure bounds the **run**, not each step. Before queueing a step,
+what the run has already reserved is added to that step's quote; over the
+approval it stops and says so rather than spending and explaining afterwards.
+That is what protects you when the work grows after you approved it — contacts
+added to the list mid-run — where a per-step check would let the total through.
+
+It runs on the provider queue, so you can close the page. Lead Qualifier ran
+this loop in the browser and a closed tab paused it; here the run is a row the
+worker advances. One run per list at a time, so two runs cannot race the same
+contacts and spend the budget twice. The daily workspace cap and your plan
+allowance still apply on top.
+
+The ladder is ordered from the configured prices rather than written down, so
+repricing a provider reorders it, and a step with no price or no credentials is
+not offered at all instead of being quoted and then refused. Requires migration
+**031**.
+
 ## Outreach pacing and the next touch
 
 The qualification gates decide whether someone may be approached. This decides
