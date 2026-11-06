@@ -75,7 +75,44 @@ export async function initProviderUI({api,selected,filters,getLists,refresh,noti
  $('providerSetup').onclick=()=>showConnections();
  $('providerForm').onsubmit=async e=>{e.preventDefault();$('providerSubmit').disabled=true;try{if(!nonce)nonce=crypto.randomUUID();const result=await api('jobs',{...activeInput,...(activeInput.action==='search'?{size:Number($('providerSize').value),list_id:$('providerList').value||null}:{}),...(['check_phone','web_research'].includes(activeInput.action)&&$('providerRecheck').checked?{recheck:true}:{}),max_cost_micros:Math.round(Number($('providerCeiling').value)*1000000),idempotency_key:nonce});$('providerDialog').close();notice(result.dispatched?'Job queued. It continues in the background.':'Your request was saved, but processing is not available yet. Check back here for progress; you do not need to submit it again.');await loadJobs();await detail(result.id);}catch(e){$('providerError').textContent=e.message;}finally{$('providerSubmit').disabled=false;}};
  async function detail(id){try{const data=await api('jobs/'+encodeURIComponent(id));currentJob=data;$('jobBody').innerHTML=`<p>${esc(data.job.action.replaceAll('_',' '))} · ${data.job.finished}/${data.job.total} finished · ${money(data.job.reserved_micros)} reserved</p>`+data.tasks.map(t=>`<article class="job-task"><strong>${esc(t.status.replaceAll('_',' '))}</strong><p>${esc(t.result.message||(t.status==='completed'?'Finished.':t.status==='pending'?'Queued for processing.':'Awaiting a worker update.'))}</p>${t.result.added!=null?`<p>${t.result.added} added · ${t.result.duplicates} duplicates · ${t.result.conflicts} conflicts · ${t.result.rejected} rejected</p>`:''}</article>`).join('');const continuation=data.tasks.find(t=>['completed','failed'].includes(t.status)&&t.result.scroll_token);$('jobNextPage').hidden=!continuation;$('jobNextPage').onclick=()=>{$('jobDialog').close();open('search',continuation.result);};if(!$('jobDialog').open)$('jobDialog').showModal();}catch(e){notice(e.message,true);}}
- async function loadJobs(){if(poll)clearTimeout(poll);try{const data=await api('jobs');$('jobsPanel').innerHTML='<div class="toolbar"><h2>Enrichment & search jobs</h2><button id="refreshJobs" class="secondary">Refresh</button></div>'+(data.jobs.length?data.jobs.map(j=>`<div class="job-row"><div><strong>${esc(j.action.replaceAll('_',' '))}</strong><span class="muted"> · ${j.finished}/${j.total} finished · ${money(j.reserved_micros)} reserved</span></div><button class="secondary" data-job="${esc(j.id)}">Details</button></div>`).join(''):'<p class="muted">Provider jobs will appear here. You can close the page while the worker processes them.</p>');$('refreshJobs').onclick=()=>loadJobs();document.querySelectorAll('[data-job]').forEach(b=>b.onclick=()=>detail(b.dataset.job));const digest=JSON.stringify(data.jobs.map(j=>[j.id,j.finished,j.reserved_micros]));if(lastDigest&&digest!==lastDigest)await refresh();lastDigest=digest;await settings();if($('jobDialog').open&&currentJob)await detail(currentJob.job.id);if(data.jobs.some(j=>j.finished<j.total))poll=setTimeout(loadJobs,8000);}catch(e){notice(e.message,true);}}
+ // Autopilot sits above the job list because it is what queues those jobs.
+ // The route is optional per deployment, so a workspace without it simply
+ // shows no autopilot section rather than an error.
+ let autopilotState=null,autopilotReady=true,autopilotQuote=null;
+ const autopilotBlock=()=>autopilotReady?'<section class="autopilot">'+autopilotRunContent(autopilotState)+'</section>':'';
+ async function readAutopilot(){
+  if(!autopilotReady)return;
+  try{autopilotState=(await api('autopilot'+(filters().list_id?'?list_id='+encodeURIComponent(filters().list_id):''))).run;}
+  catch{autopilotReady=false;autopilotState=null;}
+ }
+ function wireAutopilot(){
+  const plan=$('autopilotPlan');
+  if(plan)plan.onclick=async()=>{
+   try{
+    autopilotQuote=await api('autopilot?plan=1'+(filters().list_id?'&list_id='+encodeURIComponent(filters().list_id):''));
+    $('autopilotBody').innerHTML=autopilotQuoteContent(autopilotQuote);
+    $('autopilotApprove').disabled=!autopilotQuote.steps.length;
+    $('autopilotError').textContent='';$('autopilotDialog').showModal();
+   }catch(e){notice(e.message,true);}
+  };
+  document.querySelectorAll('[data-autopilot-stop]').forEach(b=>b.onclick=async()=>{
+   b.disabled=true;
+   try{await api('autopilot/'+encodeURIComponent(b.dataset.autopilotStop),null,'DELETE');await loadJobs();}
+   catch(e){b.disabled=false;notice(e.message,true);}
+  });
+ }
+ $('autopilotApprove').onclick=async()=>{
+  if(!autopilotQuote)return;
+  $('autopilotApprove').disabled=true;$('autopilotError').textContent='';
+  try{
+   await api('autopilot',{list_id:autopilotQuote.list_id,steps:autopilotQuote.steps.map(s=>s.action),
+     approved_micros:autopilotQuote.worst_case_micros});
+   $('autopilotDialog').close();notice('Autopilot approved. It runs on the server; you can close this page.');
+   await loadJobs();
+  }catch(e){$('autopilotError').textContent=e.message;$('autopilotApprove').disabled=false;}
+ };
+ $('closeAutopilot').onclick=()=>$('autopilotDialog').close();
+ async function loadJobs(){if(poll)clearTimeout(poll);try{await readAutopilot();const data=await api('jobs');$('jobsPanel').innerHTML='<div class="toolbar"><h2>Enrichment & search jobs</h2><button id="refreshJobs" class="secondary">Refresh</button></div>'+autopilotBlock()+(data.jobs.length?data.jobs.map(j=>`<div class="job-row"><div><strong>${esc(j.action.replaceAll('_',' '))}</strong><span class="muted"> · ${j.finished}/${j.total} finished · ${money(j.reserved_micros)} reserved</span></div><button class="secondary" data-job="${esc(j.id)}">Details</button></div>`).join(''):'<p class="muted">Provider jobs will appear here. You can close the page while the worker processes them.</p>');$('refreshJobs').onclick=()=>loadJobs();wireAutopilot();document.querySelectorAll('[data-job]').forEach(b=>b.onclick=()=>detail(b.dataset.job));const digest=JSON.stringify(data.jobs.map(j=>[j.id,j.finished,j.reserved_micros]));if(lastDigest&&digest!==lastDigest)await refresh();lastDigest=digest;await settings();if($('jobDialog').open&&currentJob)await detail(currentJob.job.id);if(data.jobs.some(j=>j.finished<j.total)||autopilotState?.status==='running')poll=setTimeout(loadJobs,8000);}catch(e){notice(e.message,true);}}
  async function go(path,body){$('billingError').textContent='';try{const {url}=await api(path,body||{},'POST');if(!/^https:\/\/(checkout|billing)\.stripe\.com\//.test(String(url)))throw Error('Billing returned an unexpected address.');location.assign(url);}catch(e){$('billingError').textContent=e.message;}}
  async function showBilling(){try{const state=await api('billing');$('billingBody').innerHTML=billingContent(state);$('billingBody').querySelectorAll('[data-billing-plan]').forEach(b=>b.onclick=()=>go('billing/checkout',{plan:b.dataset.billingPlan,interval:b.dataset.billingInterval}));$('billingBody').querySelectorAll('[data-billing-topup]').forEach(b=>b.onclick=()=>go('billing/topup',{pack:b.dataset.billingTopup}));if($('billingPortal'))$('billingPortal').onclick=()=>go('billing/portal');$('billingDialog').showModal();}catch(e){notice(e.message,true);}}
  $('billingOpen').onclick=showBilling;
@@ -86,4 +123,38 @@ export async function initProviderUI({api,selected,filters,getLists,refresh,noti
  else if(returned==='topup')notice('Thanks — your top-up is being added. It can take a minute to show here.');
  else if(returned==='cancelled')notice('Checkout was cancelled. Nothing was charged.');
  await Promise.all([settings(),loadJobs()]);
+}
+
+// Autopilot: the quote the operator approves, and the run's progress line.
+//
+// Pure, so the wording that commits someone to spending money is tested rather
+// than eyeballed. The worst case is stated as a worst case, because the ladder
+// rules people out as it goes and the real figure comes in under it.
+export function autopilotQuoteContent(quote){
+ const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ const money=v=>(Number(v)/1000000).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:4});
+ if(!quote.steps.length)return '<p role="status"><strong>No step can run yet.</strong> Connect a provider and set its price first. Nothing has been charged.</p>'
+  +(quote.unavailable.length?'<ul>'+quote.unavailable.map(u=>`<li>${esc(u.label)} — ${esc(u.reason)}</li>`).join('')+'</ul>':'');
+ return `<p>${esc(quote.contacts)} contact${quote.contacts===1?'':'s'}, in this order — cheapest first, so each step only asks about whoever is left:</p>`
+  +'<ol class="autopilot-steps">'+quote.steps.map((st,i)=>`<li><strong>${esc(st.label)}</strong> — ${st.price_micros===0?'no charge':money(st.price_micros)+' each, up to '+money(st.worst_case_micros)}${i===0?' <small>(runs first)</small>':''}</li>`).join('')+'</ol>'
+  +(quote.unavailable.length?'<p class="muted">Not included: '+quote.unavailable.map(u=>esc(u.label)+' ('+esc(u.reason)+')').join('; ')+'</p>':'')
+  +`<p><strong>Most this can reserve: ${money(quote.worst_case_micros)}.</strong></p><p class="muted">${esc(quote.basis)}</p>`
+  +'<p class="muted">You approve this figure once. The run cannot exceed it: if a later step would, it stops and tells you instead. You can close the page — it runs on the server.</p>';
+}
+export function autopilotRunContent(run){
+ const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ const money=v=>(Number(v)/1000000).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:4});
+ if(!run)return '<p class="muted">Autopilot runs the checks in order, cheapest first, with one approval and no page open.</p>'
+  +'<button type="button" id="autopilotPlan" class="secondary">Set up autopilot</button>';
+ // Stoppable while it is running, and also while it is paused: a paused run
+ // blocks a new one, and there is no resume, so without this the operator is
+ // offered a setup button that can only answer 409.
+ const open=run.status==='running'||run.status==='paused';
+ const label={running:'Running',paused:'Paused',done:'Finished',stopped:'Stopped'}[run.status]||run.status;
+ return `<p><strong>Autopilot: ${esc(label)}</strong> · step ${esc(Math.min(run.step,run.total_steps))} of ${esc(run.total_steps)}`
+  +`${run.current?' · '+esc(run.current.label):''} · ${money(run.reserved_micros)} of ${money(run.approved_micros)} approved reserved</p>`
+  +`<p${run.status==='paused'?' role="status"':' class="muted"'}>${esc(run.note)}</p>`
+  +(run.remaining.length?'<p class="muted">Still to run: '+run.remaining.map(s=>esc(s.label)).join(' → ')+'</p>':'')
+  +(open?`<button type="button" class="secondary" data-autopilot-stop="${esc(run.id)}">${run.status==='paused'?'Clear this run':'Stop autopilot'}</button>`
+        :'<button type="button" id="autopilotPlan" class="secondary">Set up autopilot</button>');
 }
