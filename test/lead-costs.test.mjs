@@ -13,6 +13,17 @@ import {leadCostContent} from '../prospect-jobs-client.js';
 const MIGRATIONS=readFileSync(new URL('../migrate.mjs',import.meta.url),'utf8').match(/'(generated\/schema\.sql|migrations\/[^']+\.sql)'/g).map(s=>s.slice(1,-1));
 const advisor={uid:'advisor-a',email:'a@example.com'},colleague={uid:'advisor-b',email:'b@example.com'};
 const now=new Date('2026-10-15T16:00:00Z');
+// The ledgers stamp themselves with the database clock, while the assertions
+// below name a fixed window. Left alone, these tests pass only during the month
+// that window names: they went green through October 2026 and failed from
+// 1 November, which nothing noticed because main had not run CI since the 15th.
+// `pin` moves rows the application just wrote back onto the fixture's own
+// instant, so the window and the rows agree whatever today is. Rows a test
+// inserted with an explicit timestamp are older than `now` and are left be.
+const pin=async db=>{
+ for(const [table,column] of [['lead_acquisitions','acquired_at'],['prospect_charges','reserved_at'],['lab_costs','created_at']])
+  await db.query(`UPDATE ${table} SET ${column}=$1 WHERE ${column}>$1`,[now.toISOString()]);
+};
 const daily=(rows,day='2026-10-02')=>'"First Name","Last Name","Company Name","Email Address","ZoomInfo Contact ID","Why Now","Delivery Date","Enrichment Credits"\n'+
  rows.map(([first,last,id,credits])=>`"${first}","${last}","Example Co","${first.toLowerCase()}@example.com","${id}","Left company","${day}","${credits}"`).join('\n');
 
@@ -53,6 +64,7 @@ test('ZoomInfo credits from a delivery are recorded once per person and day, and
  await ws.importCSV(advisor,{csv,format:'zoominfo',list_id:b.id});
  const usage=(await db.query('SELECT units,usage_date::text AS day,lead_id IS NOT NULL AS linked FROM prospect_external_usage WHERE user_id=$1',[advisor.uid])).rows;
  assert.deepEqual(usage,[{units:1,day:'2026-10-02',linked:true},{units:1,day:'2026-10-02',linked:true}],'the second list did not count the delivery again');
+ await pin(db);
  const unpriced=await leadCosts(db,{period:'month',from:'2026-10-01',to:'2026-10-31'},{userId:advisor.uid,creditMicros:null,now});
  const oct=unpriced.users[0].rows[0];
  assert.equal(oct.spend.zoominfo_credits,2);assert.equal(oct.spend.zoominfo_micros,null);assert.equal(oct.spend.total_micros,0);
@@ -78,7 +90,8 @@ test('a charge records what was bought, what a search returned, and the lead it 
  await jobs.enqueue(advisor,{action:'enrich',ids:[id],max_cost_micros:50000,idempotency_key:'enrich-one'});while(await jobs.tick());
  const enrich=await one(db,"SELECT c.lead_id,a.contact_id FROM prospect_charges c JOIN lead_acquisitions a ON a.id=c.lead_id WHERE c.action='enrich'");
  assert.equal(enrich.contact_id,id);
- const oct=(await leadCosts(db,{period:'month',from:'2026-10-01',to:'2026-10-31'},{userId:advisor.uid,creditMicros:null})).users[0];
+ await pin(db);
+ const oct=(await leadCosts(db,{period:'month',from:'2026-10-01',to:'2026-10-31'},{userId:advisor.uid,creditMicros:null,now})).users[0];
  const row=oct.rows.at(-1);
  assert.equal(row.spend.lookups_micros,60000);assert.equal(row.spend.lookups_provider_estimate_micros,54000,'two of five search records came back');
  assert.deepEqual(row.spend.by_action.search,{count:1,reserved_micros:10000,units:5,delivered_units:2});
@@ -140,10 +153,11 @@ test('Research Lab discovery spend and the new people it found are their own cha
  await db.query("INSERT INTO lab_run_leads(run_id,lead_id,is_new,source) VALUES('run','l1',true,'s'),('run','l2',false,'s'),('imp','l3',true,'csv')");
  await db.query("UPDATE lab_run_leads SET is_new=true WHERE lead_id='l2'");
  await db.query("INSERT INTO lab_costs(id,run_id,user_id,category,amount_micros,basis) VALUES('c1','run','advisor-a','provider',600000,'configured_estimate')");
- const oct=(await leadCosts(db,{period:'month',from:'2026-10-01',to:'2026-10-31',tz:'UTC'},{userId:advisor.uid,creditMicros:null})).users[0].rows[0];
+ await pin(db);
+ const oct=(await leadCosts(db,{period:'month',from:'2026-10-01',to:'2026-10-31',tz:'UTC'},{userId:advisor.uid,creditMicros:null,now})).users[0].rows[0];
  assert.deepEqual([oct.leads.research_lab,oct.leads.contacts,oct.spend.research_lab_micros,oct.research_lab_cost_per_lead_micros],[2,0,600000,300000],'an import run finds no new leads');
  await db.query("DELETE FROM discovery_leads WHERE id='l1'");
- assert.equal((await leadCosts(db,{period:'month',from:'2026-10-01',to:'2026-10-31',tz:'UTC'},{userId:advisor.uid,creditMicros:null})).users[0].rows[0].leads.research_lab,2);
+ assert.equal((await leadCosts(db,{period:'month',from:'2026-10-01',to:'2026-10-31',tz:'UTC'},{userId:advisor.uid,creditMicros:null,now})).users[0].rows[0].leads.research_lab,2);
 }));
 
 test('the migrations describe what was already there',async()=>{
