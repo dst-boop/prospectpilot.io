@@ -119,3 +119,6 @@
 
 # Isolated execution contract is available only to build-stage tests.
 !advisor-reassignment-execution.mjs
+
+# Isolated legacy-recovery aggregate inspector is build-stage test input only.
+!legacy-owner-recovery.mjs
