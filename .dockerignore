@@ -92,3 +92,8 @@
 !team-hub-client.js
 !team-hub.css
 !advisor-reassignment-preview.mjs
+
+# Build-time-only firm-boundary fixtures. Not copied into the runtime stage.
+!firm-preview-boundary.mjs
+!schema-drafts/
+!schema-drafts/firm-preview-boundary.sql
