@@ -22,7 +22,7 @@
 
 Migration 032 creates `prospect_networking_captures` and its owner/history index. It uses the existing PostgreSQL database and migration runner. Runtime assets are included in the Docker image.
 
-Rollback application code without dropping this table. The additive schema is unused by older code; retaining it preserves saved private captures. No production migration, data access, or deployment is part of this change. The integration is reviewed through a non-production draft PR.
+Retain this table during application rollback, but **do not roll back to arbitrary older deletion code**. Once captures exist, old deletion code can cascade away their private identity aliases without creating the required tombstones, allowing the person to return under those aliases. Preserving the additive table alone is not sufficient. The rollback target must retain capture-aware deletion, or capture writes must remain disabled until a compatible rollback target is verified. See `NETWORKING-ROLLBACK-GATE.md` for the synthetic upgrade test and required release evidence. No production migration, data access, or deployment is part of this change. The integration is reviewed through a non-production draft PR.
 
 ## Verification scope
 
