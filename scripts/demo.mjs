@@ -54,6 +54,8 @@ const assets=new Map([['/lab-client.js',['text/javascript',read('lab-client.js')
 assets.set('/prospect-client.js',['text/javascript',read('prospect-client.js')]);assets.set('/prospect.css',['text/css',read('prospect.css')]);
 assets.set('/brand.svg',['image/svg+xml',read('brand.svg')]);assets.set('/favicon.ico',['image/svg+xml',read('brand.svg')]);
 assets.set('/prospect-jobs-client.js',['text/javascript',read('prospect-jobs-client.js')]);
+assets.set('/networking-client.js',['text/javascript',read('networking-client.js')]);assets.set('/networking.css',['text/css',read('networking.css')]);
+const networkingPage=read('networking.html').replace('<body>','<body><p role="status">SYNTHETIC DEMONSTRATION - Fictional contacts only. Data resets on restart. No provider calls.</p>');
 const prospectPage=read('prospect.html').replace('<body>','<body><p role="status">SYNTHETIC DEMONSTRATION — Fictional contacts only. Data resets on restart. No provider calls. <a href="/team-hub">Preview Team Lead Hub</a></p>');
 const page=read('lab.html').replace('<body>','<body><p class="notice">SYNTHETIC DEMONSTRATION · No real leads or provider calls · Data resets when this process stops. Do not enter real personal information here. <a href="/team-hub">Preview Team Lead Hub</a></p>').replace(/<a href="\/(?:settings\/linkedin|warn|logout)">[^<]*<\/a>/g,'');
 let queue=Promise.resolve();
@@ -73,6 +75,7 @@ const handle=async request=>{
     if(url.pathname==='/about')return new Response(read('home.html'),{headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
     if(url.pathname==='/site.css')return new Response(read('site.css'),{headers:{...headers,'Content-Type':'text/css; charset=utf-8'}});
     if(assets.has(url.pathname)){const [type,body]=assets.get(url.pathname);return new Response(body,{headers:{...headers,'Content-Type':type}});}
+    if(url.pathname==='/networking')return new Response(networkingPage,{headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
     if(url.pathname==='/prospect')return new Response(prospectPage,{headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
     if(['/', '/lab'].includes(url.pathname))return new Response(page,{headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
     return new Response('This local demo exposes only the Research Lab.',{status:404,headers});

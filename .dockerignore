@@ -103,3 +103,8 @@
 # Read by release guard regression tests inside the build.
 !release.sh
 !.gcloudignore
+
+!networking-capture.mjs
+!networking.html
+!networking-client.js
+!networking.css

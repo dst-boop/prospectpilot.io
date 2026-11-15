@@ -21,6 +21,7 @@
 // ADR and LEARNINGS "There was no way to delete one person").
 import {createHash,createHmac} from 'node:crypto';
 import {candidateKeys,hash} from './lead-quality.mjs';
+import {normalizeContact} from './prospect-data-quality.mjs';
 
 export const LEAD_TEAM='wealth-management';
 // Who may see (and so delete) a Research Lab lead: its owner, or an admin.
@@ -82,13 +83,21 @@ export async function forgetPerson(client,user,{contactId='',leadId=''},{contact
   // Both identity formats from every record: the directory checks its own
   // keys and the Research Lab checks candidate keys, and an unlinked record
   // must block the person in both.
-  const keys=[...new Set([...contacts.values(),...leads.values()].flatMap(row=>{const p=parse(row.payload);return [...contactKeys(p),...candidateKeys(p)];}))];
+  const baseKeys=[...new Set([...contacts.values(),...leads.values()].flatMap(row=>{const p=parse(row.payload);return [...contactKeys(p),...candidateKeys(p)];}))];
+  // A matching networking capture intentionally leaves the shared contact
+  // unchanged. Retain only hashed identity aliases before its private ledger
+  // cascades away; never read notes/referrers or another owner's captures.
+  const capturedPeople=contactIds.length?(await client.query("SELECT payload->'person' AS person FROM prospect_networking_captures WHERE user_id=$1 AND contact_id=ANY($2::text[])",[user.uid,contactIds])).rows:[];
+  const privateKeys=capturedPeople.flatMap(row=>{const p=normalizeContact(parse(row.person),'Networking',{importing:true});return [...contactKeys(p),...candidateKeys(p)];});
+  const keys=[...new Set([...baseKeys,...privateKeys])];
   // Tombstoned for the person deleting and, when an admin deletes someone
   // else's lead, for that lead's owner too, so neither brings them back.
   const holders=[...new Set([user.uid,...[...leads.values()].map(row=>row.owner_user_id).filter(Boolean)])];
   for(const uid of holders.filter(uid=>uid!==user.uid).sort())await lockUser(uid);
-  if(keys.length)for(const uid of holders)
-    await client.query('INSERT INTO prospect_forgotten(user_id,key_hash) SELECT $1,unnest($2::text[]) ON CONFLICT DO NOTHING',[uid,keys.map(key=>tombstone(uid,key))]);
+  // Private aliases only govern their owner; they never create cross-owner blocks.
+  const holderKeys=uid=>uid===user.uid?keys:baseKeys;
+  for(const uid of holders)if(holderKeys(uid).length)
+    await client.query('INSERT INTO prospect_forgotten(user_id,key_hash) SELECT $1,unnest($2::text[]) ON CONFLICT DO NOTHING',[uid,holderKeys(uid).map(key=>tombstone(uid,key))]);
 
   if(contactIds.length){
     // Queued work about them is cancelled; finished work keeps its row (the
@@ -107,7 +116,8 @@ export async function forgetPerson(client,user,{contactId='',leadId=''},{contact
   // details, so it goes for everyone now blocking them; a review loses a
   // deleted record, and one left comparing against nothing goes too. A
   // review whose newer record is deleted goes with it (cascade).
-  if(keys.length)await client.query('DELETE FROM lab_identity_reviews WHERE user_id=ANY($1::text[]) AND key_hashes && $2::text[]',[holders,keys.map(hash)]);
+  for(const uid of holders)if(holderKeys(uid).length)
+    await client.query('DELETE FROM lab_identity_reviews WHERE user_id=ANY($1::text[]) AND key_hashes && $2::text[]',[[uid],holderKeys(uid).map(hash)]);
   if(leadIds.length){
     await client.query('UPDATE lab_identity_reviews SET match_ids=ARRAY(SELECT m FROM unnest(match_ids) m WHERE NOT m=ANY($1::text[])) WHERE match_ids && $1::text[]',[leadIds]);
     await client.query("DELETE FROM lab_identity_reviews WHERE cardinality(match_ids)=0");
@@ -124,7 +134,7 @@ export async function forgetPerson(client,user,{contactId='',leadId=''},{contact
     await client.query('DELETE FROM discovery_leads WHERE id=ANY($1::text[])',[leadIds]);
   }
   if(contactIds.length){
-    // Cascades: prospect_list_members, advisor_contact_links; tasks keep a NULL contact.
+    // Cascades: prospect_list_members, advisor_contact_links, private networking captures; tasks keep a NULL contact.
     await client.query('DELETE FROM prospect_contacts WHERE user_id=$1 AND id=ANY($2::text[])',[user.uid,contactIds]);
   }
   // Counts only: the log says a deletion happened, never who.

@@ -136,6 +136,8 @@ export function createFirmScopedSnapshotLoader({pool, firmId, auth, sessionCooki
       // These parents/queues lack explicit firm assignment. A linked child is
       // not authority to read a whole job, import, run, review, or budget.
       for (const [sql,values] of [
+        // Private networking history is not firm-assigned and must not be omitted.
+        ['SELECT 1 FROM prospect_networking_captures WHERE contact_id=ANY($1::text[])',[contactIds]],
         ['SELECT 1 FROM prospect_tasks WHERE contact_id=ANY($1::text[])',[contactIds]],
         ['SELECT 1 FROM research_jobs WHERE lead_id=ANY($1::text[])',[leadIds]],
         ['SELECT 1 FROM lab_run_leads WHERE lead_id=ANY($1::text[])',[leadIds]],

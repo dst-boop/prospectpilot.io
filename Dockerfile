@@ -23,6 +23,7 @@ COPY prospect.html prospect.css prospect-client.js prospect-workspace.mjs prospe
 COPY prospect-jobs.mjs prospect-autopilot.mjs prospect-jobs-client.js billing.mjs ./
 COPY prospect-preparation.mjs ./
 COPY team-lead-hub.mjs advisor-reassignment-preview.mjs team-hub.html team-hub-client.js team-hub.css ./
+COPY networking-capture.mjs networking.html networking-client.js networking.css ./
 COPY migrations ./migrations
 COPY server.mjs http-server.mjs handler.mjs login-destination.mjs database.mjs migrate.mjs home.html site.css brand.svg login.html research-jobs.mjs research-worker.mjs warn.mjs warn.html warn-client.js native-research.mjs linkedin.mjs linkedin.html linkedin-client.js ./
 USER node

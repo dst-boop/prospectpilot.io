@@ -66,3 +66,8 @@ The suite exercises revoked/invalid sessions, exact pair/role membership, owner 
 - Independent review found four issues; acquisition closure, unusual UID handling, final authorization timeouts and embedded provenance coverage were fixed and re-reviewed with no remaining actionable findings in the isolated metadata scope.
 - Full log: ignored `.tmp/scoped-full.log`; focused log: ignored `.tmp/scoped-focused.log`.
 - Not run: real PostgreSQL concurrency, Docker image build (Docker unavailable), real Firebase or staging journeys, remote CI, production migration/activation/deployment or transfer execution. No release-readiness claim is made.
+
+
+## Networking integration boundary
+
+The later integration includes registered networking migration 032 for an owner-only private capture ledger; the firm-boundary draft schema remains unregistered. A capture linked to any assigned source contact now fails the snapshot closed through an existence-only query. Capture payloads are never selected. Unrelated private captures and target collision-only contacts stay outside the transfer-root inventory and do not alter its fingerprint. Regression tests cover all three cases. No production activation or live migration occurred.

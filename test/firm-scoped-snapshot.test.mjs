@@ -214,3 +214,29 @@ test('the fresh authorization read also has local read-only timeouts',async()=>{
   assert.ok(final[4].startsWith('SELECT m.user_id'));
   assert.equal(final.at(-1),'COMMIT');
 });
+
+
+test('networking history on assigned source contacts refuses without reading private details',async()=>{
+  await db.query("INSERT INTO prospect_networking_captures(id,user_id,contact_id,request_key,fingerprint,payload,result) VALUES('capture-source','source','contact-a','synthetic-capture-key','hash','{\"note\":\"PRIVATE-NETWORKING-NOTE\"}','{}')");
+  await assert.rejects(loader()(pair),{status:409});
+  const reads=queries.filter(q=>q.sql.includes('prospect_networking_captures'));
+  assert.equal(reads.length,1);
+  assert.equal(reads[0].sql,'SELECT EXISTS(SELECT 1 FROM prospect_networking_captures WHERE contact_id=ANY($1::text[])) AS blocked');
+  assert.deepEqual(reads[0].values,[['contact-a']]);
+  assert.ok(queries.some(q=>q.sql==='ROLLBACK'));
+});
+
+test('unrelated and collision-only target networking captures stay private and outside source inventory',async()=>{
+  const before=await loader()(pair);queries=[];
+  await db.exec(`INSERT INTO prospect_networking_captures(id,user_id,contact_id,request_key,fingerprint,payload,result) VALUES
+    ('capture-private','source','private-a','private-networking-key','hash','{"note":"PRIVATE-NETWORKING-NOTE"}','{}'),
+    ('capture-target','target','target-a','target-networking-key','hash','{"note":"TARGET-NETWORKING-NOTE"}','{}');`);
+  const snapshot=await loader()(pair);
+  assert.equal(snapshot.inventory_complete,true);assert.equal(snapshot.complete,false);
+  assert.equal(snapshot.fingerprint,before.fingerprint);
+  assert.doesNotMatch(JSON.stringify(snapshot),/PRIVATE-NETWORKING-NOTE|TARGET-NETWORKING-NOTE|capture-private|capture-target/);
+  const reads=queries.filter(q=>q.sql.includes('prospect_networking_captures'));
+  assert.equal(reads.length,1);assert.deepEqual(reads[0].values,[['contact-a']]);
+  assert.ok(reads[0].sql.startsWith('SELECT EXISTS(SELECT 1 '));
+  assert.doesNotMatch(reads[0].sql,/payload|request_key|fingerprint|result/);
+});
