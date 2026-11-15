@@ -1,5 +1,7 @@
 // Local synthetic demonstration only. Production continues to use server.mjs,
 // Firebase authentication, Cloud SQL, and the real source adapters.
+import {createTeamLeadHub,isTeamLeadHubPath} from '../team-lead-hub.mjs';
+import {createSyntheticTeamHubAdapters} from './team-hub-demo.mjs';
 import {createServer} from 'node:http';
 import {migrate} from '../migrate.mjs';
 import {readFileSync} from 'node:fs';
@@ -18,6 +20,7 @@ await migrate({connect:async()=>({query:async(sql,values)=>sql.includes(';')?(aw
 // Serialize requests because this embedded database has a single connection.
 const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
 const user={uid:'synthetic-demo',email:'research@example.com',name:'Synthetic demonstration'};
+const teamHub=createTeamLeadHub({...createSyntheticTeamHubAdapters(),page:read('team-hub.html'),script:read('team-hub-client.js'),style:read('team-hub.css'),synthetic:true});
 const demoRecord={first_name:'Avery',last_name:'Sample',company:'Example Manufacturing',title:'Operations Director',email:'avery@example.com',country:'US',state:'NY',city:'Albany',industry:'Manufacturing',seniority:'Director',phone:'+12125550188'};
 const demoProviders={readiness:{search:true,enrichment:true,email_verification:true,domain_check:true,demo:true},checkDomain:async contact=>({email:contact.email,domain:contact.email.split('@')[1],status:'null_mx',checked_at:new Date().toISOString()}),search:async filters=>{const records=Object.entries(filters).filter(([key,value])=>value&&['company','title','country','state','city','industry','seniority'].includes(key)).every(([key,value])=>String(demoRecord[key]).toLowerCase().includes(String(value).toLowerCase()))?[demoRecord]:[];return {contacts:records,total:records.length,retrieved:records.length,scroll_token:''};},enrich:async contact=>({contact:{...contact,phone:contact.phone||'+12125550188'},checked_at:new Date().toISOString()}),verifyEmail:async contact=>({email:contact.email,status:contact.email?.endsWith('@example.com')?'valid':'unknown',provider:'synthetic-demo',provider_status:'synthetic',checked_at:new Date().toISOString()})};
 const prospectJobs=createProspectJobs({pool,providers:demoProviders,config:{dailyBudgetMicros:1000000,prices:{search:1000,enrich:1000,verify:1000}},pacingMs:{pdl:0,hunter:0},dispatch:async()=>true});
@@ -51,8 +54,10 @@ const assets=new Map([['/lab-client.js',['text/javascript',read('lab-client.js')
 assets.set('/prospect-client.js',['text/javascript',read('prospect-client.js')]);assets.set('/prospect.css',['text/css',read('prospect.css')]);
 assets.set('/brand.svg',['image/svg+xml',read('brand.svg')]);assets.set('/favicon.ico',['image/svg+xml',read('brand.svg')]);
 assets.set('/prospect-jobs-client.js',['text/javascript',read('prospect-jobs-client.js')]);
-const prospectPage=read('prospect.html').replace('<body>','<body><p role="status">SYNTHETIC DEMONSTRATION — Fictional contacts only. Data resets on restart. No provider calls.</p>');
-const page=read('lab.html').replace('<body>','<body><p class="notice">SYNTHETIC DEMONSTRATION · No real leads or provider calls · Data resets when this process stops. Do not enter real personal information here.</p>').replace(/<a href="\/(?:settings\/linkedin|warn|logout)">[^<]*<\/a>/g,'');
+assets.set('/networking-client.js',['text/javascript',read('networking-client.js')]);assets.set('/networking.css',['text/css',read('networking.css')]);
+const networkingPage=read('networking.html').replace('<body>','<body><p role="status">SYNTHETIC DEMONSTRATION - Fictional contacts only. Data resets on restart. No provider calls.</p>');
+const prospectPage=read('prospect.html').replace('<body>','<body><p role="status">SYNTHETIC DEMONSTRATION — Fictional contacts only. Data resets on restart. No provider calls. <a href="/team-hub">Preview Team Lead Hub</a></p>');
+const page=read('lab.html').replace('<body>','<body><p class="notice">SYNTHETIC DEMONSTRATION · No real leads or provider calls · Data resets when this process stops. Do not enter real personal information here. <a href="/team-hub">Preview Team Lead Hub</a></p>').replace(/<a href="\/(?:settings\/linkedin|warn|logout)">[^<]*<\/a>/g,'');
 let queue=Promise.resolve();
 const handle=async request=>{
   const url=new URL(request.url);
@@ -63,12 +68,14 @@ const handle=async request=>{
   if(!['GET','HEAD'].includes(request.method)&&request.headers.get('origin')!==origin)return new Response('Origin rejected.',{status:403});
   const headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"};
   try{
+    if(isTeamLeadHubPath(url.pathname)){const local=new URL(request.url);local.protocol='http:';return teamHub.route(new Request(local,request),user);}
     if(url.pathname==='/api/me'||url.pathname==='/api/lab/me'||url.pathname==='/api/prospect/me')return Response.json(user,{headers});
     if(url.pathname.startsWith('/api/prospect/')){const result=await prospect.route(request,user);return result instanceof Response?result:Response.json(result,{headers});}
     if(url.pathname.startsWith('/api/lab/')){const result=await lab.route(request,user);return result instanceof Response?result:Response.json(result,{headers});}
     if(url.pathname==='/about')return new Response(read('home.html'),{headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
     if(url.pathname==='/site.css')return new Response(read('site.css'),{headers:{...headers,'Content-Type':'text/css; charset=utf-8'}});
     if(assets.has(url.pathname)){const [type,body]=assets.get(url.pathname);return new Response(body,{headers:{...headers,'Content-Type':type}});}
+    if(url.pathname==='/networking')return new Response(networkingPage,{headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
     if(url.pathname==='/prospect')return new Response(prospectPage,{headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
     if(['/', '/lab'].includes(url.pathname))return new Response(page,{headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
     return new Response('This local demo exposes only the Research Lab.',{status:404,headers});

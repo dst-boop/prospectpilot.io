@@ -1,3 +1,4 @@
+import {briefEvidence} from './prospect-brief-evidence.mjs';
 // Research signals inform preparation, never asset or eligibility qualification.
 export const EVENT_TYPES = ['job_change','separation','retirement','business_sale','merger'];
 export function validatePersonalEvent(value, observed) {
@@ -24,7 +25,7 @@ export function prospectBrief(lead,quality,observations=[],now=new Date()) {
     return {channel,address,source:reports[0]?.source||'Source not recorded',observed_at:reports[0]?.source_date||reports[0]?.observed_at||null};
   });
   if(evidence?.value?.address&&!contacts.some(c=>c.address===evidence.value.address))contacts.unshift({...evidence.value,source:evidence.source,observed_at:evidence.observed_at});
-  return {signal,contacts,contact_status:gate.state,contact_reason:gate.reason,qualification:quality.status==='verified'&&quality.target==='rollover_100k'?'Confirmed $100K+ opportunity':'Financial qualification not confirmed',questions:['What planning decisions are you considering?','Do you have retirement accounts you would like help reviewing?'],event_history:event?[event,...(event.previous_reviews||[])]:[]};
+  return {signal,evidence_summary:briefEvidence(lead,quality,signal,event,now),contacts,contact_status:gate.state,contact_reason:gate.reason,qualification:quality.status==='verified'&&quality.target==='rollover_100k'?'Confirmed $100K+ opportunity':'Financial qualification not confirmed',questions:['What planning decisions are you considering?','Do you have retirement accounts you would like help reviewing?'],event_history:event?[event,...(event.previous_reviews||[])]:[]};
 }
 export function workflowViewMatches(view,bucket){
   return view==='all'||(view==='today'?['due','ready','review','enrich'].includes(bucket):view==='research'?['review','enrich'].includes(bucket):view==='followups'?['due','scheduled','meetings','resting'].includes(bucket):bucket===view);

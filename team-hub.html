@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Team Lead Hub | ProspectPilot</title><link rel="icon" href="/brand.svg"><link rel="stylesheet" href="/team-hub.css"><script src="/team-hub-client.js" defer></script></head>
+<body>
+<a class="skip" href="#main">Skip to team preview</a>
+<header><a class="brand" href="/lab"><img src="/brand.svg" alt="" width="30" height="30">ProspectPilot</a><nav aria-label="Workspace"><a href="/lab">Advisor workspace</a><a href="/prospect">Contacts</a><span aria-current="page">Team Lead Hub</span></nav></header>
+<main id="main">
+<p id="synthetic" class="demo" hidden>SYNTHETIC DEMONSTRATION · Fictional advisors and records only. No provider calls.</p>
+<section class="intro"><div><p class="eyebrow">SUPERVISOR WORKSPACE</p><h1>A careful handoff<br>starts with a clear picture.</h1><p>Review an advisor's inventory and the issues that need attention before planning reassignment.</p></div><span class="badge">Preview only</span></section>
+<aside class="safety"><strong>Nothing moves here.</strong> This review does not reassign records, remove access, pause jobs, share data, or send outreach.</aside>
+<div class="layout">
+<section class="panel selection" aria-labelledby="chooseTitle"><p class="eyebrow">01 / CHOOSE ADVISORS</p><h2 id="chooseTitle">Review a handoff</h2><p id="team" class="muted">Checking supervisor access…</p>
+<form id="previewForm"><label for="sourceAdvisor">Departing advisor</label><select id="sourceAdvisor" required disabled><option value="">Choose an advisor</option></select><label for="targetAdvisor">Receiving advisor</label><select id="targetAdvisor" required disabled><option value="">Choose a verified recipient</option></select><p class="hint">The recipient must have an active, verified account. Team membership is checked on the server for every preview.</p><button id="previewButton" disabled type="submit">Generate preview</button><button id="cancelPreview" type="button" class="secondary" hidden>Cancel preview</button></form>
+<button id="refreshAdvisors" class="text-button" type="button">Refresh advisors</button>
+<p id="status" role="status" aria-live="polite">Loading the team directory…</p><p id="error" role="alert" hidden></p><a id="signIn" href="/login?next=%2Fteam-hub" hidden>Sign in again</a></section>
+<section id="empty" class="panel empty"><span class="step">02</span><h2>See the whole handoff.</h2><p>Choose two advisors to review inventory totals, possible duplicates, shared history, and unfinished work.</p><ul><li>Stable record IDs, without private contact details</li><li>Review gates before any future transfer</li><li>Preservation requirements for evidence and restrictions</li></ul><p class="hint">A preview is a point-in-time review, not permission to transfer. An unassigned team queue is not available in this increment.</p></section>
+<section id="results" class="panel results" aria-labelledby="resultTitle" hidden>
+<div class="section-heading"><div><p class="eyebrow">02 / REVIEW INVENTORY</p><h2 id="resultTitle" tabindex="-1">Reassignment preview</h2></div><button id="closePreview" type="button" class="secondary">Close preview</button></div>
+<p id="pair" class="pair"></p><p class="hint">Point-in-time inventory. Generate a fresh preview after any account or record changes.</p>
+<div id="counts" class="metrics" aria-label="Inventory counts"></div>
+<h3>Review required</h3><p class="muted">These are blockers, not completed checks. There is no apply action in this workspace.</p><ul id="blockers" class="blockers"></ul>
+<details><summary>Exact record IDs in this preview</summary><p class="hint">All source-owned records in the snapshot. Individual selection is not available.</p><div id="recordIds"></div></details>
+<details><summary>Possible identity collisions</summary><div id="collisions"></div></details>
+<details><summary>What must be preserved</summary><ul id="preservation"></ul></details>
+<div class="fingerprint"><span>Snapshot fingerprint · Not an authorization token</span><code id="fingerprint"></code></div>
+</section></div>
+<footer>Private supervisor review. No ownership, suppression, history, cost, or credit changes.</footer>
+</main></body></html>

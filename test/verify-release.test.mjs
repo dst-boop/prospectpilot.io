@@ -224,3 +224,14 @@ test('a version body that is valid JSON but not an object fails rather than matc
     res.writeHead(200, {'content-type': 'application/json', 'cache-control': 'no-store'}).end('{}')}));
   assert.match(empty.checks.find(c => c.id === 'version').detail, /feature_set: expected research-lab-v1/);
 });
+
+test('the public verifier retains the release script cadence version gate', async () => {
+  assert.equal(EXPECTED.cadence_version, 'outreach-cadence-1');
+  for (const cadence_version of [undefined, 'outreach-cadence-old']) {
+    const report = await run(service({'GET /version': res =>
+      res.writeHead(200, {'content-type': 'application/json', 'cache-control': 'no-store'})
+        .end(version({cadence_version}))}));
+    assert.deepEqual(failed(report), ['version']);
+    assert.match(report.checks.find(c => c.id === 'version').detail, /cadence_version/);
+  }
+});

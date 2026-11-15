@@ -159,6 +159,45 @@ test('the scoreboard omits a target it does not have rather than inventing one',
   assert.doesNotMatch(tiles[3],/0%/);
 });
 
+const pipelineFixture=(label='Client recorded')=>({since:'2026-08-13T15:00:00Z',as_of:'2026-09-12T15:00:00Z',records:3,
+ scope:'Only outcomes you logged; not filtered by worklist search.',basis:'Independent milestones, not a conversion forecast.',
+ stages:[{id:'client',label,count:0,not_recorded:3,latest_first_recorded_at:null,basis:'A client log does not imply assets.'},
+ {id:'conversation',label:'Conversation recorded',count:2,not_recorded:1,latest_first_recorded_at:'2026-09-01T23:30:00-07:00',basis:'Includes inbound conversations.'}]});
+test('pipeline shows counts, missing logs, UTC first-log dates and the cohort scope without a forecast',()=>{
+ const c=client();c.run('renderPipeline('+JSON.stringify(pipelineFixture())+')');
+ const html=c.element('pipeline').innerHTML;
+ assert.match(html,/Progress of the same records/);assert.match(html,/3 records/);
+ assert.match(html,/Added 2026-08-13 15:00:00.000 UTC through 2026-09-12 15:00:00.000 UTC/);
+ assert.match(html,/Client recorded<\/h4><strong>0<\/strong>/);
+ assert.match(html,/3 without this milestone logged/);assert.match(html,/No date recorded/);
+ assert.match(html,/Latest first record: 2026-09-02 UTC/);
+ assert.match(html,/not filtered by worklist search/);assert.match(html,/not a conversion forecast/);
+ assert.match(html,/What counts/);assert.doesNotMatch(html,/%|target|\$/);
+ const injected=pipelineFixture('<img src=x onerror=alert(1)>');injected.scope='<script>bad</script>';
+ injected.stages[0].basis='<b>unsafe</b>';c.run('renderPipeline('+JSON.stringify(injected)+')');
+ assert.doesNotMatch(c.element('pipeline').innerHTML,/<img|<script|<b>unsafe/);
+ assert.match(c.element('pipeline').innerHTML,/&lt;img/);
+});
+test('pipeline states empty and unavailable cohorts explicitly',()=>{
+ const c=client(),empty=pipelineFixture();empty.records=0;empty.stages=[];
+ c.run('renderPipeline('+JSON.stringify(empty)+')');
+ assert.match(c.element('pipeline').innerHTML,/No accessible research records were added/);
+ assert.match(c.element('pipeline').innerHTML,/Older records can still contribute/);
+ c.run('renderPipeline(null)');assert.match(c.element('pipeline').innerHTML,/unavailable/);
+ assert.doesNotMatch(c.element('pipeline').innerHTML,/0 records/);
+});
+test('pipeline data shares scoreboard refresh and stale-response protection',async()=>{
+ const c=client();c.element('pipeline').innerHTML='Old milestone totals';
+ const old=c.run('loadScoreboard()'),fresh=c.run('loadScoreboard()');
+ assert.equal(c.element('pipeline').innerHTML,'');
+ c.pending[1].respond({pipeline:pipelineFixture('Fresh client count'),measured:[],untouched:0,meetings:{note:''},basis:'Fresh'});await fresh;
+ const shown=c.element('pipeline').innerHTML;assert.match(shown,/Fresh client count/);
+ c.pending[0].respond({pipeline:pipelineFixture('Stale client count'),measured:[],untouched:0,meetings:{note:''},basis:'Old'});await old;
+ assert.equal(c.element('pipeline').innerHTML,shown);
+ const failing=c.run('loadScoreboard()');assert.equal(c.element('pipeline').innerHTML,'');
+ c.pending[2].respond({detail:'No access'},403);await failing;
+ assert.equal(c.element('pipeline').innerHTML,'');
+});
 test('funnel failure clears old figures and retries without reloading the worklist',async()=>{
   const c=client();c.element('scoreboard').innerHTML='Old totals';c.element('scoreboardBasis').textContent='Old basis';
   const failed=c.run('loadScoreboard()');
@@ -458,6 +497,17 @@ test('funnel requests are deferred until opened and refresh with visible worklis
  assert.equal(c.element('scoreboardBasis').textContent,'Updated');
 });
 
+test('a failed worklist refresh cannot leave previously loaded funnel counts visible',async()=>{
+ const c=client();c.element('workView').value='today';c.element('funnelPanel').open=true;
+ c.element('pipeline').innerHTML='Old pipeline';c.element('scoreboard').innerHTML='Old scoreboard';
+ const loading=c.run('loadWorklist()');
+ assert.equal(c.pending[1].url,'/api/lab/scoreboard?days=30');
+ assert.equal(c.element('pipeline').innerHTML,'');assert.doesNotMatch(c.element('scoreboard').innerHTML,/Old scoreboard/);
+ c.pending[0].respond({detail:'Unavailable'},503);await assert.rejects(loading,/Unavailable/);
+ c.pending[1].respond({detail:'Unavailable'},503);await settle();
+ assert.equal(c.element('pipeline').innerHTML,'');assert.match(c.element('scoreboard').innerHTML,/Retry funnel summary/);
+});
+
 test('work cards show one open action and disclose separate scores on demand',async()=>{
  const c=client();c.element('workView').value='today';
  const loading=c.run('loadWorklist()');
@@ -466,4 +516,34 @@ test('work cards show one open action and disclose separate scores on demand',as
  assert.equal((html.match(/data-work-open=/g)||[]).length,1);
  assert.match(html,/<details class="score-line"><summary>Priority 42/);
  assert.match(html,/Qualification 1 · Opportunity 2 · Confidence 3 · Contact 4/);
+});
+
+
+const dailySummary={as_of:'2026-09-12T15:00:00Z',due:3,with_reviewed_route:1,needs_contact_review:1,on_hold:1};
+const dailyItem=(name,state='reviewed',bucket='due')=>({...lead(name),action:{bucket,label:'Follow-up due',reason:'Review the saved conversation.',held:state==='paused'},readiness:{state,label:state==='paused'?'Outreach on hold':'Contact route reviewed',reason:'<script>unsafe</script>',contact_label:'Reviewed email route',fit_label:'Confirm retirement assets and transfer eligibility.'}});
+test('daily summary names search and scan limits, and readiness text is escaped',async()=>{
+ const c=client();c.element('workView').value='today';c.element('workSearch').value='Example';
+ const load=c.run('loadWorklist()');
+ c.pending[0].respond({...emptyQueue,total:1,counts:{all:3,due:3,ready:0},daily:dailySummary,scanned:2000,scope_total:2300,truncated:true,items:[dailyItem('A')]});await load;
+ assert.match(c.element('dailyDueSummary').textContent,/3 follow-ups due: 1 with a reviewed contact route, 1 need contact review, 1 on hold/);
+ assert.match(c.element('dailyScope').textContent,/Current search, across all views/);assert.match(c.element('dailyScope').textContent,/2,000 of 2,300/);
+ assert.match(c.element('dailyScope').textContent,/do not establish retirement assets or transfer eligibility/);
+ assert.match(c.element('workList').innerHTML,/&lt;script&gt;unsafe/);assert.doesNotMatch(c.element('workList').innerHTML,/<script>/);
+});
+test('next action skips held work when another task can proceed and honestly labels hold-only views',async()=>{
+ const c=client();c.element('workView').value='due';c.run("var opened=null;openLead=id=>opened=id");
+ let load=c.run('loadWorklist()');c.pending[0].respond({...emptyQueue,total:2,counts:{all:2,due:2,ready:0},daily:dailySummary,items:[dailyItem('held','paused'),dailyItem('review','verify')]});await load;
+ c.element('startNext').onclick();assert.equal(c.run('opened'),'review');
+ load=c.run('loadWorklist()');c.pending[1].respond({...emptyQueue,total:1,counts:{all:1,due:1,ready:0},daily:dailySummary,items:[dailyItem('held','paused')]});await load;
+ assert.equal(c.element('dailyTitle').textContent,'Review what is on hold.');assert.equal(c.element('startNext').textContent,'Review hold');c.element('startNext').onclick();assert.equal(c.run('opened'),'held');
+ load=c.run('loadWorklist()');c.pending[2].respond({...emptyQueue,total:1,counts:{all:1,due:0,ready:0},daily:dailySummary,items:[dailyItem('later','scheduled','scheduled')]});await load;
+ assert.equal(c.element('dailyTitle').textContent,'Review your upcoming follow-up.');assert.equal(c.element('startNext').textContent,'Review scheduled follow-up');
+});
+test('daily summary clears on loading and errors and ignores an old response',async()=>{
+ const c=client();c.element('workView').value='today';c.element('dailyDueSummary').textContent='Old counts';c.element('dailyScope').textContent='Old scope';
+ const old=c.run('loadWorklist()');assert.equal(c.element('dailyDueSummary').textContent,'Checking due follow-ups.');assert.equal(c.element('dailyScope').textContent,'');
+ const fresh=c.run('loadWorklist()');c.pending[1].respond({...emptyQueue,daily:dailySummary});await fresh;
+ c.pending[0].respond({...emptyQueue,daily:{...dailySummary,due:99}});await old;assert.match(c.element('dailyDueSummary').textContent,/^3 follow-ups/);
+ const failed=c.run('loadWorklist()');c.pending[2].respond({detail:'Unavailable'},503);await assert.rejects(failed);
+ assert.equal(c.element('dailyDueSummary').textContent,'Due follow-up summary unavailable.');assert.equal(c.element('dailyScope').textContent,'');assert.equal(c.element('startNext').disabled,true);
 });

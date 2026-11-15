@@ -83,3 +83,14 @@ test('the check would notice a module that is missing from either list', () => {
   assert.ok(graph('server.mjs').has('outreach-cadence.mjs'),
     'the cadence module is reachable from the entry point, so it is in scope for this check');
 });
+
+test('isolated firm-boundary test inputs reach only the build context', t => {
+  const ignore = readOptional('.dockerignore'), runtime = read('Dockerfile').split('AS runtime')[1];
+  for (const file of ['firm-preview-boundary.mjs','firm-scoped-snapshot.mjs','schema-drafts/firm-preview-boundary.sql']) {
+    assert.ok(read(file).length > 0, file + ' is required by the build-stage regression suite');
+    if (ignore) assert.equal(dockerignored(file,ignore),false,file + ' must reach the build-stage tests');
+    assert.ok(!runtime.includes(file),file + ' is not runtime-wired');
+  }
+  assert.doesNotMatch(runtime,/COPY\s+(?:schema-drafts|\.\s)/, 'isolated draft directory is not copied wholesale into runtime');
+  if (!ignore) t.diagnostic('.dockerignore absent; test fixtures still confirmed readable in the build context.');
+});

@@ -224,6 +224,7 @@ const emptyMessages={research:['No research tasks in this view.','Import contact
 function selectionLabel(){$('workSelection').textContent=`${workSelected.size} selected`;$('enrichExport').disabled=workLoading||!workSelected.size;}
 function loadingWorklist(){
   workLoading=true;
+  $('dailyDueSummary').textContent='Checking due follow-ups.';$('dailyScope').textContent='';
   $('startNext').disabled=true;$('startNext').onclick=null;
   $('workPrevious').disabled=true;$('workNext').disabled=true;
   $('workList').setAttribute('aria-busy','true');
@@ -261,21 +262,31 @@ $('identityList').onclick=async event=>{
 async function loadWorklist(){
   const serial=++workRequest;loadingWorklist();document.querySelectorAll('[data-queue]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.queue===$('workView').value)));
   try{
-  const data=await request('/api/lab/worklist?'+new URLSearchParams({view:$('workView').value,search:$('workSearch').value,offset:workOffset,limit:24}));if(serial!==workRequest)return;
-  if(workOffset>0&&workOffset>=data.total){workOffset=0;return loadWorklist();}
+  const loading=request('/api/lab/worklist?'+new URLSearchParams({view:$('workView').value,search:$('workSearch').value,offset:workOffset,limit:24}));
+  // The summary has its own read and loading/error state. A failed worklist
+  // refresh must not leave old pipeline figures looking freshly checked.
   if($('funnelPanel').open)loadScoreboard().catch(()=>{});
+  const data=await loading;if(serial!==workRequest)return;
+  if(workOffset>0&&workOffset>=data.total){workOffset=0;return loadWorklist();}
   workTotal=data.total;$('workDue').textContent=num(data.counts.due);$('workReady').textContent=num(data.counts.ready);$('workConversations').textContent=num(data.activity.conversations);$('workMeetings').textContent=num(data.activity.meetings);
   if(data.dials){$('workDials').textContent=num(data.dials.remaining);$('workDialsNote').textContent=data.dials.reason;}
-  const first=data.items.find(item=>!terminal(item.action));
+  const available=data.items.filter(item=>!terminal(item.action));
+  const first=available.find(item=>!['paused','scheduled'].includes(item.readiness?.state)&&!item.action.held)||available[0];
+  const paused=first&&(first.readiness?.state==='paused'||first.action.held);
+  const scheduled=first?.readiness?.state==='scheduled';
+  const daily=data.daily;
+  $('dailyDueSummary').textContent=daily?`${num(daily.due)} follow-ups due: ${num(daily.with_reviewed_route)} with a reviewed contact route, ${num(daily.needs_contact_review)} need contact review, ${num(daily.on_hold)} on hold.`:'';
+  $('dailyScope').textContent=daily?`${$('workSearch').value?'Current search, across all views':'Current worklist, across all views'}${data.truncated?` · Scanned ${num(data.scanned)} of ${num(data.scope_total)} prospects; search to narrow`:''}. Checked ${when(daily.as_of)}. Reviewed contact details do not establish retirement assets or transfer eligibility.`:'';
   const emptyWorkspace=data.counts.all===0&&!$('workSearch').value;
-  $('dailyTitle').textContent=emptyWorkspace?'Start with the contacts you have.':first?'Your next step is ready.':'You’re caught up in this view.';
+  $('dailyTitle').textContent=emptyWorkspace?'Start with the contacts you have.':paused?'Review what is on hold.':scheduled?'Review your upcoming follow-up.':first?'Your next step is ready.':'You’re caught up in this view.';
   $('dailyDescription').textContent=first?`${first.action.label}: ${first.lead.first_name||''} ${first.lead.last_name||''}. ${first.action.reason}`:emptyWorkspace?'Import an authorized CSV, or choose contacts from your directory. We’ll organize the next steps here.':'Choose another queue, search for a prospect, or bring in a new list.';
   $('startNext').textContent=first?($('workView').value==='today'&&!$('workSearch').value?'Start next prospect →':'Open first result →'):'Import a contact list →';
+  if(paused)$('startNext').textContent='Review hold';else if(scheduled)$('startNext').textContent='Review scheduled follow-up';
   $('startNext').disabled=false;
   $('startNext').onclick=first?()=>openLead(first.lead.id):()=>$('quickImport').click();
   const [emptyTitle,emptyBody]=emptyMessages[$('workView').value];
   for(const item of data.items)if(terminal(item.action))workSelected.delete(item.lead.id);
-  $('workList').innerHTML=data.items.length?data.items.map(({lead:l,quality:q,scores:s,signal,action:a})=>`<article class="work-card"><label class="select-lead"><input type="checkbox" data-work-select="${esc(l.id)}" aria-label="Select ${esc(l.first_name)} ${esc(l.last_name)} for enrichment" ${workSelected.has(l.id)?'checked':''} ${terminal(a)?'disabled':''}></label><div><strong class="work-name">${esc(l.first_name)} ${esc(l.last_name)}</strong><p class="muted">${esc(l.current_title||'Title unknown')} · ${esc(l.company||'Employer unknown')}</p>${l.location?`<p class="muted">${esc(l.location)}</p>`:''}${qualityBadge(q)} ${signal?`<p class="muted">${esc(signal.label)}${signal.date?' · '+esc(signal.date):''}</p>`:''}<span class="muted">${(q.required_fields||Object.keys(q.gates)).filter(f=>q.gates[f].state==='confirmed').length}/${(q.required_fields||Object.keys(q.gates)).length} criteria reviewed</span>${s?`<details class="score-line"><summary>Priority ${esc(s.priority.score)} · score details</summary><p class="muted">Qualification ${esc(s.qualification)} · Opportunity ${esc(s.opportunity)} · Confidence ${esc(s.confidence)} · Contact ${esc(s.contactability)}</p></details>`:''}</div><div class="work-reason"><p class="next-step">${esc(a.label)}</p><p class="muted">${esc(a.reason)}</p>${a.due_at?`<p class="due-label">${esc(when(a.due_at))}</p>`:''}${a.cadence?`<p class="muted">${esc(a.cadence.touches.count)}/${esc(a.cadence.touches.cap)} touches · ${esc(a.cadence.step?a.cadence.step.label:a.cadence.status)}</p>`:''}${l.notes?`<p class="muted">Last note: ${esc(l.notes.split('\n').filter(Boolean).at(-1)?.slice(0,240))}</p>`:''}</div><button class="secondary work-open" data-work-open="${esc(l.id)}">Open brief</button></article>`).join(''):`<div class="work-empty"><h3>${esc($('workSearch').value?'No matching prospects.':emptyTitle)}</h3><p class="muted">${esc($('workSearch').value?'Try a different full name or employer.':emptyBody)}</p></div>`;
+  $('workList').innerHTML=data.items.length?data.items.map(({lead:l,quality:q,scores:s,signal,action:a,readiness})=>`<article class="work-card"><label class="select-lead"><input type="checkbox" data-work-select="${esc(l.id)}" aria-label="Select ${esc(l.first_name)} ${esc(l.last_name)} for enrichment" ${workSelected.has(l.id)?'checked':''} ${terminal(a)?'disabled':''}></label><div><strong class="work-name">${esc(l.first_name)} ${esc(l.last_name)}</strong><p class="muted">${esc(l.current_title||'Title unknown')} · ${esc(l.company||'Employer unknown')}</p>${l.location?`<p class="muted">${esc(l.location)}</p>`:''}${qualityBadge(q)} ${signal?`<p class="muted">${esc(signal.label)}${signal.date?' · '+esc(signal.date):''}</p>`:''}<span class="muted">${(q.required_fields||Object.keys(q.gates)).filter(f=>q.gates[f].state==='confirmed').length}/${(q.required_fields||Object.keys(q.gates)).length} criteria reviewed</span>${s?`<details class="score-line"><summary>Priority ${esc(s.priority.score)} · score details</summary><p class="muted">Qualification ${esc(s.qualification)} · Opportunity ${esc(s.opportunity)} · Confidence ${esc(s.confidence)} · Contact ${esc(s.contactability)}</p></details>`:''}</div><div class="work-reason"><p class="next-step">${esc(a.label)}</p><p class="muted">${esc(a.reason)}</p>${readiness?`<details class="work-readiness"><summary>${esc(readiness.label)}</summary><p>${esc(readiness.reason)}</p><p><strong>Contact:</strong> ${esc(readiness.contact_label)}</p><p><strong>Remaining fit checks:</strong> ${esc(readiness.fit_label)}</p></details>`:''}${a.due_at?`<p class="due-label">${esc(when(a.due_at))}</p>`:''}${a.cadence?`<p class="muted">${esc(a.cadence.touches.count)}/${esc(a.cadence.touches.cap)} touches · ${esc(a.cadence.step?a.cadence.step.label:a.cadence.status)}</p>`:''}${l.notes?`<p class="muted">Last note: ${esc(l.notes.split('\n').filter(Boolean).at(-1)?.slice(0,240))}</p>`:''}</div><button class="secondary work-open" data-work-open="${esc(l.id)}">Open brief</button></article>`).join(''):`<div class="work-empty"><h3>${esc($('workSearch').value?'No matching prospects.':emptyTitle)}</h3><p class="muted">${esc($('workSearch').value?'Try a different full name or employer.':emptyBody)}</p></div>`;
   document.querySelectorAll('[data-work-open]').forEach(e=>e.onclick=()=>openLead(e.dataset.workOpen));
   document.querySelectorAll('[data-work-select]').forEach(e=>e.onchange=()=>{e.checked?workSelected.add(e.dataset.workSelect):workSelected.delete(e.dataset.workSelect);selectionLabel();});
   $('workPageInfo').textContent=(data.total?`${num(workOffset+1)}–${num(Math.min(workOffset+24,data.total))} of ${num(data.total)}`:'0 prospects')+(data.truncated?` · Showing a working set of ${num(data.scanned)} / ${num(data.scope_total)}; search to narrow.`:'');
@@ -283,6 +294,7 @@ async function loadWorklist(){
   }catch(error){
     if(serial!==workRequest)return;
     workSelected.clear();
+    $('dailyDueSummary').textContent='Due follow-up summary unavailable.';$('dailyScope').textContent='';
     $('dailyTitle').textContent='Your worklist could not load.';
     $('dailyDescription').textContent='Retry to load the current queue before opening your next prospect.';
     $('workList').innerHTML=`<div class="work-empty" role="alert"><h3>Could not load prospects.</h3><p>${esc(error.message)}</p><button id="retryWorklist" class="secondary">Retry</button></div>`;
@@ -298,14 +310,9 @@ async function loadWorklist(){
 const inboundLabel=channel=>({phone:'they called',email:'they emailed',linkedin:'they replied on LinkedIn'})[channel]||'they contacted me';
 function renderConversation(){
   const a=currentWorkflow.action,q=current.quality;
-  const discovery=['Walk me through where your retirement savings live today — current plan, any former employer plans, IRAs, anything else.',
-    'When you left a previous employer, what did you decide to do with that plan — or is it still sitting there?',
-    'What does retirement look like for you — age, lifestyle, anything you are already planning around?',
-    'Have you worked with an advisor before? What worked, and what did not?',
-    'If we found something worth fixing, what would you want to happen next?'];
-  const questions={age:'What is your current age?',residence:'Which state do you currently live in?',retirement:'Do you still have a retirement account from a previous employer, or another retirement account you would like reviewed?',contact:'What is the best way to contact you for an agreed follow-up?',net_worth:'If you want a planning review, would you be comfortable sharing an authorized financial summary?',movable_assets:'Would you like to confirm the retirement account amount available for a transfer review?' };
   $('conversationBrief').innerHTML=`<p><strong>Next action: ${esc(a.label)}</strong></p><p>${esc(a.reason)}</p>${a.due_at?`<p>Saved time: ${esc(when(a.due_at))}</p>`:''}<details><summary>Remaining evidence and pacing</summary>${cadenceLine(currentWorkflow.cadence)}<p>${q.gaps.length?'Still unknown: '+esc(q.gaps.map(k=>labels[k]).join(' · ')):'Required qualification evidence is reviewed; this is not a recommendation to transfer assets.'}</p></details>`;
   if(labels[a.field]&&!terminal(a)){const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent='Review '+labels[a.field];button.onclick=()=>startEvidence(a.field);$('conversationBrief').append(button);}
+  renderConversationGuide();
   renderBriefSummary();
   renderDraft();
   $('contactActions').replaceChildren();const c=a.contact;
@@ -313,14 +320,29 @@ function renderConversation(){
   $('activityHistory').innerHTML=(current.lead.notes?`<p class="existing-notes">${esc(current.lead.notes)}</p>`:'')+(currentWorkflow.activities.length?currentWorkflow.activities.map(a=>`<div class="activity-entry"><strong>${esc(outcomeLabel(a.outcome))}</strong>${a.direction==='inbound'?` <span class="inbound-tag">${esc(inboundLabel(a.channel))}</span>`:''}${a.logged_by?` <span class="by-tag">${esc(a.logged_by)}</span>`:''} · ${esc(when(a.created_at))}<p>${esc(a.note)}</p>${a.next_at?`<small>Next: ${esc(when(a.next_at))}</small>`:''}</div>`).join(''):'<p>No outcomes recorded yet.</p>');
 }
 let scoreboardRequest=0;
+function renderPipeline(pipeline){
+  if(!pipeline){$('pipeline').innerHTML='<p class="muted">Recorded milestones are unavailable for this summary.</p>';return;}
+  const date=value=>{const at=new Date(value);return value&&Number.isFinite(at.getTime())?at.toISOString().slice(0,10)+' UTC':'Unavailable';};
+  const cutoff=value=>{const at=new Date(value);return value&&Number.isFinite(at.getTime())?at.toISOString().replace('T',' ').replace('Z',' UTC'):'Unavailable';};
+  $('pipeline').innerHTML=`<h3>Progress of the same records</h3><p>${esc(pipeline.scope)}</p>`+
+    `<p class="muted">Added ${esc(cutoff(pipeline.since))} through ${esc(cutoff(pipeline.as_of))} · ${num(pipeline.records)} records</p>`+
+    (pipeline.records===0?'<p class="empty">No accessible research records were added in this window. Older records can still contribute to the activity measurements below.</p>':'')+
+    `<ol class="pipeline-stages">${pipeline.stages.map(stage=>`<li><h4>${esc(stage.label)}</h4><strong>${num(stage.count)}</strong>`+
+      `<small>${stage.id==='added'?'Records in this cohort':num(stage.not_recorded)+' without this milestone logged'}</small>`+
+      `<small>${stage.latest_first_recorded_at?'Latest first record: '+esc(date(stage.latest_first_recorded_at)):'No date recorded'}</small>`+
+      `<details><summary>What counts</summary><p>${esc(stage.basis)}</p></details></li>`).join('')}</ol>`+
+    `<p class="muted">${esc(pipeline.basis)}</p><h3>Activity measurements</h3>`;
+}
 async function loadScoreboard(){
   const serial=++scoreboardRequest;
   $('scoreboard').setAttribute('aria-busy','true');
   $('scoreboard').innerHTML='<p role="status">Loading funnel summary…</p>';
+  $('pipeline').innerHTML='';
   $('scoreboardBasis').textContent='';
   try{
   const b=await request('/api/lab/scoreboard?days=30');
   if(serial!==scoreboardRequest)return;
+  renderPipeline(b.pipeline);
   // A rate with nothing in its denominator is not zero, it is unmeasured. Say
   // so rather than printing a 0% nobody earned.
   $('scoreboard').innerHTML=b.measured.map(m=>{
@@ -338,6 +360,7 @@ async function loadScoreboard(){
   $('scoreboardBasis').textContent=[b.basis,...gaps].join(' ');
   }catch(error){
     if(serial!==scoreboardRequest)return;
+    $('pipeline').innerHTML='';
     $('scoreboard').innerHTML='<div role="alert"><p>Funnel summary could not load. '+esc(error.message)+'</p><button id="retryScoreboard" class="secondary" type="button">Retry funnel summary</button></div>';
     $('scoreboardBasis').textContent='Figures are unavailable until the summary reloads.';
     $('retryScoreboard').onclick=()=>loadScoreboard();
@@ -555,13 +578,26 @@ function startEvidence(field,verdict='unknown'){
   $('evidenceDetails').open=true;$('reviewField').value=field;$('verdict').value=verdict;reviewFields();
   $('reviewForm').scrollIntoView({behavior:'smooth',block:'start'});$('reviewSource').focus({preventScroll:true});
 }
+function briefCitation(source){
+  if(!source)return '';
+  const date=value=>value?String(value).slice(0,10):'Unknown';
+  const label=source.source||'Source not recorded';
+  return `<small class="brief-citation">${link(source.url,label)}${safeURL(source.url)?'':' (source link not recorded)'}<br>Source date: ${esc(date(source.source_date))} | Observed: ${esc(date(source.observed_at))} | Reviewed: ${esc(date(source.reviewed_at))}${source.first_seen||source.last_seen?`<br>First recorded here: ${esc(date(source.first_seen))} | Last recorded here: ${esc(date(source.last_seen))}. These are record dates, not source publication dates.`:''}</small>`;
+}
+function briefEvidenceView(summary){
+  if(!summary)return '';
+  const rows=items=>items.map(item=>`<li><strong>${esc(item.label)}:</strong> ${esc(item.statement)}${item.identity_basis?`<p>Identity match: ${esc(item.identity_basis)}</p>`:''}${briefCitation(item.citation)}</li>`).join('');
+  return `<div class="brief-evidence"><details><summary>Reviewed facts (${summary.reviewed.length})</summary><p class="muted">Recorded advisor reviews, not independent verification by ProspectPilot.</p>${summary.reviewed.length?`<ul>${rows(summary.reviewed)}</ul>`:'<p>No current reviewed facts are available for this record.</p>'}</details><details><summary>Reported professional context (${summary.reported.length})</summary><p>Source claims, not verified personal facts. A reported city or state is not confirmed residence.</p><ul>${rows(summary.reported)}</ul></details><h4>Interpretation, not a fact</h4><p>${esc(summary.interpretation)}</p><details open><summary>Unknowns and holds (${summary.unknowns.length})</summary>${summary.unknowns.length?`<ul>${summary.unknowns.map(item=>`<li><strong>${esc(labels[item.field]||title(item.field))} (${esc(item.state)}):</strong> ${esc(item.reason)}${briefCitation(item.citation)}</li>`).join('')}</ul>`:'<p>Required evidence is reviewed. Planning priorities and permission still need to be established with the person.</p>'}</details><p class="muted">${esc(summary.limits)}</p><small>Assessed: ${esc(summary.as_of)}</small></div>`;
+}
 function renderBriefSummary(){
   const b=currentWorkflow?.brief;if(!b)return;
   const section=document.createElement('section');section.className='brief-summary';
-  section.innerHTML=`<p><strong>Why this person:</strong> ${esc(b.signal.label)}</p><p>${esc(b.signal.note)}</p>${b.signal.date?`<p>${esc(b.signal.date)} · ${link(b.signal.url,b.signal.source)}</p>`:''}<p><strong>Financial evidence:</strong> ${esc(b.qualification)}</p><p><strong>Contact:</strong> ${esc(b.contact_status)} — ${esc(b.contact_reason)}</p><details><summary>Two questions to start with</summary><ol>${b.questions.map(q=>`<li>${esc(q)}</li>`).join('')}</ol></details>`;
-  const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent='Review a personal event';button.onclick=()=>startEvidence('personal_event');section.append(button);
-  $('conversationBrief').prepend(section);renderGuidedReview();
+  const a=currentWorkflow.action;
+  section.innerHTML=`<p><strong>Why this is on your worklist:</strong> ${esc(a.label)}. ${esc(a.reason)}</p><p><strong>Research signal:</strong> ${esc(b.signal.label)}</p><p>${esc(b.signal.note)}</p>${b.signal.date?`<p>${esc(b.signal.date)} | ${link(b.signal.url,b.signal.source)}</p>`:''}<p><strong>Financial evidence:</strong> ${esc(b.qualification)}</p><p><strong>Contact:</strong> ${esc(b.contact_status)} - ${esc(b.contact_reason)}</p>${briefEvidenceView(b.evidence_summary)}${!terminal(a)?`<details><summary>Two questions to start with</summary><ol>${b.questions.map(q=>`<li>${esc(q)}</li>`).join('')}</ol></details>`:''}`;
+  if(!terminal(a)){const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent='Review a personal event';button.onclick=()=>startEvidence('personal_event');section.append(button);}
+  $('conversationBrief').append(section);renderGuidedReview();
 }
+
 function renderGuidedReview(){
   const target=$('guidedReview');if(!target)return;target.replaceChildren();
   const b=currentWorkflow?.brief;if(!b||!current)return;
@@ -590,4 +626,22 @@ $('pilotAudit').onclick=async()=>{
     $('pilotStatus').textContent=`${sample.items.length} prospects sampled from the current worklist order (not random). ${sample.items.filter(i=>i.signal?.rank===2).length} have a reviewed recent personal event; ${sample.items.filter(i=>i.quality.gates.contact.state==='confirmed').length} have reviewed contact evidence. Sample request: ${elapsed} ms. This measures recorded evidence coverage, not independent accuracy. Keep this file to audit the same people again.`;
   }catch(e){$('pilotStatus').textContent='Audit sample unavailable: '+e.message;}finally{$('pilotAudit').disabled=false;}
 };
+
+function renderConversationGuide(){
+  const guide=currentWorkflow?.conversation_guidance,action=currentWorkflow?.action;
+  if(!guide||!action||terminal(action))return;
+  const section=document.createElement('details');section.className='conversation-guide';
+  section.innerHTML=`<summary>First conversation guide</summary><p class="muted">${esc(guide.label)}</p><p><strong>Objective:</strong> ${esc(guide.objective)}</p><p>${esc(guide.notice)}</p>`;
+  if(guide.status!=='prepare')section.innerHTML+=`<p><strong>Before outreach:</strong> ${esc(guide.reason)}</p>`;
+  else{
+    section.innerHTML+=`<h4>Ask permission to begin</h4><p class="coaching-example">${esc(guide.opening)}</p><h4>Discover what matters</h4><ol>${guide.questions.map(q=>`<li>${esc(q)}</li>`).join('')}</ol><p>${esc(guide.listening)}</p><details><summary>Respond without pressure</summary>${guide.objections.map(o=>`<h4>${esc(o.concern)}</h4><p class="coaching-example">${esc(o.response)}</p>${o.action?`<p>${esc(o.action)}</p>`:''}`).join('')}</details><h4>Agree a next step, if wanted</h4><p class="coaching-example">${esc(guide.closing)}</p><ul>${guide.capture.map(item=>`<li>${esc(item)}</li>`).join('')}</ul>`;
+    const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent='Record conversation outcome';
+    // Navigation only: never prefill a statement, select an outcome or save activity.
+    const workflow=currentWorkflow;
+    button.onclick=()=>{if(currentWorkflow!==workflow||!current||activitySaving)return;$('outcomeDetails').open=true;$('activityNote').focus();};
+    section.append(button);
+  }
+  $('conversationBrief').append(section);
+}
+
 init();

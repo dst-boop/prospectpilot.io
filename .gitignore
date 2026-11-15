@@ -19,3 +19,5 @@ data/
 *.sqlite*
 __pycache__/
 *.pyc
+
+.upgrade-fixture-*/

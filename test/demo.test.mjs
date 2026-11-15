@@ -28,6 +28,13 @@ test('synthetic demo starts with current migrations and serves its contact fixtu
   assert.equal(data.total,6,'three workflow fixtures and three synthetic daily leads');
   const review=await (await fetch(`http://127.0.0.1:${port}/api/prospect/daily-review`,{signal:AbortSignal.timeout(10000)})).json();
   assert.equal(review.counts.total,3,'the Daily review has a synthetic delivery to show');
+  const origin=`http://127.0.0.1:${port}`;
+  const hub=await fetch(origin+'/team-hub');assert.equal(hub.status,200);assert.match(await hub.text(),/Nothing moves here/);
+  const context=await (await fetch(origin+'/api/team-hub/context')).json();assert.equal(context.synthetic,true);assert.equal(context.can_execute,false);
+  const preview=await fetch(origin+'/api/team-hub/preview',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({source_uid:'demo-departing',target_uid:'demo-receiver'})});
+  assert.equal(preview.status,200);const plan=await preview.json();assert.equal(plan.can_execute,false);assert.equal(plan.counts.contacts,3);
+  const after=await (await fetch(origin+'/api/prospect/contacts')).json();assert.deepEqual(after,data,'hub preview does not mutate the contact workspace');
+  const apply=await fetch(origin+'/api/team-hub/apply',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:'{}'});assert.equal(apply.status,404);
  }finally{
   clearTimeout(timer);child.kill();await closed;
  }

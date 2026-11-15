@@ -58,7 +58,7 @@ async function researchRoutes(request,env,user,path,url){
  if(path==='/api/research/records'&&request.method==='GET')return json({records:array(lead.research_records).filter(r=>r.status!=='machine_matched'||(r.engine_version===3&&r.subject_signature===researchSignature(lead))),native_research:Object.fromEntries(Object.entries(lead.native_research||{}).filter(([,v])=>v.engine_version===3&&v.signature===researchSignature(lead))),profile:researchProfile(lead)});
  if(path==='/api/research/job'&&request.method==='GET')return json({job:env.RESEARCH_JOBS?await env.RESEARCH_JOBS.status(id,user):null});
  if(request.method!=='POST')throw new HttpError(405,'Method not allowed.');
- if(user.role!=='admin'&&row.owner_user_id!==user.user_id&&lower(row.owner_email)!==lower(user.email))throw new HttpError(403,'Only the lead owner can add research.');
+ if(user.role!=='admin'&&!ownsLead(row,user))throw new HttpError(403,'Only the lead owner can add research.');
  if(path==='/api/research/job'){if(!env.RESEARCH_JOBS)throw new HttpError(503,'Background research is not configured.');return json({job:await env.RESEARCH_JOBS.enqueue(id,user,researchSignature(lead))},202);}
  const source=RESEARCH_SOURCES.find(s=>s.id===body.source);if(!source)throw new HttpError(422,'Choose a source.');
  if(path==='/api/research/auto'){
@@ -69,7 +69,7 @@ async function researchRoutes(request,env,user,path,url){
    if(cached?.engine_version===3&&cached?.signature===signature&&(source.id!=='warn'||cached.feed_version===2)&&Date.now()-Date.parse(cached.checked_at)<(cached.status==='partial'?60000:3600000))return json({...cached,cached:true});
    const result=await env.NATIVE_RESEARCH(lead,source.id);
    const fresh=await one(db,'SELECT * FROM discovery_leads WHERE id=? AND team=?',id,TEAM);const current=leadFromRow(fresh);
-   if(!current||!canReadLead(fresh,current,user)||(user.role!=='admin'&&fresh.owner_user_id!==user.user_id&&lower(fresh.owner_email)!==lower(user.email)))throw new HttpError(403,'Lead access changed.');
+   if(!current||!canReadLead(fresh,current,user)||(user.role!=='admin'&&!ownsLead(fresh,user)))throw new HttpError(403,'Lead access changed.');
    if(researchSignature(current)!==signature)throw new HttpError(409,'Lead details changed. Research this lead again.');
    const records=array(current.research_records).filter(r=>r.status!=='machine_matched'||(r.engine_version===3&&r.subject_signature===signature));
    const persisted=[];let omitted=0;

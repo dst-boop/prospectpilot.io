@@ -21,10 +21,15 @@
 // ADR and LEARNINGS "There was no way to delete one person").
 import {createHash,createHmac} from 'node:crypto';
 import {candidateKeys,hash} from './lead-quality.mjs';
+import {normalizeContact} from './prospect-data-quality.mjs';
 
 export const LEAD_TEAM='wealth-management';
-// Who may see (and so delete) a Research Lab lead: its owner, or an admin.
-export const LEAD_VISIBLE_SQL=`team=$1 AND (owner_user_id=$2 OR lower(owner_email)=lower($3) OR EXISTS(SELECT 1 FROM discovery_users WHERE user_id=$2 AND role='admin'))`;
+// Ownership is the immutable authentication UID, never an email address.
+// Email-only legacy rows are not claimed automatically: recovery must establish
+// the original owner separately before an explicitly authorized migration.
+export const ownsLead=(row,uid)=>typeof uid==='string'&&uid.trim().length>0&&row.owner_user_id===uid;
+// Parameters: team, authenticated UID. The existing admin policy is unchanged.
+export const LEAD_VISIBLE_SQL=`team=$1 AND NULLIF(btrim($2),'') IS NOT NULL AND (owner_user_id=$2 OR EXISTS(SELECT 1 FROM discovery_users WHERE user_id=$2 AND role='admin'))`;
 
 const fail=(status,message)=>Object.assign(Error(message),{status});
 const parse=value=>typeof value==='string'?JSON.parse(value):value||{};
@@ -51,7 +56,7 @@ export async function forgottenKeys(client,uid,keys){
 export async function forgetPerson(client,user,{contactId='',leadId=''},{contactKeys}){
   if(!contactId&&!leadId)throw fail(422,'Choose the person to delete.');
   const contacts=new Map(),leads=new Map();
-  const leadParams=[LEAD_TEAM,user.uid,user.email||''];
+  const leadParams=[LEAD_TEAM,user.uid];
   // Serialize with every writer that could bring this person back mid-delete:
   // Research Lab saves hold 505006, directory imports and provider results
   // hold prospect:<uid>. The global lock comes first, so deleters never cycle.
@@ -64,7 +69,7 @@ export async function forgetPerson(client,user,{contactId='',leadId=''},{contact
     contacts.set(row.id,row);
   }
   if(leadId){
-    const row=(await client.query(`SELECT id,payload,owner_user_id FROM discovery_leads WHERE ${LEAD_VISIBLE_SQL} AND id=$4 FOR UPDATE`,[...leadParams,leadId])).rows[0];
+    const row=(await client.query(`SELECT id,payload,owner_user_id FROM discovery_leads WHERE ${LEAD_VISIBLE_SQL} AND id=$3 FOR UPDATE`,[...leadParams,leadId])).rows[0];
     if(!row)throw fail(404,'Lead not found.');
     leads.set(row.id,row);
   }
@@ -72,7 +77,7 @@ export async function forgetPerson(client,user,{contactId='',leadId=''},{contact
   // linked to (only if this user may see it), and this user's contacts
   // linked to the lead.
   for(const id of [...contacts.keys()])
-    for(const row of (await client.query(`SELECT id,payload,owner_user_id FROM discovery_leads WHERE ${LEAD_VISIBLE_SQL} AND id IN (SELECT lead_id FROM advisor_contact_links WHERE contact_id=$4 AND user_id=$2)`,[...leadParams,id])).rows)
+    for(const row of (await client.query(`SELECT id,payload,owner_user_id FROM discovery_leads WHERE ${LEAD_VISIBLE_SQL} AND id IN (SELECT lead_id FROM advisor_contact_links WHERE contact_id=$3 AND user_id=$2)`,[...leadParams,id])).rows)
       leads.set(row.id,row);
   for(const id of [...leads.keys()])
     for(const row of (await client.query('SELECT pc.id,pc.payload FROM prospect_contacts pc JOIN advisor_contact_links acl ON acl.contact_id=pc.id AND acl.user_id=pc.user_id WHERE acl.lead_id=$1 AND pc.user_id=$2',[id,user.uid])).rows)
@@ -82,13 +87,21 @@ export async function forgetPerson(client,user,{contactId='',leadId=''},{contact
   // Both identity formats from every record: the directory checks its own
   // keys and the Research Lab checks candidate keys, and an unlinked record
   // must block the person in both.
-  const keys=[...new Set([...contacts.values(),...leads.values()].flatMap(row=>{const p=parse(row.payload);return [...contactKeys(p),...candidateKeys(p)];}))];
+  const baseKeys=[...new Set([...contacts.values(),...leads.values()].flatMap(row=>{const p=parse(row.payload);return [...contactKeys(p),...candidateKeys(p)];}))];
+  // A matching networking capture intentionally leaves the shared contact
+  // unchanged. Retain only hashed identity aliases before its private ledger
+  // cascades away; never read notes/referrers or another owner's captures.
+  const capturedPeople=contactIds.length?(await client.query("SELECT payload->'person' AS person FROM prospect_networking_captures WHERE user_id=$1 AND contact_id=ANY($2::text[])",[user.uid,contactIds])).rows:[];
+  const privateKeys=capturedPeople.flatMap(row=>{const p=normalizeContact(parse(row.person),'Networking',{importing:true});return [...contactKeys(p),...candidateKeys(p)];});
+  const keys=[...new Set([...baseKeys,...privateKeys])];
   // Tombstoned for the person deleting and, when an admin deletes someone
   // else's lead, for that lead's owner too, so neither brings them back.
   const holders=[...new Set([user.uid,...[...leads.values()].map(row=>row.owner_user_id).filter(Boolean)])];
   for(const uid of holders.filter(uid=>uid!==user.uid).sort())await lockUser(uid);
-  if(keys.length)for(const uid of holders)
-    await client.query('INSERT INTO prospect_forgotten(user_id,key_hash) SELECT $1,unnest($2::text[]) ON CONFLICT DO NOTHING',[uid,keys.map(key=>tombstone(uid,key))]);
+  // Private aliases only govern their owner; they never create cross-owner blocks.
+  const holderKeys=uid=>uid===user.uid?keys:baseKeys;
+  for(const uid of holders)if(holderKeys(uid).length)
+    await client.query('INSERT INTO prospect_forgotten(user_id,key_hash) SELECT $1,unnest($2::text[]) ON CONFLICT DO NOTHING',[uid,holderKeys(uid).map(key=>tombstone(uid,key))]);
 
   if(contactIds.length){
     // Queued work about them is cancelled; finished work keeps its row (the
@@ -107,7 +120,8 @@ export async function forgetPerson(client,user,{contactId='',leadId=''},{contact
   // details, so it goes for everyone now blocking them; a review loses a
   // deleted record, and one left comparing against nothing goes too. A
   // review whose newer record is deleted goes with it (cascade).
-  if(keys.length)await client.query('DELETE FROM lab_identity_reviews WHERE user_id=ANY($1::text[]) AND key_hashes && $2::text[]',[holders,keys.map(hash)]);
+  for(const uid of holders)if(holderKeys(uid).length)
+    await client.query('DELETE FROM lab_identity_reviews WHERE user_id=ANY($1::text[]) AND key_hashes && $2::text[]',[[uid],holderKeys(uid).map(hash)]);
   if(leadIds.length){
     await client.query('UPDATE lab_identity_reviews SET match_ids=ARRAY(SELECT m FROM unnest(match_ids) m WHERE NOT m=ANY($1::text[])) WHERE match_ids && $1::text[]',[leadIds]);
     await client.query("DELETE FROM lab_identity_reviews WHERE cardinality(match_ids)=0");
@@ -124,7 +138,7 @@ export async function forgetPerson(client,user,{contactId='',leadId=''},{contact
     await client.query('DELETE FROM discovery_leads WHERE id=ANY($1::text[])',[leadIds]);
   }
   if(contactIds.length){
-    // Cascades: prospect_list_members, advisor_contact_links; tasks keep a NULL contact.
+    // Cascades: prospect_list_members, advisor_contact_links, private networking captures; tasks keep a NULL contact.
     await client.query('DELETE FROM prospect_contacts WHERE user_id=$1 AND id=ANY($2::text[])',[user.uid,contactIds]);
   }
   // Counts only: the log says a deletion happened, never who.

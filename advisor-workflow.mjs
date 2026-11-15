@@ -3,6 +3,8 @@ import {randomUUID} from 'node:crypto';
 import {assessLead, leadIdentity, hash, csvCell, leadScores} from './lead-quality.mjs';
 import {cadenceState, admitTouch, restPeriod, nextFollowUp, composeTouch, firstTouchSLA, dialBudget, TOUCH_OUTCOMES, INBOUND_OUTCOMES} from './outreach-cadence.mjs';
 import {phoneReadiness} from './prospect-data-quality.mjs';
+import {advisorPipeline} from './advisor-pipeline.mjs';
+import {conversationGuidance} from './advisor-conversation-guidance.mjs';
 
 export function withDirectoryRestrictions(lead,contacts=[]) {
  const imported_dnc=new Set(lead.imported_dnc||[]);
@@ -74,6 +76,36 @@ export function nextAction(lead,quality,now=new Date(),cadence=null) {
   if(contact&&(quality.target==='rollover_100k'||quality.gates.age.state==='confirmed')&&quality.gates.residence.state==='confirmed')return {...base,cadence,bucket:'ready',rank:quality.status==='verified'?10:20,field:quality.gaps[0],label:quality.status==='verified'?'Prepare an introductory conversation':'Confirm the remaining fit criteria',reason:quality.status==='verified'?'All required criteria have current reviewed evidence.':quality.gaps.map(g=>fields[g]).join('; ')+'.'};
   const gap=quality.gaps.includes('contact')?'contact':quality.gaps.find(g=>['age','residence'].includes(g))||quality.gaps[0];
   return {...base,cadence,bucket:gap==='contact'&&quality.gates.contact.state==='unknown'?'enrich':'review',rank:30+(100-quality.score)/10,label:fields[gap]||'Review this prospect',reason:quality.gates[gap]?.reason||'Review the saved evidence.',field:gap};
+}
+
+// A read-only explanation of the existing gates, not permission to contact.
+// Keep timing separate from contact ownership and financial qualification.
+export function worklistReadiness(action,quality) {
+  const cadence=action.cadence;
+  const identityReview=quality.status==='identity_review';
+  const paused=identityReview||action.held||['resting','capped','blocked'].includes(cadence?.status)
+    ||(cadence?.step?.due&&!cadence.step.ready);
+  const terminal=TERMINAL_BUCKETS.has(action.bucket);
+  const later=['scheduled','resting'].includes(action.bucket);
+  const reviewed=!!action.contact&&quality.gates.contact.state==='confirmed';
+  const required=quality.required_fields||Object.keys(quality.gates);
+  const gaps=required.filter(field=>quality.gates[field]?.state!=='confirmed');
+  const state=terminal?'finished':paused||action.bucket==='resting'?'paused':later?'scheduled':reviewed?'reviewed':'verify';
+  return {state,contact_reviewed:reviewed,
+    label:({finished:'Prospecting finished',paused:'Outreach on hold',scheduled:'Saved for later',reviewed:'Contact route reviewed',verify:'Verify before contact'})[state],
+    reason:terminal||later||identityReview?action.reason:paused?(cadence?.step?.hold||cadence?.reason||action.reason)
+      :reviewed?'The saved contact route has current reviewed ownership evidence. Review the brief before any approach.'
+      :quality.gates.contact.reason||'Confirm a contact route belongs to this person before using it.',
+    contact_label:reviewed?'Reviewed '+action.contact.channel+' route':terminal||identityReview?'No contact shortcut is available for this record.':quality.gates.contact.reason||'Contact ownership not confirmed.',
+    fit_label:gaps.length?gaps.map(field=>fields[field]||field).join('; ')+'.':'All required criteria have current reviewed evidence.'};
+}
+
+export function dailyWorklistSummary(items,at=new Date()) {
+  const due=items.filter(item=>item.action.bucket==='due');
+  const held=due.filter(item=>item.readiness.state==='paused');
+  const reviewed=due.filter(item=>item.readiness.state!=='paused'&&item.readiness.contact_reviewed);
+  return {as_of:at.toISOString(),due:due.length,with_reviewed_route:reviewed.length,
+    needs_contact_review:due.length-held.length-reviewed.length,on_hold:held.length};
 }
 
 export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visibleSQL,now=()=>new Date(),targetFor=async()=> 'legacy'}) {
@@ -171,7 +203,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const quality=assessLead(lead,rows.map(r=>parse(r.payload)),{now:now(),target:await targetFor(user)});
     const cadence=await cadenceFor(user,id,lead,quality,pool,await dialsToday(user));
     const action=nextAction(lead,quality,now(),cadence),brief=prospectBrief(lead,quality,rows.map(r=>parse(r.payload)),now());
-    return {action,cadence,brief,
+    return {action,cadence,brief,conversation_guidance:conversationGuidance(action,quality,cadence),
       // The words for the next touch, not a description of them.
       draft:TERMINAL_BUCKETS.has(action.bucket)||!cadence.step?null:contextualDraft(composeTouch(cadence.step,{lead,advisor:await profile(user),now:now(),sent:cadence.progress.done}),brief),
       schedules:TERMINAL_BUCKETS.has(action.bucket)?null:nextFollowUp(cadence,{now:now()}),
@@ -188,10 +220,10 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     offset=Number(offset);limit=Number(limit);
     if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(limit)||limit<1||limit>100)throw fail(422,'Invalid worklist page.');
     const term=String(search).trim().slice(0,100).replace(/[%_\\]/g,'');
-    const rows=(await pool.query(`SELECT d.id,d.payload,(SELECT jsonb_agg(pc.payload) FROM advisor_contact_links acl JOIN prospect_contacts pc ON pc.id=acl.contact_id AND pc.user_id=acl.user_id WHERE acl.lead_id=d.id) AS linked_contacts,count(*) OVER()::int AS scope_total FROM discovery_leads d
+    const rows=(await pool.query(`SELECT d.id,d.payload,(SELECT jsonb_agg(pc.payload) FROM advisor_contact_links acl JOIN prospect_contacts pc ON pc.id=acl.contact_id AND pc.user_id=acl.user_id WHERE acl.lead_id=d.id AND acl.user_id=d.owner_user_id) AS linked_contacts,count(*) OVER()::int AS scope_total FROM discovery_leads d
       LEFT JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2
-      WHERE ${visibleSQL} AND ($4='' OR concat_ws(' ',d.payload::jsonb->>'first_name',d.payload::jsonb->>'last_name',d.payload::jsonb->>'company') ILIKE $4)
-      ORDER BY d.payload::jsonb->>'follow_up_date' ASC NULLS LAST,q.score DESC NULLS LAST,d.id LIMIT 2000`,['wealth-management',user.uid,user.email,term?`%${term}%`:''])).rows;
+      WHERE ${visibleSQL} AND ($3='' OR concat_ws(' ',d.payload::jsonb->>'first_name',d.payload::jsonb->>'last_name',d.payload::jsonb->>'company') ILIKE $3)
+      ORDER BY d.payload::jsonb->>'follow_up_date' ASC NULLS LAST,q.score DESC NULLS LAST,d.id LIMIT 2000`,['wealth-management',user.uid,term?`%${term}%`:''])).rows;
     const ids=rows.map(r=>r.id);
     const records=rows.length?(await pool.query('SELECT lead_id,payload FROM lab_observations WHERE user_id=$1 AND lead_id=ANY($2::text[])',[user.uid,ids])).rows:[];
     const observations=new Map();for(const r of records){if(!observations.has(r.lead_id))observations.set(r.lead_id,[]);observations.get(r.lead_id).push(parse(r.payload));}
@@ -212,11 +244,13 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     // Directory restrictions are applied before anything is assessed or paced,
     // so a phone that became do-not-call in the directory is refused here too.
     const target=await targetFor(user);
-    const all=rows.map(r=>{const lead=withDirectoryRestrictions({...parse(r.payload),id:r.id},r.linked_contacts),quality=assessLead(lead,observations.get(r.id)||[],{now:now(),target});
-      const cadence=cadenceState({activities:history.get(r.id)||[],lead,quality,rest:resting.get(r.id)||null,now:now(),dials});
-      const s=leadScores(lead,quality,{now:now(),weights});
+    const assessedAt=now();
+    const all=rows.map(r=>{const lead=withDirectoryRestrictions({...parse(r.payload),id:r.id},r.linked_contacts),quality=assessLead(lead,observations.get(r.id)||[],{now:assessedAt,target});
+      const cadence=cadenceState({activities:history.get(r.id)||[],lead,quality,rest:resting.get(r.id)||null,now:assessedAt,dials});
+      const s=leadScores(lead,quality,{now:assessedAt,weights});
       const scores={priority:s.priority,qualification:s.qualification.score,opportunity:s.opportunity.score,confidence:s.confidence.score,contactability:s.contactability.score};
-      return {lead:{id:lead.id,first_name:lead.first_name,last_name:lead.last_name,company:lead.company,current_title:lead.current_title,location:lead.location||[lead.city,lead.state].filter(Boolean).join(', '),notes:lead.notes||''},quality,scores,signal:prospectBrief(lead,quality,observations.get(r.id)||[],now()).signal,action:nextAction(lead,quality,now(),cadence)};});
+      const action=nextAction(lead,quality,assessedAt,cadence);
+      return {lead:{id:lead.id,first_name:lead.first_name,last_name:lead.last_name,company:lead.company,current_title:lead.current_title,location:lead.location||[lead.city,lead.state].filter(Boolean).join(', '),notes:lead.notes||''},quality,scores,signal:prospectBrief(lead,quality,observations.get(r.id)||[],assessedAt).signal,action,readiness:worklistReadiness(action,quality)};});
     // Review and enrich share one group; the advisor's priority orders it.
     const group=action=>action.rank>=30&&action.rank<=40?30:action.rank;
     all.sort((a,b)=>group(a.action)-group(b.action)||(a.action.due_at||'').localeCompare(b.action.due_at||'')||b.signal.rank-a.signal.rank||(a.signal.rank===2?b.signal.date.localeCompare(a.signal.date):0)||b.scores.priority.score-a.scores.priority.score||b.quality.score-a.quality.score||a.lead.id.localeCompare(b.lead.id));
@@ -227,8 +261,8 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       count(*) FILTER(WHERE a.outcome IN ('connected','follow_up','meeting_booked','meeting_held'))::int AS conversations,
       count(DISTINCT a.lead_id) FILTER(WHERE a.outcome='meeting_booked')::int AS meetings FROM advisor_activities a
       JOIN discovery_leads d ON d.id=a.lead_id WHERE a.user_id=$2 AND ${visibleSQL}
-      AND a.created_at >= $4::timestamptz AND a.outcome = ANY($5::text[])`,['wealth-management',user.uid,user.email,new Date(now().getTime()-7*86400000).toISOString(),[...TOUCH_OUTCOMES]])).rows[0];
-    return {items:filtered.slice(offset,offset+limit),counts,total:filtered.length,offset,limit,activity,dials,scope_total:rows[0]?.scope_total||0,scanned:rows.length,truncated:(rows[0]?.scope_total||0)>rows.length};
+      AND a.created_at >= $3::timestamptz AND a.outcome = ANY($4::text[])`,['wealth-management',user.uid,new Date(now().getTime()-7*86400000).toISOString(),[...TOUCH_OUTCOMES]])).rows[0];
+    return {items:filtered.slice(offset,offset+limit),daily:dailyWorklistSummary(all,assessedAt),counts,total:filtered.length,offset,limit,activity,dials,scope_total:rows[0]?.scope_total||0,scanned:rows.length,truncated:(rows[0]?.scope_total||0)>rows.length};
   }
   async function save(user,id,input) {
     if(!Object.hasOwn(outcomes,input.outcome))throw fail(422,'Choose a conversation outcome.');
@@ -326,7 +360,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       if(lead.suppressed&&input.outcome!=='do_not_contact')throw fail(422,'This record is suppressed. This workflow cannot remove contact restrictions.');
       const activityId=randomUUID();
       lead.follow_up_status=outcomes[input.outcome];lead.follow_up_date=next;lead.advisor_activity_id=activityId;
-      if(input.outcome==='do_not_contact'){lead.suppressed=true;await client.query("UPDATE prospect_contacts pc SET payload=jsonb_set(pc.payload,'{suppressed}','true'),updated_at=now() WHERE EXISTS(SELECT 1 FROM advisor_contact_links acl WHERE acl.contact_id=pc.id AND acl.user_id=pc.user_id AND acl.lead_id=$1)",[id]);}
+      if(input.outcome==='do_not_contact'){lead.suppressed=true;await client.query("UPDATE prospect_contacts pc SET payload=jsonb_set(pc.payload,'{suppressed}','true'),updated_at=now() WHERE EXISTS(SELECT 1 FROM advisor_contact_links acl WHERE acl.contact_id=pc.id AND acl.user_id=pc.user_id AND acl.lead_id=$1 AND acl.user_id=(SELECT owner_user_id FROM discovery_leads WHERE id=$1))",[id]);}
       if(note)lead.notes=[lead.notes,`${stamp} · ${input.outcome.replaceAll('_',' ')}: ${note}`].filter(Boolean).join('\n');
       await client.query('UPDATE discovery_leads SET payload=$1,updated_at=now() WHERE id=$2',[JSON.stringify(lead),id]);
       await client.query('INSERT INTO advisor_activities(id,lead_id,user_id,idempotency_key,outcome,note,next_at,created_at,channel,step,direction) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',[activityId,id,user.uid,key,input.outcome,note,next,stamp,channel,step,direction]);
@@ -376,22 +410,32 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
   async function scoreboard(user,{days=30}={}) {
     days=Number(days);
     if(!Number.isSafeInteger(days)||days<1||days>365)throw fail(422,'Choose a window between 1 and 365 days.');
-    const since=new Date(now().getTime()-days*86400000).toISOString();
+    const asOf=now(),since=new Date(asOf.getTime()-days*86400000).toISOString();
     const rows=(await pool.query(`SELECT d.id,d.created_at AS added_at,
+        -- Independent recorded milestones. Do not infer an approach from a
+        -- held meeting, or backfill a booking/conversation from client status.
+        -- Future-dated rows cannot contribute to the as-of snapshot.
+        min(a.created_at) FILTER(WHERE a.outcome IN ('no_answer','connected','follow_up','meeting_booked')
+          AND a.direction IS DISTINCT FROM 'inbound' AND a.created_at <= $5::timestamptz) AS pipeline_approached_at,
+        min(a.created_at) FILTER(WHERE a.outcome IN ('connected','follow_up','meeting_booked','meeting_held')
+          AND a.created_at <= $5::timestamptz) AS pipeline_conversation_at,
+        min(a.created_at) FILTER(WHERE a.outcome='meeting_booked' AND a.created_at <= $5::timestamptz) AS pipeline_booked_at,
+        min(a.created_at) FILTER(WHERE a.outcome='meeting_held' AND a.created_at <= $5::timestamptz) AS pipeline_held_at,
+        min(a.created_at) FILTER(WHERE a.outcome='became_client' AND a.created_at <= $5::timestamptz) AS pipeline_client_at,
         -- Approaches only. A prospect who called in first did not make the
         -- service level: it measures whether the advisor reached them within a
         -- business day, and counting their call would report that as met on a
         -- prospect nobody had got to. Same for the touched population below.
-        min(a.created_at) FILTER(WHERE a.outcome=ANY($5::text[]) AND a.direction IS DISTINCT FROM 'inbound') AS first_touch_at,
-        count(a.id) FILTER(WHERE a.outcome=ANY($5::text[]) AND a.direction IS DISTINCT FROM 'inbound')::int AS touches,
+        min(a.created_at) FILTER(WHERE a.outcome=ANY($4::text[]) AND a.direction IS DISTINCT FROM 'inbound') AS first_touch_at,
+        count(a.id) FILTER(WHERE a.outcome=ANY($4::text[]) AND a.direction IS DISTINCT FROM 'inbound')::int AS touches,
         bool_or(a.outcome IN ('connected','follow_up','meeting_booked','meeting_held')) AS engaged,
         bool_or(a.outcome='meeting_booked') AS booked,
         -- A meeting whose time has not arrived is not yet a missed one.
         count(*) FILTER(WHERE a.outcome IN ('meeting_booked','no_show') AND a.next_at IS NOT NULL
-          AND a.next_at < $6::timestamptz AND a.next_at >= $4::timestamptz)::int AS due_meetings
+          AND a.next_at < $5::timestamptz AND a.next_at >= $3::timestamptz)::int AS due_meetings
       FROM discovery_leads d LEFT JOIN advisor_activities a ON a.lead_id=d.id AND a.user_id=$2
       WHERE ${visibleSQL} GROUP BY d.id,d.created_at`,
-      ['wealth-management',user.uid,user.email,since,[...TOUCH_OUTCOMES],now().toISOString()])).rows;
+      ['wealth-management',user.uid,since,[...TOUCH_OUTCOMES],asOf.toISOString()])).rows;
     // Every recorded attendance, dated by the meeting it settles rather than by
     // when somebody got round to logging it. An advisor who writes up Tuesday's
     // meetings on Friday would otherwise move them into Friday's window: a
@@ -413,7 +457,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       FROM discovery_leads d JOIN advisor_activities o ON o.lead_id=d.id AND o.user_id=$2
       WHERE ${visibleSQL} AND o.outcome IN ('meeting_held','no_show')
       ORDER BY o.lead_id,o.created_at,o.id`,
-      ['wealth-management',user.uid,user.email])).rows;
+      ['wealth-management',user.uid])).rows;
     // Every prospect recorded as a client, counted once, and dated by their
     // first conversion. There is no separate signing date to read: the record
     // says when somebody wrote it down, and dating the count by anything else
@@ -431,8 +475,8 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
         FROM discovery_leads d JOIN advisor_activities a ON a.lead_id=d.id AND a.user_id=$2
         WHERE ${visibleSQL} AND a.outcome='became_client'
         GROUP BY a.lead_id
-      ) conversions WHERE first_at >= $4::timestamptz`,
-      ['wealth-management',user.uid,user.email,since])).rows[0].total;
+      ) conversions WHERE first_at >= $3::timestamptz`,
+      ['wealth-management',user.uid,since])).rows[0].total;
     // Two populations, deliberately. The service level, the response rate and
     // meetings per 100 ask what became of the prospects added in this window,
     // so they are a cohort. The meeting rates ask what happened in this window,
@@ -470,7 +514,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const first=new Map();for(const r of settled)if(r.outcome==='meeting_held'&&!first.has(r.lead_id))first.set(r.lead_id,r);
     const discovered=[...first.values()].filter(r=>new Date(r.met_at)>=new Date(since));
     const second=discovered.filter(r=>r.booked_after);
-    return {window_days:days,since,
+    return {window_days:days,since,pipeline:advisorPipeline(rows,{since,asOf}),
       added:cohort.length,worked:worked.length,
       // A prospect added but never touched is the gap the SLA exists to close,
       // so it is reported next to the hit rate rather than filtered out of it.

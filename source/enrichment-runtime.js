@@ -117,7 +117,7 @@ async function enrichmentRoutes(request, env, user, path) {
   const reply=(value,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json','cache-control':'no-store'}});
   if(path==='/api/enrichment/status'&&request.method==='GET')return reply({providers:ENRICH.providers,release:ENRICH.releaseStatus,connection:'File exchange only. Your provider account is not connected.'});
   // Read access alone does not authorize enrichment writes or exporting shared leads.
-  const owned=(await visibleLeadRows(db,user)).filter(({row})=>row.owner_user_id===user.user_id||lower(row.owner_email)===lower(user.email));
+  const owned=(await visibleLeadRows(db,user)).filter(({row})=>ownsLead(row,user));
   if(path==='/api/enrichment/leads'&&request.method==='GET')return reply({leads:owned.map(({lead})=>{
     const phone=[lead.phone,lead.mobile_phone,lead.business_phone].some(callNumber);
     const locator=!!(lead.email||phone||lead.linkedin_url||(lead.first_name&&lead.last_name&&(lead.address||(lead.city&&lead.state))));
@@ -162,7 +162,7 @@ async function enrichmentRoutes(request, env, user, path) {
     // The guard CHECK aborts the entire D1 batch if another writer changed any target.
     const conditions=snapshot.map(()=>'(SELECT payload FROM discovery_leads WHERE id=?) IS ?').join(' AND ');
     const params=snapshot.flatMap(s=>[s.id,s.payload]);
-    const statements=[db.prepare(`INSERT INTO enrichment_commit_guards(id,ok) SELECT ?,CASE WHEN (${conditions}) AND (SELECT status FROM enrichment_batches WHERE id=?)='preview' AND (SELECT count(*) FROM discovery_leads WHERE id IN (SELECT value FROM json_each(?)) AND (owner_user_id=? OR lower(owner_email)=lower(?)))=? THEN 1 ELSE 0 END`).bind(batch.id,...params,batch.id,JSON.stringify(snapshot.map(s=>s.id)),user.user_id,user.email,snapshot.length)];
+    const statements=[db.prepare(`INSERT INTO enrichment_commit_guards(id,ok) SELECT ?,CASE WHEN (${conditions}) AND (SELECT status FROM enrichment_batches WHERE id=?)='preview' AND (SELECT count(*) FROM discovery_leads WHERE id IN (SELECT value FROM json_each(?)) AND owner_user_id=?)=? THEN 1 ELSE 0 END`).bind(batch.id,...params,batch.id,JSON.stringify(snapshot.map(s=>s.id)),user.user_id,snapshot.length)];
     merged.forEach(l=>statements.push(db.prepare('UPDATE discovery_leads SET payload=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(JSON.stringify(l),l.id)));
     const applied=(saved.applied||0)+snapshot.length;
     const processed=new Set(snapshot.map(s=>s.id));

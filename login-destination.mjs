@@ -3,7 +3,7 @@ export function loginDestination(value){
  if(typeof value!=='string'||value.length>512||!value.startsWith('/')||/[\\\x00-\x20]/.test(value))return '/lab';
  try{
   const url=new URL(value,'https://workspace.invalid');
-  if(url.origin!=='https://workspace.invalid'||!['/lab','/prospect','/warn'].includes(url.pathname))return '/lab';
+  if(url.origin!=='https://workspace.invalid'||!['/lab','/prospect','/warn','/team-hub','/networking'].includes(url.pathname))return '/lab';
   if(url.pathname==='/prospect'&&url.searchParams.get('import')==='1')return '/prospect?import=1';
   const lead=url.searchParams.get('lead');
   return url.pathname+(url.pathname==='/lab'&&/^[A-Za-z0-9_-]{1,100}$/.test(lead||'')?'?lead='+encodeURIComponent(lead):'');
