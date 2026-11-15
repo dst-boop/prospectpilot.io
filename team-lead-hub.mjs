@@ -10,7 +10,7 @@ const json = (body, status = 200) => Response.json(body, {status, headers});
 
 // Adapters are application code, never request fields. There is intentionally no
 // default supervisor policy, roster, database loader, or apply endpoint.
-export function createTeamLeadHub({authorizeSupervisor, listAdvisors, plannerAdapters, page = '', script = '', style = '', synthetic = false} = {}) {
+export function createTeamLeadHub({authorizeSupervisor, listAdvisors, plannerAdapters, page = '', script = '', style = '', synthetic = false, distributionPlanner} = {}) {
   async function access(actor) {
     if (!identifier(actor?.uid)) throw fail(401, 'Sign in to review the team.');
     if (typeof authorizeSupervisor !== 'function') throw fail(503, 'Team preview is not configured. No records have been read.');
@@ -37,6 +37,19 @@ export function createTeamLeadHub({authorizeSupervisor, listAdvisors, plannerAda
       }
       if (pathname === '/api/team-hub/context' && request.method === 'GET')
         return json({mode:'preview_only', can_execute:false, synthetic, team:grant.team, advisors:await roster(actor, grant.team)});
+      if (pathname === '/api/team-hub/distribution-preview') {
+        if (request.method !== 'POST') return new Response(null, {status:405, headers:{...headers, Allow:'POST'}});
+        if (request.headers.get('origin') !== origin) throw fail(403, 'Generate the preview from this website.');
+        if (!/^application\/json(?:\s*;|$)/i.test(request.headers.get('content-type') || '')) throw fail(415, 'Send a JSON preview request.');
+        if (typeof distributionPlanner !== 'function') throw fail(503, 'Distribution preview is not configured.');
+        const text = await request.text();
+        if (text.length > 20_000) throw fail(413, 'The preview request is too large.');
+        let body; try { body = JSON.parse(text); } catch { throw fail(400, 'The preview request is not valid JSON.'); }
+        const result = await distributionPlanner(body, actor, grant.team);
+        if (result?.firmId !== grant.team || result?.can_execute !== false || result?.mode !== 'preview_only')
+          throw fail(403, 'Distribution preview is outside the authorized team.');
+        return json(result);
+      }
       if (pathname !== '/api/team-hub/preview') throw fail(404, 'This preview workspace has no transfer action.');
       if (request.method !== 'POST') return new Response(null, {status:405, headers:{...headers, Allow:'POST'}});
       // POST is read-only but keeps advisor IDs out of URLs/history and requires CSRF protection.
