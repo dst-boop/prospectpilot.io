@@ -86,7 +86,11 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   // Top-ups bought this month add to it; like the plan, they pause while a subscription is lapsed.
   const topups=!plan||lapsed?0:Number((await c.query(`SELECT COALESCE(sum(allowance_micros),0) AS n FROM billing_topups WHERE user_id=$1 AND purchased_at>=${monthStart}`,[userId])).rows[0].n);
   const allowance=base+topups;
-  const used=Number((await c.query(`SELECT COALESCE(sum(reserved_micros),0) AS n FROM prospect_charges WHERE user_id=$1 AND reserved_at>=${monthStart}`,[userId])).rows[0].n);
+  // Research Lab licensed search reserves in its own ledger (lab_costs) and
+  // draws on the same allowance. Only what the server reserved counts: costs
+  // an advisor typed in are self-reported and never trusted for enforcement.
+  const used=Number((await c.query(`SELECT (SELECT COALESCE(sum(reserved_micros),0) FROM prospect_charges WHERE user_id=$1 AND reserved_at>=${monthStart})
+   +(SELECT COALESCE(sum(amount_micros),0) FROM lab_costs WHERE user_id=$1 AND category='provider' AND basis='configured_estimate' AND created_at>=${monthStart}) AS n`,[userId])).rows[0].n);
   const now=new Date(),resets=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth()+1,1));
   return {id,name:plan?.name||'Plan not available',status:row?.status||null,monthly_allowance_micros:allowance,plan_allowance_micros:base,topup_micros:topups,used_this_month_micros:used,remaining_micros:Math.max(0,allowance-used),resets_at:resets.toISOString(),lead_cost_micros:config.leadCostMicros??null};
  }
@@ -297,5 +301,5 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   if(id&&!rows.length)throw fail(404,'Job not found.');if(id)return {job:rows[0],tasks:(await pool.query('SELECT id,contact_id,action,status,attempts,result,completed_at FROM prospect_tasks WHERE job_id=$1 ORDER BY created_at,id',[id])).rows};return {jobs:rows};
  }
  async function route(request,user){const url=new URL(request.url),path=url.pathname,method=request.method;if(!user?.uid)throw fail(401,'Sign in.');if(path==='/api/prospect/providers'&&method==='GET')return summary(user);if(path==='/api/prospect/jobs'&&method==='GET')return jobs(user);if(path==='/api/prospect/jobs'&&method==='POST'){let input;try{input=await request.json();}catch{throw fail(422,'Invalid JSON.');}return enqueue(user,input);}const match=path.match(/^\/api\/prospect\/jobs\/([^/]+)$/);if(match&&method==='GET')return jobs(user,match[1]);throw fail(404,'Job endpoint not found.');}
- return {route,enqueue,tick,summary,jobs,profileImage};
+ return {route,enqueue,tick,summary,jobs,profileImage,allowanceRefusal};
 }

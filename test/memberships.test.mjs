@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
 import {createProspectJobs,readPlans,providerJobConfig} from '../prospect-jobs.mjs';
 import {createProspectWorkspace} from '../prospect-workspace.mjs';
+import {createResearchLab} from '../research-lab.mjs';
 import {providerSetupContent} from '../prospect-jobs-client.js';
 
 // Each advisor's membership plan includes a monthly allowance of paid lookups.
@@ -16,7 +17,9 @@ const PLANS={starter:{name:'Starter',monthly_allowance_micros:2500},pro:{name:'P
 async function fixture(fn,{plans=PLANS,defaultPlan='starter'}={}){
   const db=new PGlite();
   try{
-    for(const name of ['008-prospect-workspace','020-list-sharing','009-prospect-jobs','011-email-domain-check','017-forget','019-web-research','023-memberships','024-billing','025-topups'])await db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
+    // Plan usage also counts Research Lab reservations (lab_costs).
+    await db.exec(readFileSync(new URL('../generated/schema.sql',import.meta.url),'utf8'));
+    for(const name of ['006-research-lab','008-prospect-workspace','020-list-sharing','009-prospect-jobs','011-email-domain-check','017-forget','019-web-research','023-memberships','024-billing','025-topups','012-plan-catalog-summary','007-quality-v2','013-advisor-workflow','014-outreach-cadence','015-dial-budget','016-inbound-contact','021-lab-companies','022-identity-reviews'])await db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
     const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
     let calls=0;
     const providers={readiness:{search:true,profile_image:true},search:async()=>{calls++;return {contacts:[record],retrieved:1,total:1};},
@@ -26,7 +29,7 @@ async function fixture(fn,{plans=PLANS,defaultPlan='starter'}={}){
     const app=createProspectWorkspace({pool,jobs});
     let n=0;
     const search=async user=>{const job=await jobs.enqueue(user,{action:'search',filters:{company:'Example'},size:1,max_cost_micros:1000,idempotency_key:'plan-search-'+(++n)});while(await jobs.tick());return (await jobs.jobs(user,job.id)).tasks[0];};
-    await fn({db,jobs,app,search,calls:()=>calls});
+    await fn({db,pool,jobs,app,search,calls:()=>calls});
   }finally{await db.close();}
 }
 
@@ -111,3 +114,32 @@ test('a worker rebuild keeps every setting the worker reads, plans included',()=
   for(const name of ['PROSPECT_PLANS','PROSPECT_DEFAULT_PLAN','PROSPECT_DAILY_BUDGET_MICROS','ANTHROPIC_API_KEY'])assert.ok(needed.has(name),name+' is read by the worker');
   assert.deepEqual([...needed].filter(name=>!kept.has(name)),[],'setup-research-worker.sh drops settings the worker needs');
 });
+
+// Research Lab licensed search is a paid path too: it reserves in lab_costs,
+// and those reservations draw on the same monthly allowance.
+test('Research Lab licensed search draws on the same plan allowance, in both directions',()=>fixture(async({db,pool,jobs,search})=>{
+  let queries=0;
+  const sources={readiness:{web_search:true},quote:source=>source==='web_search'?1000:0,run:async()=>{queries++;return {status:'completed',candidates:[]};}};
+  const lab=createResearchLab({pool,sources,allowance:jobs.allowanceRefusal});
+  const user={...advisor,email:'advisor-a@example.com'};
+  const discover=async key=>{const run=await lab.enqueue(user,{employers:['Example Manufacturing'],sources:['web_search'],daily_budget_micros:100000,idempotency_key:key});while(await lab.tick());return (await lab.runDetail(user,run.id)).tasks.find(t=>t.source==='web_search');};
+  // Starter allows 2,500: one contact search and one licensed query fit.
+  assert.equal((await search(advisor)).status,'completed');
+  assert.equal((await discover('lab-one')).status,'completed');
+  assert.equal((await jobs.summary(advisor)).plan.used_this_month_micros,2000,'both ledgers count');
+  // A run that can only use licensed search is refused before it is queued.
+  await assert.rejects(lab.enqueue(user,{employers:['Example Manufacturing'],sources:['web_search'],daily_budget_micros:100000,idempotency_key:'lab-two'}),{status:422,message:/monthly allowance for paid lookups is used up/});
+  // With a free source alongside, the run goes ahead and only the paid query is skipped.
+  const mixed=await lab.enqueue(user,{employers:['Example Manufacturing'],sources:['web_search','public_web'],daily_budget_micros:100000,idempotency_key:'lab-mixed'});while(await lab.tick());
+  const skipped=(await lab.runDetail(user,mixed.id)).tasks.find(t=>t.source==='web_search');
+  assert.equal(skipped.status,'skipped');assert.match(skipped.result.errors.join(' '),/monthly allowance/);
+  assert.equal(queries,2,'one licensed query and one free read; the refused query never ran');
+  assert.equal(Number((await db.query("SELECT COALESCE(sum(amount_micros),0) AS n FROM lab_costs WHERE category='provider'")).rows[0].n),1000);
+  // The contact side sees the lab's spend as well.
+  assert.equal((await search(advisor)).status,'skipped');
+  // A cost the advisor typed in is self-reported and never counts.
+  await lab.cost(user,{run_id:mixed.id,category:'provider',amount_micros:900000,idempotency_key:'typed'});
+  assert.equal((await jobs.summary(advisor)).plan.used_this_month_micros,2000);
+  // A colleague's allowance is untouched.
+  assert.equal((await search(colleague)).status,'completed');
+}));
