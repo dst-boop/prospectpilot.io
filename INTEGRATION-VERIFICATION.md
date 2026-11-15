@@ -49,3 +49,16 @@ Local evidence in ignored `.tmp/`: `integration-full-tests.log`, `integration-wo
 - The team hub remains preview-only. Production returns 503 until authoritative firm membership, roster, account and complete snapshot adapters are configured. No ownership mutation or revocation path exists.
 - No new migration is required for these two features. The latest migration remains 031; the concurrent networking increment is reserving 032 separately and is not included here.
 - No paid providers, real contacts, account revocation, outreach, public push or production changes occurred.
+
+## Firm-scoped metadata integration (November 15, 2026)
+
+Merged `68c2eb0daa655299c12075846e9235d729a6a7d0` and its dependency `5357cc985e07c292385c2d0480e512d9a34e0dec` without conflicts. The merged code is `483f5dae6437950e23a40539c2d937abf85d8aeb`; both source branches remain intact.
+
+- Full integrated Node suite: 793 tests, 790 passed, zero failures, three explicit PostgreSQL skips; 146.4 seconds. Log: `.tmp/integration-snapshot-full-tests.log`.
+- Production asset build, all 161 JavaScript/module syntax checks, six Python tests, four shell syntax checks and Git whitespace checks passed.
+- Independent merged-code review found no actionable integration, authentication or packaging findings. Its focused suite ran 195 tests: 193 passed, zero failed, two PostgreSQL concurrency skips.
+- `server.mjs`, `handler.mjs`, `migrate.mjs`, the Docker runtime copy list and all browser assets are unchanged from the prior browser-tested integration. No new browser flow was introduced or claimed tested in this increment.
+- The draft schema is not registered in migrations; migration 032 remains reserved for the separate networking work. The new modules and draft schema reach build-time tests only and are not copied to the runtime image.
+- The new loader returns bounded explicitly assigned metadata with `inventory_complete: true`, but always `complete: false` and `can_execute: false`. The legacy whole-account planner rejects it. This preserves honest limits for private duplicate coverage, unsupported work/provenance/privacy stores, provider rights and serviced-account continuity.
+- Production remains inactive and fail-closed. No backfill, account change, real-data query, ownership transfer, push or deployment occurred.
+- Real PostgreSQL concurrency, Docker image execution and real Firebase/staging integration remain unverified. All three skips require the explicitly configured `POSTGRES_TEST_URL`; no production database setting was used as a fallback.
