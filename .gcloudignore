@@ -19,3 +19,7 @@ outputs/**
 
 # Required by the worker configuration regression test in the Docker build.
 !setup-research-worker.sh
+
+# Read by release guard regression tests inside the build.
+!release.sh
+!.gcloudignore
