@@ -13,7 +13,7 @@ import {createProspectJobs} from '../../prospect-jobs.mjs';
 import {createStagingDatabase} from './staging-database.mjs';
 import {installSyntheticNetworkGuard} from './staging-network.mjs';
 const read=file=>readFileSync(new URL('../../'+file,import.meta.url),'utf8');
-export async function createSyntheticStaging({env=process.env,backend='auto'}={}) {
+export async function createSyntheticStaging({env=process.env,backend='auto',readOnly=false}={}) {
   if(env.NODE_ENV==='production')throw Error('Synthetic staging refuses production mode');
   const database=await createStagingDatabase({env,backend});
   const network=installSyntheticNetworkGuard();
@@ -23,7 +23,7 @@ export async function createSyntheticStaging({env=process.env,backend='auto'}={}
   try {
     await migrate(database.pool);
     const tokens=new Map(),sessions=new Map(),providerCalls=[];
-    const identities={advisor:{uid:'synthetic-advisor',email:'advisor@example.test',name:'Synthetic Advisor'},other:{uid:'synthetic-other',email:'other@example.test',name:'Other Synthetic Advisor'}};
+    const identities={advisor:{uid:'synthetic-advisor',email:'advisor@example.test',name:'Synthetic Advisor'},other:{uid:'synthetic-other',email:'other@example.test',name:'Other Synthetic Advisor'},recycled:{uid:'synthetic-recycled',email:'advisor@example.test',name:'Recycled Email Synthetic Advisor'}};
     for(const [key,identity] of Object.entries(identities))tokens.set('synthetic-id-'+key,{...identity,email_verified:true,auth_time:Math.floor(Date.now()/1000),firebase:{sign_in_provider:'password'}});
     const auth={
       verifyIdToken:async(token,revoked)=>{if(revoked!==true||!tokens.has(token))throw Error('Invalid synthetic token');return tokens.get(token);},
@@ -47,7 +47,7 @@ export async function createSyntheticStaging({env=process.env,backend='auto'}={}
     const port=server.address().port,origin=`https://127.0.0.1:${port}`,base=`http://127.0.0.1:${port}`;
     network.allowPort(port);
     const banner='<p role="status">SYNTHETIC TEST ONLY. Fictional data. No real sign-in, providers, or spending.</p>';
-    handler=createHandler({auth,origins:[origin],ownerEmail:'unavailable-admin@example.test',releaseId:'synthetic-staging',
+    handler=createHandler({readOnly,auth,origins:[origin],ownerEmail:'unavailable-admin@example.test',releaseId:'synthetic-staging',
       worker:{fetch:async()=>new Response('Legacy integrations disabled in synthetic staging',{status:503})},
       lab,prospect,homeHtml:read('home.html'),siteStyle:read('site.css'),brandMark:read('brand.svg'),
       loginHtml:'<!doctype html><title>Synthetic sign-in only</title>'+banner,loginScript:'// No Firebase in synthetic staging.',

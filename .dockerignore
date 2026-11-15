@@ -124,3 +124,5 @@
 !release-readiness.mjs
 # Isolated legacy-recovery aggregate inspector is build-stage test input only.
 !legacy-owner-recovery.mjs
+
+!readonly-fallback.mjs
