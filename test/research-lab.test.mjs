@@ -16,6 +16,7 @@ async function fixture(options={}) {
 await db.exec(readFileSync(new URL('../migrations/015-dial-budget.sql',import.meta.url),'utf8'));
 await db.exec(readFileSync(new URL('../migrations/016-inbound-contact.sql',import.meta.url),'utf8'));
 await db.exec(readFileSync(new URL('../migrations/021-lab-companies.sql',import.meta.url),'utf8')); await db.exec(readFileSync(new URL('../migrations/022-identity-reviews.sql',import.meta.url),'utf8'));
+  await db.exec(readFileSync(new URL('../migrations/033-planning-decisions.sql',import.meta.url),'utf8'));
   const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>pool.query(...a),release(){}})};
   const sources=options.sources||{readiness:{},quote:()=>0,run:async()=>({status:'completed',candidates:[{name:'Jamie Rivera',company:'Example Manufacturing',current_title:'Director',email:'jamie@example.com',estimated_age_range:'62',country:'US'}]})};
   return {db,pool,lab:createResearchLab({pool,sources,...options}),user:{uid:'owner',email:'owner@example.com'}};
@@ -47,7 +48,7 @@ test('discovery is durable, launch-idempotent, deduplicated and counted separate
 test('review requires current identity; first verification is counted once and deletion cascades',async()=>{
   const {db,lab,user}=await fixture();try{
     await lab.importCSV(user,{csv});const id=(await db.query('SELECT id FROM discovery_leads')).rows[0].id;
-    let detail=await lab.detail(user,id);const values={age:{min:62,max:62},residence:{country:'US',scope:'residence'},retirement:{account_type:'401k',route:'separated',assets_confirmed:true,individual:true,eligible_distribution:true,evidence_basis:'participant_disclosure',consent_confirmed:true},contact:{channel:'email',address:'jamie@example.com',identity_confirmed:true},net_worth:{lower_bound_usd:250000,excludes_home:true,net_of_liabilities:true,evidence_basis:'authorized_document',consent_confirmed:true}};
+    let detail=await lab.detail(user,id);const values={planning_decision:{origin:'inbound_request',topic:'retirement_income',prospect_confirmed:true,identity_confirmed:true},residence:{country:'US',scope:'residence'},contact:{channel:'email',address:'jamie@example.com',identity_confirmed:true,outreach_basis:'person_requested'}};
     for(const [field,value] of Object.entries(values))await lab.review(user,id,{field,value,verdict:'confirmed',source:'Participant evidence',note:'Documented confirmation for this individual.',observed_at:new Date().toISOString(),identity_signature:detail.quality.identity_signature});
     assert.equal((await lab.detail(user,id)).quality.status,'verified');assert.equal((await lab.metrics(user)).totals.newly_verified,1);
     const cohort=(await lab.metrics(user)).sources.find(s=>s.acquired===1);
@@ -55,7 +56,7 @@ test('review requires current identity; first verification is counted once and d
     await lab.importCSV(user,{csv:csv+'\n',source:'Repeated import'});
     assert.equal((await lab.metrics(user)).sources.reduce((n,s)=>n+Number(s.acquired||0),0),1);
     await lab.detail(user,id);assert.equal((await lab.metrics(user)).totals.newly_verified,1);
-    await db.query(`UPDATE lab_observations SET payload=jsonb_set(payload,'{observed_at}','"2020-01-01"') WHERE lead_id=$1 AND field='retirement'`,[id]);assert.equal((await lab.metrics(user)).totals.newly_verified,0);
+    await db.query(`UPDATE lab_observations SET payload=jsonb_set(payload,'{observed_at}','"2020-01-01"') WHERE lead_id=$1 AND field='planning_decision'`,[id]);assert.equal((await lab.metrics(user)).totals.newly_verified,0);
     await assert.rejects(lab.review(user,id,{identity_signature:'stale'}),{status:409});
     await db.query('DELETE FROM discovery_leads WHERE id=$1',[id]);assert.equal((await db.query('SELECT * FROM lab_observations')).rows.length,0);assert.equal((await db.query('SELECT * FROM lab_qualification')).rows.length,0);
   }finally{await db.close();}
@@ -78,7 +79,7 @@ test('rule migration invalidates previous verification and retains observations 
     await db.exec(migration);
     assert.notEqual((await db.query('SELECT status FROM lab_qualification WHERE lead_id=$1',[id])).rows[0].status,'unassessed');
     await lab.detail(user,id);
-    row=(await db.query('SELECT * FROM lab_qualification WHERE lead_id=$1',[id])).rows[0];assert.equal(row.rule_version,'retirement-evidence-3');assert.notEqual(row.status,'unassessed');
+    row=(await db.query('SELECT * FROM lab_qualification WHERE lead_id=$1',[id])).rows[0];assert.equal(row.rule_version,'advice-decision-1');assert.notEqual(row.status,'unassessed');
   }finally{await db.close();}
 });
 test('paid lookup budget is reserved before calls and never silently retried after interruption',async()=>{

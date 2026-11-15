@@ -24,17 +24,16 @@ const lead=name=>({lead:{id:name,first_name:name,last_name:'Example',evidence:[]
 const run=name=>({run:{status:name,created_at:'2026-09-10'},tasks:[],costs:[]});
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 
-test('changing qualification target preserves saved budgets and closes stale evidence',async()=>{
-  const c=client();c.element('qualificationTarget').value='rollover_100k';c.element('detail').open=true;
-  const save=c.element('saveTarget').onclick();
-  assert.equal(c.pending[0].url,'/api/lab/settings');
-  const saved={daily_enabled:true,daily_hour:16,daily_budget_micros:12000000,configuration:{daily_budget_micros:12000000,sources:['sec'],qualification_target:'legacy',score_weights:{qualification:7}}};
-  c.pending.shift().respond(saved);await settle();
-  const payload=JSON.parse(c.pending[0].options.body);
-  assert.deepEqual(payload,{...saved,configuration:{...saved.configuration,qualification_target:'rollover_100k'}});
-  c.pending.shift().respond(payload);await save;
-  assert.match(c.element('qualificationTargetStatus').textContent,/Active: \$100,000/);
-  assert.equal(c.element('detail').open,false);assert.equal(c.element('saveTarget').disabled,false);
+test('saved campaign budgets remain available without a qualification-target picker',()=>{
+  const c=client();
+  c.run("readSettings({daily_enabled:true,daily_hour:16,daily_budget_micros:12000000,configuration:{sources:['sec'],qualification_target:'legacy',score_weights:{qualification:7}}})");
+  assert.equal(c.element('budget').value,12);
+  assert.equal(c.element('weightQualification').value,7);
+  assert.equal(c.element('dailyHour').value,16);
+  assert.equal(c.run('Object.hasOwn(config(),\"qualification_target\")'),false);
+  const html=readFileSync(new URL('../lab.html',import.meta.url),'utf8');
+  assert.match(html,/value="planning_decision"/);
+  assert.doesNotMatch(html,/id="qualificationTarget"/);
 });
 
 test('movable amount review shares account evidence fields without showing legacy net-worth fields',()=>{

@@ -1,10 +1,13 @@
 import {validatePersonalEvent} from './prospect-brief.mjs';
 import {createHash} from 'node:crypto';
 import {estimateAgeBand} from './age-band.mjs';
+import {ADVICE_TARGET, ADVICE_RULE_VERSION, CONTACT_BASES, CONTACT_REVIEW_DAYS, DAY_MS, DECISION_ORIGINS,
+  DECISION_REVIEW_DAYS, PERSONAL_EVENT_DAYS, PLANNING_TOPICS, calendarDay, decisionDays, validatePlanningDecision} from './opportunity-policy.mjs';
 
 export const FINANCIAL_EVIDENCE_DAYS = 180;
 export const QUALITY_VERSION = 'retirement-evidence-3';
-export const qualificationVersion = target => target === 'rollover_100k' ? 'retirement-movable-3' : QUALITY_VERSION;
+export const qualificationVersion = target => target === ADVICE_TARGET ? ADVICE_RULE_VERSION
+  : target === 'rollover_100k' ? 'retirement-movable-3' : QUALITY_VERSION;
 export const US_STATES = new Set('AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC'.split(' '));
 const clean = value => String(value ?? '').normalize('NFKC').trim();
 export const nameKey = value => clean(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
@@ -36,6 +39,8 @@ export function candidateKeys(lead) {
 }
 export const QUALITY_FIELDS = ['age', 'residence', 'retirement', 'contact', 'net_worth'];
 export const ROLLOVER_FIELDS = ['residence', 'retirement', 'contact', 'movable_assets'];
+const ADVICE_FIELDS = ['planning_decision', 'residence', 'contact'];
+const sharedMailbox = /^(info|contact|office|admin|sales|support|hello|team|reception|service)(?:[+._-][^@]*)?@/i;
 const RETIREMENT_TYPES = new Set(['401k', '403b', 'governmental_457b', 'qualified_pension', 'profit_sharing', 'tsp']);
 const IRA_TYPES = new Set(['traditional_ira', 'rollover_ira', 'roth_ira', 'sep_ira', 'simple_ira']);
 const DISCLOSURES = new Set(['participant_disclosure', 'authorized_document']);
@@ -71,7 +76,7 @@ export function validateFinancialEvidence(field, inputValue, {asOf = new Date()}
 }
 
 export function validateObservation(input, {userId, identity, now = new Date()} = {}) {
-  if (![...QUALITY_FIELDS, 'movable_assets', 'personal_event'].includes(input.field)) throw Object.assign(Error('Choose a supported qualification criterion.'), {status: 422});
+  if (![...QUALITY_FIELDS, 'movable_assets', 'personal_event', 'planning_decision'].includes(input.field)) throw Object.assign(Error('Choose a supported qualification criterion.'), {status: 422});
   if (!['confirmed', 'rejected', 'unknown'].includes(input.verdict)) throw Object.assign(Error('Choose confirmed, does not meet, or unknown.'), {status: 422});
   const source = clean(input.source).slice(0, 180), note = clean(input.note).slice(0, 1500), url = publicURL(input.url);
   const observed = validDate(input.observed_at);
@@ -81,6 +86,7 @@ export function validateObservation(input, {userId, identity, now = new Date()} 
   let value = input.value;
   if (input.verdict === 'confirmed') {
     if(input.field==='personal_event'){if(!url)throw Object.assign(Error('A source URL is required for a documented personal event.'),{status:422});value=validatePersonalEvent(value,observed.toISOString());}
+    if (input.field === 'planning_decision') value = validatePlanningDecision(value, observed.toISOString());
     if (input.field === 'age') {
       const min = Number(value?.min), max = Number(value?.max);
       if (value?.min==null || value?.max==null || value.min==='' || value.max==='' || !Number.isInteger(min) || !Number.isInteger(max) || min < 0 || max > 120 || min > max) throw Object.assign(Error('Enter attained age in whole years or a supported whole-year range, from 0 to 120.'), {status: 422});
@@ -88,7 +94,9 @@ export function validateObservation(input, {userId, identity, now = new Date()} 
     }
     if (input.field === 'residence') {
       if (!['US', 'USA', 'UNITED STATES', 'UNITED STATES OF AMERICA'].includes(clean(value?.country).toUpperCase()) || value?.scope !== 'residence') throw Object.assign(Error('Confirm the person’s US residence; a company office address is insufficient.'), {status: 422});
-      value = {country: 'US', scope: 'residence'};
+      const state = clean(value.state).toUpperCase();
+      if (state && !US_STATES.has(state)) throw Object.assign(Error('Use the confirmed two-letter US state code.'), {status: 422});
+      value = {country: 'US', scope: 'residence', ...(state ? {state} : {})};
     }
     if (input.field === 'retirement' || input.field === 'movable_assets') value = validateFinancialEvidence(input.field, value, {asOf:observed});
     if (input.field === 'net_worth') {
@@ -99,13 +107,97 @@ export function validateObservation(input, {userId, identity, now = new Date()} 
     if (input.field === 'contact') {
       const normalized = value?.channel === 'linkedin' ? linkedinURL(value.address) : value?.channel === 'email' ? emailAddress(value.address) : value?.channel === 'phone' ? phoneNumber(value.address) : '';
       if (!normalized || value.identity_confirmed !== true) throw Object.assign(Error('Provide a valid personal professional profile, email, or US phone and confirm it belongs to this person.'), {status: 422});
-      value = {channel: value.channel, address: normalized, identity_confirmed: true};
+      const basis = value.outreach_basis;
+      if (basis && !CONTACT_BASES.has(basis)) throw Object.assign(Error('Choose a supported contact permission basis.'), {status: 422});
+      value = {channel: value.channel, address: normalized, identity_confirmed: true, ...(basis ? {outreach_basis: basis} : {})};
     }
   } else value = null;
   return {field: input.field, verdict: input.verdict, value, source, url, note, observed_at: observed.toISOString(), reviewed_at: now.toISOString(), reviewer: userId, identity_signature: identity};
 }
 
+const gate = (state, reason, evidence = null) => ({state, reason, evidence});
+
+function readAdviceReview(field, observations, {identity, now, ttl, fallback}) {
+  const record = observations.filter(item => item.field === field)
+    .sort((a, b) => String(b.reviewed_at).localeCompare(String(a.reviewed_at)))[0];
+  if (!record) return fallback;
+  if (record.identity_signature !== identity) return gate('stale', 'The record changed. Review the evidence against the current identity.', record);
+  const observed = Date.parse(record.observed_at), reviewed = Date.parse(record.reviewed_at);
+  if (!Number.isFinite(observed) || !Number.isFinite(reviewed) || observed > reviewed || reviewed > now
+    || !record.reviewer || excludedSource(`${record.source} ${record.url}`)) return fallback;
+  if (now - observed > ttl * DAY_MS) return gate('stale', 'Reconfirm the evidence with a current source.', record);
+  if (record.verdict === 'rejected') return field === 'planning_decision'
+    ? gate('unknown', 'The most recent review found no open planning decision.', record)
+    : gate('failed', 'The most recent review rejected this criterion.', record);
+  if (record.verdict !== 'confirmed') return gate('unknown', 'Reviewed evidence is inconclusive.', record);
+  try {
+    const evidence = validateObservation(record, {userId: record.reviewer, identity, now});
+    return gate('confirmed', 'Current evidence reviewed.', {...record, value: evidence.value});
+  } catch {
+    return gate('unknown', 'The evidence needs a new review.', record);
+  }
+}
+
+function assessAdviceDecision(lead, observations, {now, plans}) {
+  const identity = leadIdentity(lead);
+  const review = (field, ttl, fallback) => readAdviceReview(field, observations, {identity, now, ttl, fallback});
+  const channels = [...new Set([linkedinURL(lead.linkedin_url), emailAddress(lead.email),
+    ...[lead.phone, lead.business_phone, lead.mobile_phone].map(phoneNumber)].filter(Boolean))];
+  let decision = review('planning_decision', DECISION_REVIEW_DAYS,
+    gate('unknown', 'Record the decision this person wants help with, and any timing they gave.'));
+  let contact = review('contact', CONTACT_REVIEW_DAYS, channels.length
+    ? gate('candidate', 'Verify a route belongs to this person and record the permission or firm clearance for using it.')
+    : gate('unknown', 'No contact route is on file.'));
+  const residence = review('residence', FINANCIAL_EVIDENCE_DAYS,
+    gate('unknown', 'Confirm US residence with a person-level source.'));
+  const transferField = observations.some(item => item.field === 'retirement') ? 'retirement' : 'movable_assets';
+  const retirement = review(transferField, FINANCIAL_EVIDENCE_DAYS,
+    gate('unknown', 'Review individual eligibility separately when a transfer is under consideration.'));
+  const event = review('personal_event', PERSONAL_EVENT_DAYS, null);
+  const eventAge = event?.state === 'confirmed' ? (calendarDay(now.toISOString().slice(0, 10)) - calendarDay(event.evidence.value.event_date)) / DAY_MS : Infinity;
+  const currentEvent = eventAge >= 0 && eventAge <= PERSONAL_EVENT_DAYS ? event.evidence : null;
+  if (decision.state === 'confirmed') {
+    const value = decision.evidence.value;
+    const days = decisionDays(value.decision_by, now);
+    decision = days !== null && days < 0 ? gate('stale', 'The stated decision date passed. Confirm whether the decision is still open.', decision.evidence)
+      : {...decision, reason: `${DECISION_ORIGINS[value.origin]}. ${PLANNING_TOPICS[value.topic]}.`};
+  } else if (decision.state === 'unknown' && !decision.evidence && currentEvent) {
+    decision = gate('candidate', 'A public event gives you a topic to research. Confirm whether the person wants help.');
+  }
+  if (contact.state === 'confirmed') {
+    const route = contact.evidence.value;
+    const restricted = route.channel === 'phone' && (lead.imported_dnc || []).some(p => phoneNumber(p) === route.address);
+    const mailbox = route.channel === 'email' && sharedMailbox.test(route.address);
+    if (restricted || mailbox || !CONTACT_BASES.has(route.outreach_basis)) {
+      const reason = restricted ? 'This number is restricted. Review another approved route.'
+        : mailbox ? 'This address is a shared mailbox. Review a direct route.'
+          : 'Ownership reviewed. Record permission or firm clearance for this route.';
+      contact = gate(restricted?'failed':'candidate', reason, contact.evidence);
+    }
+  }
+  const suppressed = lead.suppressed === true || /^(do not contact|do not call|opted out|deceased|suppressed)$/i.test(clean(lead.follow_up_status))
+    || lead.qualifier?.dnc_status === 'BLOCKED';
+  if (suppressed) contact = gate('failed', 'An existing suppression or contact restriction is active.');
+  const gates = {planning_decision: decision, residence, contact, retirement};
+  const gaps = ADVICE_FIELDS.filter(field => gates[field].state !== 'confirmed');
+  const excluded = suppressed || lead.identity_status === 'excluded' || residence.state === 'failed';
+  const status = excluded ? 'excluded' : lead.identity_status === 'review' ? 'identity_review' : !gaps.length ? 'verified'
+    : currentEvent || decision.state === 'confirmed' ? 'promising' : 'incomplete';
+  const decisionValue = decision.state === 'confirmed' ? decision.evidence.value : null;
+  return {version: ADVICE_RULE_VERSION, target: ADVICE_TARGET, required_fields: ADVICE_FIELDS, status,
+    identity_signature: identity, gates, channels, plans, age_band: null, gaps, evaluated_at: now.toISOString(),
+    score: excluded ? 0 : Math.round((ADVICE_FIELDS.length - gaps.length) / ADVICE_FIELDS.length * 100),
+    score_basis: 'Share of required decision, residence and contact evidence reviewed.', warnings: [],
+    priority_signal: excluded || status === 'identity_review' ? null : decisionValue ? {
+      kind: 'planning_decision', ...decisionValue, label: DECISION_ORIGINS[decisionValue.origin],
+      date: decision.evidence.observed_at.slice(0, 10), days_to_decision: decisionDays(decisionValue.decision_by, now),
+      rank: 3, topic_label: PLANNING_TOPICS[decisionValue.topic],
+    } : currentEvent && !decision.evidence ? {kind: 'personal_event', label: 'Reviewed public event', type: currentEvent.value.type,
+      date: currentEvent.value.event_date, source: currentEvent.source, url: currentEvent.url, rank: 2} : null};
+}
+
 export function assessLead(lead, observations = [], {now = new Date(), plans = [], target = 'legacy'} = {}) {
+  if (target === ADVICE_TARGET) return assessAdviceDecision(lead, observations, {now, plans});
   if (!['legacy','rollover_100k'].includes(target)) throw new Error('Unsupported qualification target.');
   const required = target === 'rollover_100k' ? ROLLOVER_FIELDS : QUALITY_FIELDS;
   const identity = leadIdentity(lead), ageCandidate = clean(lead.estimated_age_range || lead.qualifier?.age_estimate || ''), warnings = [];
@@ -199,12 +291,13 @@ export function scoreWeights(input){
   const out={};for(const key of Object.keys(DEFAULT_SCORE_WEIGHTS)){const n=Number(input?.[key]);out[key]=Number.isInteger(n)&&n>=0&&n<=10?n:DEFAULT_SCORE_WEIGHTS[key];}
   return Object.values(out).some(Boolean)?out:{...DEFAULT_SCORE_WEIGHTS};
 }
-const GATE_LABELS={age:'Age 45–73',residence:'US residence',retirement:'Retirement assets and transfer eligibility',contact:'Contact route',net_worth:'Net worth of at least $250,000, home excluded',movable_assets:'At least $100,000 in retained assets eligible to move'};
+const GATE_LABELS={planning_decision:'Planning decision',age:'Age 45-73',residence:'US residence',retirement:'Retirement assets and transfer eligibility',contact:'Contact route',net_worth:'Net worth of at least $250,000, home excluded',movable_assets:'At least $100,000 in retained assets eligible to move'};
 const factor=(label,points,max,detail='')=>({label,points,max,detail});
 const total=factors=>Math.max(0,Math.min(100,Math.round(factors.reduce((sum,f)=>sum+f.points,0))));
 const DAY=86400000;
 export function leadScores(lead,quality,{now=new Date(),weights=DEFAULT_SCORE_WEIGHTS}={}){
   const g=quality.gates,excluded=quality.status==='excluded';
+  const advice=quality.target===ADVICE_TARGET, signal=quality.priority_signal;
   const exclusion=excluded?(quality.warnings.find(w=>/Equitable/.test(w))||Object.values(g).find(x=>x.state==='failed')?.reason||'Excluded.'):'';
   // Qualification: how far the five gates have got.
   const required=quality.required_fields||QUALITY_FIELDS, max=100/required.length;
@@ -212,17 +305,21 @@ export function leadScores(lead,quality,{now=new Date(),weights=DEFAULT_SCORE_WE
   // Opportunity: only reviewed, disclosed evidence counts.
   const r=g.retirement.state==='confirmed'?g.retirement.evidence?.value:null;
   const routeNow=r&&(r.route==='trustee_transfer'||['separated','plan_termination','other_confirmed'].includes(r.route)||(r.route==='in_service'&&r.plan_permission===true));
-  const opportunity=[factor('Retirement assets and transfer eligibility confirmed',r?40:0,40),
+  const opportunity=advice ? [factor('Person confirmed a planning decision',signal?.kind==='planning_decision'?50:0,50),
+    factor('Requested advice or accepted an introduction',['inbound_request','accepted_introduction'].includes(signal?.origin)?30:0,30),
+    factor('Stated decision within 30 days',signal?.days_to_decision>=0&&signal?.days_to_decision<=30&&signal?.days_to_decision!==null?20:0,20)]
+    : [factor('Retirement assets and transfer eligibility confirmed',r?40:0,40),
     ...(quality.target==='rollover_100k'?[factor('At least $100,000 eligible to move confirmed',g.movable_assets.state==='confirmed'?50:0,50)]:[factor('Net worth of at least $250,000 confirmed',g.net_worth.state==='confirmed'?30:0,30),factor('Age confirmed within 45–73',g.age.state==='confirmed'?20:0,20)]),
     factor('A transfer route is open now',routeNow?10:0,10,r&&!routeNow?'In-service transfer needs plan permission.':'')];
   // Data confidence: how well the record is anchored, sourced, agreed and current.
   const anchor=linkedinURL(lead.linkedin_url)||(emailAddress(lead.email)&&!/^(info|contact|office|admin|sales|support|hello|team|reception|service)@/.test(emailAddress(lead.email)));
-  const reports=Object.values(lead.field_values||{}).flat();
+  const reportFields=Object.entries(lead.field_values||{}).filter(([field])=>!advice||['company','current_title','city','state','country','email','phone','mobile_phone','linkedin_url'].includes(field));
+  const reports=reportFields.flatMap(([,list])=>list);
   // Evidence the advisor reviewed counts too: it is the strongest and often the newest.
   const reviewed=Object.values(g).map(x=>x.evidence).filter(Boolean);
   const sources=[...reports.map(v=>v.source),...(lead.source_names||[]),...reviewed.map(()=>'Reviewed evidence')];
   const strongest=sources.map(sourceStrength).sort((a,b)=>b.rank-a.rank)[0]||{rank:0,label:'No source recorded'};
-  const conflicts=Object.entries(lead.field_values||{}).filter(([field,list])=>new Set(list.map(v=>fieldKey(field,v.value)).filter(Boolean)).size>1).map(([field])=>field);
+  const conflicts=reportFields.filter(([field,list])=>new Set(list.map(v=>fieldKey(field,v.value)).filter(Boolean)).size>1).map(([field])=>field);
   const seen=[...reports.map(v=>v.last_seen),...reviewed.map(e=>e.observed_at),lead.updated_at,lead.created_at].map(d=>Date.parse(d||'')).filter(Number.isFinite).sort((a,b)=>b-a)[0];
   const age=seen?(now-seen)/DAY:Infinity;
   const confidence=[factor('Identified by LinkedIn or a personal email',anchor?25:0,25),
@@ -233,13 +330,14 @@ export function leadScores(lead,quality,{now=new Date(),weights=DEFAULT_SCORE_WE
   // A route confirmed through review is on file even if the record never held it.
   const route=g.contact.state==='confirmed'?g.contact.evidence?.value:null;
   const email=emailAddress(lead.email)||(route?.channel==='email'&&route.address),phones=[lead.phone,lead.business_phone,lead.mobile_phone].map(phoneNumber).filter(Boolean).concat(route?.channel==='phone'?[route.address]:[]),linked=linkedinURL(lead.linkedin_url)||(route?.channel==='linkedin'&&route.address);
-  const contactability=g.contact.state==='failed'?[factor('Contact restricted',0,100,g.contact.reason)]:[factor('Contact route confirmed',g.contact.state==='confirmed'?40:0,40),
+  const contactability=advice?[factor('Direct route reviewed for this outreach',g.contact.state==='confirmed'?100:0,100,g.contact.reason)]
+    :g.contact.state==='failed'?[factor('Contact restricted',0,100,g.contact.reason)]:[factor('Contact route confirmed',g.contact.state==='confirmed'?40:0,40),
     factor('Email on file',email?20:0,20),factor('Phone on file',phones.length?20:0,20,phoneNumber(lead.mobile_phone)?'Mobile numbers carry stricter calling rules.':''),factor('LinkedIn profile on file',linked?20:0,20)];
   const scores={
-    qualification:{score:excluded?0:total(qualification),factors:qualification,basis:quality.target==='rollover_100k'?'Four criteria: 25 points each when confirmed. Age and net worth do not establish movable retirement assets.':'Five gates: 20 points each when confirmed, 5 when there is a lead to check.'},
-    opportunity:{score:excluded?0:total(opportunity),factors:opportunity,basis:'Reviewed, disclosed evidence only. Employer plan data, titles, graduation years and property values never count.'},
+    qualification:{score:excluded?0:advice?quality.score:total(qualification),factors:qualification,basis:advice?quality.score_basis:quality.target==='rollover_100k'?'Four criteria: 25 points each when confirmed. Age and net worth do not establish movable retirement assets.':'Five gates: 20 points each when confirmed, 5 when there is a lead to check.'},
+    opportunity:{score:excluded?0:total(opportunity),factors:opportunity,basis:advice?'Recorded planning intent and timing. Point values are pilot rules.':'Reviewed, disclosed evidence only. Employer plan data, titles, graduation years and property values never count.'},
     confidence:{score:quality.status==='identity_review'?Math.min(40,total(confidence)):total(confidence),factors:confidence,basis:quality.status==='identity_review'?'Held at 40 until conflicting identifiers are resolved.':'How well the record is identified, sourced, agreed and current.'},
-    contactability:{score:total(contactability),factors:contactability,basis:'Routes on file and a reviewed route. Nothing here authorizes outreach.'}};
+    contactability:{score:total(contactability),factors:contactability,basis:advice?'Current ownership and recorded contact basis for a direct route.':'Routes on file and a reviewed route. Nothing here authorizes outreach.'}};
   if(excluded)for(const key of ['qualification','opportunity'])scores[key].basis=`Excluded: ${exclusion}`;
   const w=scoreWeights(weights),sum=Object.values(w).reduce((a,b)=>a+b,0);
   const priority=excluded?0:Math.round(Object.keys(w).reduce((acc,key)=>acc+w[key]*scores[key].score,0)/sum);
@@ -253,7 +351,20 @@ export function csvCell(value) {
 }
 // Age stays a research column for the advisor's own sorting; it never feeds outreach copy.
 const ageColumns = a => [a.status === 'unknown' ? '' : a.label, a.status === 'unknown' ? '' : a.confidence, a.basis.join('; '), a.class_year ?? '', a.class_basis ?? '', a.alumni_window, a.career_stage];
-export function researchCSV(rows) {
+export function researchCSV(rows, target = rows[0]?.quality.target) {
+  if (target === ADVICE_TARGET) {
+    const heading = ['First Name', 'Last Name', 'Company', 'Title', 'Email', 'Phone', 'LinkedIn URL', 'Advice Lead Status', 'Evidence Score',
+      'Planning Decision Review', 'US Residence Review', 'Contact Route Review', 'Transfer Eligibility Review', 'Missing Evidence', 'Qualification Target'];
+    const values = rows.map(({lead, quality}) => {
+      const {gates, status} = quality;
+      const route = status === 'verified' && gates.contact.state === 'confirmed' ? gates.contact.evidence?.value : null;
+      return [lead.first_name, lead.last_name, lead.company, lead.current_title,
+        ...['email','phone','linkedin'].map(channel => route?.channel === channel ? route.address : ''),
+        status, quality.score, gates.planning_decision.state, gates.residence.state, gates.contact.state,
+        gates.retirement.state, quality.gaps.join('; '), ADVICE_TARGET];
+    });
+    return '\uFEFF' + [heading, ...values].map(row => row.map(csvCell).join(',')).join('\r\n');
+  }
   const header = ['First Name', 'Last Name', 'Company', 'Title', 'Email', 'Phone', 'LinkedIn URL', 'Quality Status', 'Evidence Score', 'Age 45-73', 'US Residence', 'Transfer Eligibility', 'Contact', 'Net Worth Excluding Home >=250K', 'Missing Evidence', 'Source URLs', 'Research Only', 'Age Band (estimate unless reported)', 'Age Confidence', 'Age Basis', 'Class Year', 'Class Basis', 'Alumni 1977-1990', 'Career Stage'];
   header.push('Qualification Target','Retained Assets Eligible to Move >=100K');
   return '\uFEFF' + [header, ...rows.map(({lead, quality}) => [lead.first_name, lead.last_name, lead.company, lead.current_title, lead.email, lead.phone || lead.business_phone || lead.mobile_phone, lead.linkedin_url, quality.status, quality.score, ...QUALITY_FIELDS.map(f => quality.gates[f].state), quality.gaps.join('; '), (quality.required_fields||QUALITY_FIELDS).map(f => quality.gates[f].evidence?.url).filter(Boolean).join('; '), 'Not a call list; existing suppression applies', ...ageColumns(quality.age_band || estimateAgeBand(lead)),quality.target||'legacy',quality.gates.movable_assets?.state||'not_assessed'])].map(row => row.map(csvCell).join(',')).join('\r\n');

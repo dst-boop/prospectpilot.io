@@ -33,7 +33,9 @@ export async function historicalModules(commit) {
 }
 export function assertPinnedTargetMigrations() {
   const planned = git(['show', `${targetCommit}:migrate.mjs`]);
-  assert.equal(readFileSync(join(root, 'migrate.mjs'), 'utf8').replaceAll('\r\n', '\n'), planned.replaceAll('\r\n', '\n'), 'Target migration runner drifted from pinned PR97');
+  const expected = planned.replace("['032','migrations/032-networking-capture.sql']]", "['032','migrations/032-networking-capture.sql'],['033','migrations/033-planning-decisions.sql']]");
+  assert.notEqual(expected, planned, 'Pinned 032 must remain the predecessor to 033');
+  assert.equal(readFileSync(join(root, 'migrate.mjs'), 'utf8').replaceAll('\r\n', '\n'), expected.replaceAll('\r\n', '\n'), 'Only the additive 033 entry may follow the pinned runner');
   assert.match(planned, /\['029','migrations\/029-lab-lead-ledger.sql'\],\['030'/);
   return ['030-personal-events.sql', '031-autopilot.sql', '032-networking-capture.sql'].map(file => ({file, sql: git(['show', `${targetCommit}:migrations/${file}`])}));
 }
