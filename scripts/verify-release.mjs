@@ -1,12 +1,9 @@
 /**
  * Post-deploy verification of a released service, from outside it.
  *
- * `release.sh` checks the version endpoint once, in the middle of a deploy, and
- * cannot be run again afterwards without deploying something. The rest of the
- * verification has been a list of things to remember to click, and twice now a
- * release has been recorded as unverified because the person holding the list
- * ran out of session before finishing it. This is the part of that list a
- * machine can do, so it can be re-run at any time against any environment.
+ * `release.sh` invokes this after promoting its validated candidate. This
+ * command can also be run on its own, without deploying, to repeat the public
+ * verification against any environment. Signed-in checks remain separate.
  *
  * Unauthenticated and read-only by design. It can be pointed at production
  * safely: every request is a GET except one deliberately cross-origin POST that
@@ -21,7 +18,7 @@
 import {pathToFileURL} from 'node:url';
 import {resolve} from 'node:path';
 
-const EXPECTED = {feature_set: 'research-lab-v1', quality_version: 'retirement-evidence-3',
+const EXPECTED = {feature_set: 'research-lab-v1', quality_version: 'retirement-evidence-3', cadence_version: 'outreach-cadence-1',
   advisor_workspace_version: 'advisor-workflow-1', contact_workspace_version: 'professional-contacts-1'};
 
 // Health is required on every host unless explicitly overridden. Cloud Run

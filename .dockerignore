@@ -99,3 +99,7 @@
 !schema-drafts/firm-preview-boundary.sql
 
 !firm-scoped-snapshot.mjs
+
+# Read by release guard regression tests inside the build.
+!release.sh
+!.gcloudignore
