@@ -23,8 +23,11 @@ test('native PostgreSQL: 030–033 retains table locks until commit; blocked ope
    t.diagnostic(`Synthetic 10,000-row DDL elapsed ${Math.round(performance.now()-start)}ms; not a production capacity estimate.`);
    await reader.query("SET lock_timeout='200ms'");
    await assert.rejects(reader.query('SELECT count(*) FROM lab_observations'),{code:'55P03'});
+   await assert.rejects(reader.query("UPDATE lab_observations SET payload='{\"blocked\":true}'::jsonb WHERE lead_id=$1",[id]),{code:'55P03'});
+   await assert.rejects(reader.query("INSERT INTO lab_observations(lead_id,user_id,field,payload) VALUES($1,$2,'age','{}'::jsonb)",[id,owner.uid]),{code:'55P03'});
    await migration.query('ROLLBACK');
    assert.equal((await reader.query('SELECT count(*)::int AS n FROM lab_observations')).rows[0].n,10000);
+   assert.equal((await reader.query("SELECT count(*)::int AS n FROM lab_observations WHERE payload <> '{}'::jsonb")).rows[0].n,0);
    assert.equal((await reader.query("SELECT count(*)::int AS n FROM prospectpilot_migrations WHERE id>='030'")).rows[0].n,0);
    assert.equal((await reader.query("SELECT to_regclass('prospect_networking_captures') AS x")).rows[0].x,null);
    // A live reader can prevent migration lock acquisition. Failure must leave 029 unchanged.
