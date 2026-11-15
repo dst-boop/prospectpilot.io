@@ -56,11 +56,13 @@ export function newsRoleLinks(text,name,title,company){
 // Where a small company's site usually keeps its people, tried when menus are
 // built by script and their links cannot be read. Each is still robots-checked.
 const COMMON_PATHS=['/leadership','/our-team','/team','/management','/about-us','/about','/company','/who-we-are','/staff'];
-export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicros=null,apiFetch=fetch,discoverCompanies=discoverMarketCompanies,fallbacks=true}={}) {
+export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicros=null,apiFetch=fetch,discoverCompanies=discoverMarketCompanies,fallbacks=true,requestTimeoutMs=7000,websiteTimeoutMs=45000}={}) {
+  if(!Number.isSafeInteger(requestTimeoutMs)||requestTimeoutMs<1||requestTimeoutMs>70000||!Number.isSafeInteger(websiteTimeoutMs)||websiteTimeoutMs<1||websiteTimeoutMs>=70000)throw Error('Invalid source request deadlines.');
   const cached=createCachedGet(get,{ttl:3600000,maxEntries:150,maxBytes:20000000});
   const robots=new Map();
-  async function read(url, signal, maxBytes=2*1024*1024,options={}) {return cached(url,{signal,maxBytes,...options});}
-  async function json(url,signal,maxBytes) {const r=await read(url,signal,maxBytes);return JSON.parse(r.text);}
+  // A single slow page or index must not spend the whole source deadline.
+  async function read(url, signal, maxBytes=2*1024*1024,options={}) {return cached(url,{...options,maxBytes,signal:AbortSignal.any([signal,AbortSignal.timeout(requestTimeoutMs)])});}
+  async function json(url,signal,maxBytes) {const r=await read(url,signal,maxBytes,{format:'json'});return JSON.parse(r.text);}
   async function page(value,signal) {
     let url=new URL(value);
     for(let hop=0;hop<4;hop++){
@@ -125,11 +127,14 @@ export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicr
       const result=await page(url,signal);
       return {status:'completed',candidates:proxyCandidates(result.text,result.url,employer.company,date),documents:[{url:result.url,source_date:date,scope:'company'}],errors:[]};
     }
+    // Keep part of the total 70-second budget for the independent news fallback,
+    // even when several company pages or guessed paths are slow in succession.
+    const websiteSignal=source==='web_search'?signal:AbortSignal.any([signal,AbortSignal.timeout(websiteTimeoutMs)]);
     let urls=[];
     if(source==='web_search') urls=await webSearch(employer.company,signal);
     else {
       if(publicURL(employer.website)) urls.push(employer.website);
-      if(!urls.length) {try{urls=await officialSites(employer.company,signal);}catch{errors.push('Official website index unavailable.');}}
+      if(!urls.length) {try{urls=await officialSites(employer.company,websiteSignal);}catch{errors.push('Official website index unavailable.');}}
     }
     const targetCompany=companyKey(employer.company),used=[];
     // A page counts only when it names the employer; people found there are
@@ -164,14 +169,14 @@ export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicr
     // nobody: the usual addresses, tried once each.
     for(let pass=0;pass<2;pass++){
     if(pass===1){
-      if(!fallbacks||source==='web_search'||!siteOrigin||candidates.length||signal.aborted)break;
+      if(!fallbacks||source==='web_search'||!siteOrigin||candidates.length||websiteSignal.aborted)break;
       used.push('common_paths');
       urls=COMMON_PATHS.map(path=>siteOrigin+path).filter(href=>!queued.has(href)&&!seen.has(href));
       urls.forEach(href=>{probed.add(href);queued.add(href);});
     }
-    for(let i=0;i<urls.length&&seen.size<(pass?10:5)&&!signal.aborted;i++) {
+    for(let i=0;i<urls.length&&seen.size<(pass?10:5)&&!websiteSignal.aborted;i++) {
       try {
-        const result=await page(urls[i],signal);if(seen.has(result.url))continue;seen.add(result.url);
+        const result=await page(urls[i],websiteSignal);if(seen.has(result.url))continue;seen.add(result.url);
         const external=!officialHosts.has(hostKey(result.url));
         if(readPeople(result,external
           ? {scope:'external',sourceName:source==='web_search'?'Web search page':'External public page',website:employerWebsite}
@@ -191,12 +196,14 @@ export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicr
         const pending=[...new Set([...urls.slice(i+1),...discovered])].sort((a,b)=>biographyPriority(a)-biographyPriority(b)).slice(0,Math.max(0,(pass?COMMON_PATHS.length:9)-i-1));
         pending.forEach(url=>queued.add(url));urls.splice(i+1,urls.length,...pending);
       } catch(error) {
-        // A guessed address that does not exist is not a failure; a publisher's refusal still is.
-        if(probed.has(urls[i])&&!/Publisher/.test(error.message))continue;
+        // A missing guessed address is expected, but timeouts and other source
+        // failures still leave a coverage gap even if a later page finds people.
+        if(probed.has(urls[i])&&/\bHTTP (?:404|410)\b/.test(error.message))continue;
         errors.push(/Publisher|source|format|redirect/i.test(error.message)?error.message:'Public page unavailable.');
       }
     }
     }
+    if(websiteSignal.aborted)errors.push('Company website research timed out. Remaining sources may still be available.');
     if(!siteOrigin) errors.push('No official website was found in the free index. Add an employer website or enable licensed web search.');
     // When the company's own pages give no people (blocked, missing or silent),
     // the free public news index is the next route: up to three articles that
@@ -212,7 +219,7 @@ export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicr
         for(const url of articles){
           if(articlesRead>=3||signal.aborted)break;
           try{const result=await page(url,signal);articlesRead++;fromNews+=readPeople(result,{scope:'news',sourceName:'News article',website:publicURL(employer.website)?new URL(employer.website).origin:''})||0;}
-          catch(error){if(/Publisher/.test(error.message))errors.push('A news site blocks automated reading.');}
+          catch(error){errors.push(/Publisher/.test(error.message)?'A news site blocks automated reading.':'A news page was unavailable or timed out.');}
         }
         if(!fromNews)errors.push(articles.length?'News articles named no people with a matching role at this company.':'No recent news articles named this company.');
       } catch {errors.push('Public news index unavailable.');}
