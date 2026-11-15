@@ -5,9 +5,10 @@ import {ADVICE_TARGET, ADVICE_RULE_VERSION, CONTACT_BASES, CONTACT_REVIEW_DAYS, 
   DECISION_REVIEW_DAYS, PERSONAL_EVENT_DAYS, PLANNING_TOPICS, calendarDay, decisionDays, validatePlanningDecision} from './opportunity-policy.mjs';
 
 export const FINANCIAL_EVIDENCE_DAYS = 180;
-export const QUALITY_VERSION = 'retirement-evidence-3';
+const LEGACY_QUALITY_VERSION = 'retirement-evidence-3';
+export const QUALITY_VERSION = ADVICE_RULE_VERSION;
 export const qualificationVersion = target => target === ADVICE_TARGET ? ADVICE_RULE_VERSION
-  : target === 'rollover_100k' ? 'retirement-movable-3' : QUALITY_VERSION;
+  : target === 'rollover_100k' ? 'retirement-movable-3' : LEGACY_QUALITY_VERSION;
 export const US_STATES = new Set('AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC'.split(' '));
 const clean = value => String(value ?? '').normalize('NFKC').trim();
 export const nameKey = value => clean(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();

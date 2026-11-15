@@ -16,7 +16,7 @@ import {ADVICE_TARGET} from './opportunity-policy.mjs';
 // withhold a touch; none can authorize one that the qualification gates, a
 // suppression or a do-not-call entry already refused.
 
-export const CADENCE_VERSION = 'outreach-cadence-1';
+export const CADENCE_VERSION = 'outreach-cadence-2';
 
 export const MAX_TOUCHES = 6;
 export const WINDOW_DAYS = 45;
