@@ -20,6 +20,7 @@ const canonical = value => JSON.stringify(value, (_, item) => item && typeof ite
 const byName = (items = []) => [...items].sort((a,b) => String(a.name).localeCompare(String(b.name)));
 const releaseEnvironment = new Set(['PROSPECTPILOT_RELEASE_ID', 'PROSPECTPILOT_RELEASE_CHECK_ORIGIN']);
 export const rollbackContractCommit = '3ba8bdbe55105fc0b9c83e2e3307966aa6499109';
+export const ownershipContractCommit = 'c50d17bd39befd8e41f241b80d9d3e5493ad88f1';
 
 // Compare in memory only. Never return or log env values, secret references,
 // secret aliases, or hashes that could expose low-entropy secret values.
@@ -76,13 +77,15 @@ export function verifyRollbackFloor({service, previous, policy, project, region,
   const image = previous.status?.imageDigest || declared;
   if (!new RegExp(`^${region}-docker\\.pkg\\.dev/${project}/prospectpilot/app@sha256:[a-f0-9]{64}$`).test(image || '') ||
       (declared?.includes('@sha256:') && declared !== image)) fail('The serving rollback image has no matching immutable registry digest.');
-  if (policy?.schemaVersion !== 1 || policy.contractCommit !== rollbackContractCommit || !Array.isArray(policy.floors))
+  if (policy?.schemaVersion !== 2 || policy.contractCommit !== rollbackContractCommit ||
+      policy.ownershipContractCommit !== ownershipContractCommit || !Array.isArray(policy.floors))
     fail('Invalid repository rollback-floor policy.');
   const floor = policy.floors.find(f => f.project === project && f.region === region && f.service === 'prospectpilot' && f.revision === name && f.image === image);
   if (!floor || !/^[a-f0-9]{40}$/.test(floor.sourceCommit || '') ||
       !/^https:\/\/github\.com\/dst-boop\/prospectpilot\.io\/actions\/runs\/\d+(?:\/|$)/.test(floor.imageTestEvidence || '') ||
+      !/^https:\/\/github\.com\/dst-boop\/prospectpilot\.io\/actions\/runs\/\d+(?:\/|$)/.test(floor.ownershipTestEvidence || '') ||
       !/^https:\/\/console\.cloud\.google\.com\/cloud-build\//.test(floor.buildProvenance || ''))
-    fail('Networking release blocked: the serving revision is not a reviewed, immutable, image-tested rollback floor. PR100 source or a local image ID alone is insufficient.');
+    fail('Networking release blocked: the serving revision lacks a reviewed immutable image floor with captured-alias deletion and UID-ownership evidence. PR100 source or a local image ID alone is insufficient.');
   return {image, sourceCommit: floor.sourceCommit};
 }
 

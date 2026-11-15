@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
-import {servingRevision, releasePreflight, verifyCandidate, verifyUnchangedTraffic, verifyRuntimeMatches, candidateOrigin, rollbackContractCommit} from '../scripts/release-config.mjs';
+import {servingRevision, releasePreflight, verifyCandidate, verifyUnchangedTraffic, verifyRuntimeMatches, candidateOrigin, rollbackContractCommit, ownershipContractCommit} from '../scripts/release-config.mjs';
 
 const project = 'test-project';
 const identity = name => `${name}@${project}.iam.gserviceaccount.com`;
@@ -15,10 +15,12 @@ const image = `us-central1-docker.pkg.dev/${project}/prospectpilot/app@sha256:${
 const releaseId = 'review-test';
 const serviceUrl = 'https://prospectpilot-fixture.a.run.app';
 const readinessOrigin = candidateOrigin(serviceUrl, releaseId);
-const rollbackPolicy = () => ({schemaVersion: 1, contractCommit: rollbackContractCommit, floors: [{
+const rollbackPolicy = () => ({schemaVersion: 2, contractCommit: rollbackContractCommit, ownershipContractCommit, floors: [{
   project, region: 'us-central1', service: 'prospectpilot', revision: 'prospectpilot-serving', image,
-  sourceCommit: '402e079d7d31297bd56412d4c236bec18d98d130',
+  // Hypothetical fixture only; no real source/image is approved by this test.
+  sourceCommit: ownershipContractCommit,
   imageTestEvidence: 'https://github.com/dst-boop/prospectpilot.io/actions/runs/1',
+  ownershipTestEvidence: 'https://github.com/dst-boop/prospectpilot.io/actions/runs/2',
   buildProvenance: 'https://console.cloud.google.com/cloud-build/builds/fixture?project=test-project',
 }]});
 const ready = {conditions: [{type: 'Ready', status: 'True'}]};
@@ -123,6 +125,7 @@ function runRelease(scenario = 'ok', refresh = '0') {
   for (const file of ['release.sh', 'scripts/release-config.mjs']) copyFileSync(join(root, file), join(checkout, file));
   const policy = rollbackPolicy();
   if (scenario === 'no-floor') policy.floors = [];
+  if (scenario === 'no-ownership-evidence') delete policy.floors[0].ownershipTestEvidence;
   writeFileSync(join(checkout, 'scripts/release-rollback-policy.json'), JSON.stringify(policy));
   const fixture = {service: service(), previous: revision('prospectpilot-serving'), migrate: job('prospectpilot-migrate'),
     research: job('prospectpilot-research'), catalog: job('prospectpilot-plan-catalog'), candidate: revision(), image};
@@ -235,12 +238,12 @@ test('release stages an immutable HTTP/1 runtime candidate and gates promotion, 
 });
 
 test('all build, migration, startup, configuration and concurrent-release failures stop before promotion', () => {
-  for (const scenario of ['missing-worker', 'builder-job', 'build-fails', 'bad-digest', 'migration-fails', 'startup-fails', 'wrong-identity', 'http2', 'concurrent', 'concurrent-late', 'concurrent-final', 'worker-fails', 'no-floor', 'template-drift', 'candidate-drift', 'secret-drift', 'unapproved-tag', 'session-missing', 'readiness-fails', 'readiness-late-fails']) {
+  for (const scenario of ['missing-worker', 'builder-job', 'build-fails', 'bad-digest', 'migration-fails', 'startup-fails', 'wrong-identity', 'http2', 'concurrent', 'concurrent-late', 'concurrent-final', 'worker-fails', 'no-floor', 'no-ownership-evidence', 'template-drift', 'candidate-drift', 'secret-drift', 'unapproved-tag', 'session-missing', 'readiness-fails', 'readiness-late-fails']) {
     const run = runRelease(scenario);
     assert.notEqual(run.status, 0, scenario);
     assert.doesNotMatch(run.stdout + run.stderr, /WRONG-PRIVATE|wrong-secret-version|synthetic-db-password/);
     assert.equal(run.calls.some(commandIs('run', 'services', 'update-traffic')), false, scenario);
-    if (['missing-worker', 'builder-job', 'no-floor', 'template-drift', 'unapproved-tag', 'session-missing'].includes(scenario)) assert.equal(run.calls.some(commandIs('builds', 'submit')), false, scenario);
+    if (['missing-worker', 'builder-job', 'no-floor', 'no-ownership-evidence', 'template-drift', 'unapproved-tag', 'session-missing'].includes(scenario)) assert.equal(run.calls.some(commandIs('builds', 'submit')), false, scenario);
     if (['startup-fails', 'wrong-identity', 'http2', 'concurrent', 'candidate-drift', 'secret-drift', 'readiness-fails'].includes(scenario)) assert.equal(run.calls.some(commandIs('run', 'jobs', 'update', 'prospectpilot-research')), false, scenario);
   }
 });
@@ -285,6 +288,11 @@ test('networking requires a reviewed exact serving-revision and registry-image r
     data => data.rollbackPolicy.floors[0].image = 'sha256:' + 'a'.repeat(64),
     data => data.rollbackPolicy.floors[0].sourceCommit = 'b543fa4',
     data => data.rollbackPolicy.contractCommit = '0'.repeat(40),
+    data => data.rollbackPolicy.schemaVersion = 1,
+    data => delete data.rollbackPolicy.ownershipContractCommit,
+    data => data.rollbackPolicy.ownershipContractCommit = '402e079d7d31297bd56412d4c236bec18d98d130',
+    data => delete data.rollbackPolicy.floors[0].ownershipTestEvidence,
+    data => data.rollbackPolicy.floors[0].ownershipTestEvidence = 'https://example.invalid/not-image-evidence',
     data => delete data.rollbackPolicy.floors[0].imageTestEvidence,
     data => delete data.rollbackPolicy.floors[0].buildProvenance,
     data => data.service.status.traffic.push({tag: 'unsafe', revisionName: 'prospectpilot-older', percent: 0}),
@@ -292,6 +300,10 @@ test('networking requires a reviewed exact serving-revision and registry-image r
     data => data.previous.status.imageDigest = image.replace('a'.repeat(64), 'b'.repeat(64)),
   ]) { const data = snapshot(); mutate(data); assert.throws(() => releasePreflight(data)); }
   const policy = JSON.parse(readFileSync(new URL('../scripts/release-rollback-policy.json', import.meta.url), 'utf8'));
+  assert.equal(policy.schemaVersion, 2);
+  assert.equal(policy.contractCommit, rollbackContractCommit);
+  assert.equal(policy.ownershipContractCommit, ownershipContractCommit);
+  assert.deepEqual(policy.floors, [], 'No live or synthetic rollback image is approved in the repository.');
   assert.throws(() => releasePreflight({...snapshot(), rollbackPolicy: policy}), /Networking release blocked/,
     'The checked-in policy must never approve a synthetic test floor. Real reviewed floors can be added without weakening the validator.');
 });

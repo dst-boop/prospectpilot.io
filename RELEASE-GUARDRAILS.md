@@ -10,7 +10,7 @@ The repository release script did not originate an explicit HTTP/2 or builder-ru
 
 ## Networking release blocker
 
-The combined release now includes migration 032. [Networking rollout/rollback requirements](NETWORKING-RELEASE-GATE.md) supersede any assumption below that the last serving revision is automatically safe. The checked-in immutable rollback-floor policy is empty, so release stops in read-only preflight. PR100 source tests/local image IDs do not approve a production registry image. A separately verified compatible floor and private owner-session readiness input are required.
+The combined release now includes migration 032. [Networking rollout/rollback requirements](NETWORKING-RELEASE-GATE.md) supersede any assumption below that the last serving revision is automatically safe. The checked-in immutable rollback-floor policy is empty, so release stops in read-only preflight. PR100 source tests/local image IDs do not approve a production registry image. A separately verified floor preserving both captured-alias tombstones and UID-only ownership, plus private owner-session readiness input, is required. PR100 predates the UID security fix and is not a security-safe rollback target even when its older compatibility rehearsal passes.
 
 ## Current release contract
 

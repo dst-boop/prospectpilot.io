@@ -46,4 +46,4 @@ Local PGlite success and CI PostgreSQL16 success are separate evidence. Inspect 
 
 ## Release enforcement
 
-The [networking release gate](NETWORKING-RELEASE-GATE.md) refuses an unverified previous serving revision as rollback. This source rehearsal does not populate the immutable registry-image policy or satisfy live auth/database readiness. The policy remains empty until exact image provenance and compatibility evidence are independently reviewed.
+The [networking release gate](NETWORKING-RELEASE-GATE.md) refuses an unverified previous serving revision as rollback. This source rehearsal does not populate the immutable registry-image policy or satisfy live auth/database readiness. The policy remains empty until exact image provenance and compatibility evidence are independently reviewed. The pinned PR100 candidate predates UID-only ownership fix `c50d17bd39befd8e41f241b80d9d3e5493ad88f1`: this rehearsal demonstrates synthetic data compatibility, not a security-safe rollback. A real floor must also pass the pinned UID-ownership image contract and preserve captured-alias tombstones.

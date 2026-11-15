@@ -1,5 +1,6 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "contractCommit": "3ba8bdbe55105fc0b9c83e2e3307966aa6499109",
+  "ownershipContractCommit": "c50d17bd39befd8e41f241b80d9d3e5493ad88f1",
   "floors": []
 }
