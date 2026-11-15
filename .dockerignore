@@ -129,3 +129,7 @@
 
 # Distribution planner is opt-in and build-test-only until firm adapter review.
 !team-distribution-plan.mjs
+
+# Isolated firm transfer authority draft; build tests only, never runtime copied.
+!firm-transfer-authority.mjs
+!schema-drafts/firm-transfer-authority.sql
