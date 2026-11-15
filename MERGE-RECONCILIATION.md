@@ -1,6 +1,6 @@
 # November 2026 merge reconciliation
 
-This change preserves the production tree from main `148b07c936c27a060cc1301044829e9fe264ac57`. It only carries additional regression coverage from the isolated baseline candidates into the current application.
+The original reconciliation began at main `148b07c936c27a060cc1301044829e9fe264ac57`. This refreshed PR preserves the production code, dependencies and release policy from main `2d75aca4245d141dd4386e0815f59d23ad100665`, which includes security hardening from PR #108 and the privacy regression gate from PR #99. It only carries additional regression coverage from the isolated baseline candidates into the current application.
 
 ## Superseded integration pull requests
 
@@ -11,7 +11,7 @@ Closing these superseded integration PRs does not delete their branches, change 
 
 ## Separate privacy work
 
-PR #99 retains the 031-to-032 privacy regression contract and is reconciled against the current non-production integration branch. PR #100 is preserved as draft PR #106 against a dedicated frozen `b543fa4` baseline because GitHub prevents retargeting stacked PRs. The candidate SHA and original branch remain unchanged. This old candidate still lacks the later UID ownership fix and is not an approved rollback floor. Neither the historical candidate nor passing source tests establish serving image provenance or authorize deployment. The existing main release gates and full 029-to-032 upgrade rehearsal remain unchanged.
+PR #99 has been merged into main, retaining the 031-to-032 privacy regression contract and its separate CI gate. PR #100 is preserved as draft PR #106 against a dedicated frozen `b543fa4` baseline because GitHub prevents retargeting stacked PRs. The candidate SHA and original branch remain unchanged. This old candidate still lacks the later UID ownership fix and is not an approved rollback floor. Neither the historical candidate nor passing source tests establish serving image provenance or authorize deployment. The existing main release gates and full 029-to-032 upgrade rehearsal remain unchanged.
 
 ## Verification scope
 
