@@ -19,25 +19,30 @@ export function publicIPv4(ip){
  if(isIP(ip)!==4)return false;const [a,b]=ip.split('.').map(Number);
  return !(a===0||a===10||a===127||a>=224||a===169&&b===254||a===172&&b>=16&&b<=31||a===192&&(b===168||b===0||b===2)||a===100&&b>=64&&b<=127||a===198&&(b===18||b===19||b===51)||a===203&&b===0);
 }
-export async function publicGet(value,{signal,maxBytes=2*1024*1024,followRedirects=true}={}){
+// Resolve and pin the public address on every hop. The injectable transports are
+// for hermetic regression tests; production always uses the native DNS/HTTP APIs.
+export function createPublicGet({resolveAddresses=resolve4,httpClient=http,httpsClient=https,userAgent='ProspectPilotResearch/1.0 (+https://prospectpilot.io)',accept='application/json,text/html,text/plain'}={}){
+return async function publicGet(value,{signal,maxBytes=2*1024*1024,followRedirects=true}={}){
  signal=signal||AbortSignal.timeout(15000);
  let url=new URL(value);
  for(let hop=0;hop<4;hop++){
   if(!['http:','https:'].includes(url.protocol)||url.username||url.password||url.port&&!['80','443'].includes(url.port))throw Error('Unsupported address');
   signal.throwIfAborted();
-  const addresses=await new Promise((resolve,reject)=>{const abort=()=>reject(signal.reason);signal.addEventListener('abort',abort,{once:true});resolve4(url.hostname).then(resolve,reject).finally(()=>signal.removeEventListener('abort',abort));});
+  const addresses=await new Promise((resolve,reject)=>{const abort=()=>reject(signal.reason);signal.addEventListener('abort',abort,{once:true});resolveAddresses(url.hostname).then(resolve,reject).finally(()=>signal.removeEventListener('abort',abort));});
   signal.throwIfAborted();
   if(!addresses.length||!addresses.every(publicIPv4))throw Error('Non-public address');
   const response=await new Promise((resolve,reject)=>{
-   const request=(url.protocol==='https:'?https:http).get(url,{signal,headers:{'user-agent':'ProspectPilotResearch/1.0 (+https://prospectpilot.io)','accept':'application/json,text/html,text/plain','accept-encoding':'identity'},lookup:(_host,options,cb)=>options.all?cb(null,[{address:addresses[0],family:4}]):cb(null,addresses[0],4)},res=>{
+   const request=(url.protocol==='https:'?httpsClient:httpClient).get(url,{signal,headers:{'user-agent':userAgent,'accept':accept,'accept-encoding':'identity'},lookup:(_host,options,cb)=>options.all?cb(null,[{address:addresses[0],family:4}]):cb(null,addresses[0],4)},res=>{
     if([301,302,303,307,308].includes(res.statusCode)){res.destroy();resolve({redirect:res.headers.location});return;}
-    if(res.statusCode!==200){res.destroy();reject(Error('Source HTTP '+res.statusCode));return;}
+    if(res.statusCode!==200){res.destroy();reject(Object.assign(Error('Source HTTP '+res.statusCode),{status:res.statusCode}));return;}
     const chunks=[];let size=0;res.on('data',c=>{size+=c.length;if(size>maxBytes){res.destroy(Error('Source too large'));return;}chunks.push(c);});res.on('error',reject);res.on('end',()=>resolve({text:Buffer.concat(chunks).toString(),type:res.headers['content-type']||'',url:url.href}));
    });request.on('error',reject);
   });
   if(response.redirect){const next=new URL(response.redirect,url);if(!followRedirects)return {redirect:next.href,url:url.href};url=next;continue;}return response;
  }throw Error('Too many redirects');
+};
 }
+export const publicGet=createPublicGet();
 const plain=s=>String(s).replace(/<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>/gi,' ').replace(/<[^>]*>/g,' ').replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&nbsp;/g,' ').replace(/\s+/g,' ').trim();
 const scopeOf=id=>['website','professional','license','expertise','news'].includes(id)?'person':'company';
 const filters={registry:/registr|incorporat|business entity/i,license:/license|licence|credential|npi/i,professional:/biograph|profile|team|leadership/i,announcement:/announc|acqui|expand|appoint|promot/i,news:/news|interview/i,association:/chamber|association|member/i,maps:/address|location|street|road/i,sec:/filing|10-k|10-q|8-k|edgar/i,expertise:/author|speaker|conference|patent/i,warn:/WARN|worker adjustment|layoff notice/i,mwbe:/MWBE|M\/WBE|certified business|minority.*business|women.*business/i,website:/./};
