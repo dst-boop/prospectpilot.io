@@ -15,7 +15,7 @@ export async function prepareRelationalRehearsal(db){
  await db.exec(`CREATE TABLE synthetic_transfer_scope(firm_id TEXT PRIMARY KEY,version BIGINT NOT NULL);
  CREATE TABLE synthetic_transfer_manifests(firm_id TEXT NOT NULL,category TEXT NOT NULL,payload JSONB NOT NULL,PRIMARY KEY(firm_id,category));
  INSERT INTO synthetic_transfer_scope VALUES('firm-a',1),('firm-b',1);`);
- for(const category of collections)await db.query('INSERT INTO synthetic_transfer_manifests VALUES($1,$2,$3)',['firm-a',category,category==='jobs'?[]:[{synthetic:true,originalAuthor:'source',category}]]);
+ for(const category of collections)await db.query('INSERT INTO synthetic_transfer_manifests VALUES($1,$2,$3)',['firm-a',category,JSON.stringify(category==='jobs'?[]:[{synthetic:true,originalAuthor:'source',category}])]);
 }
 export function relationalRehearsalAdapter(options={}){
  const authority=createFirmTransferAuthority({firmId:'firm-a'});
