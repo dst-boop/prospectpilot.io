@@ -336,3 +336,7 @@ The separate Research Lab uses migration **007**. It preserves observations, add
 - Provider, labor, infrastructure and subscription costs have separate ledger categories. Unrecorded costs remain unknown.
 - Private lead exports, provider credentials and catalog artifacts stay out of this repository.
 - No automatic contacting, LinkedIn session-cookie extraction or people-search household scraping is part of the Research Lab.
+
+## Production release safety
+
+See [Cloud Run release guardrails](RELEASE-GUARDRAILS.md) for the current build/runtime identity separation, no-traffic candidate verification, required existing jobs and revision-based rollback. Run `node scripts/verify-release.mjs` for read-only public checks; `bash release.sh` performs a deployment.

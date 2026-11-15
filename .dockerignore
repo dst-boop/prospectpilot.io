@@ -85,3 +85,7 @@
 !brand.svg
 
 !prospect-brief.mjs
+
+# Read by release guard regression tests inside the build.
+!release.sh
+!.gcloudignore
