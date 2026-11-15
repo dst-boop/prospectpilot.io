@@ -17,6 +17,7 @@ const labCSV='First Name,Last Name,Company,Title,Email,Estimated Age Range,Count
 async function fixture(){
   const db=new PGlite();
   for(const file of MIGRATIONS)await db.exec(readFileSync(new URL('../'+file,import.meta.url),'utf8'));
+  await db.exec("CREATE TABLE prospectpilot_migrations (id TEXT PRIMARY KEY); INSERT INTO prospectpilot_migrations(id) VALUES ('029')");
   const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
   const lab=createResearchLab({pool,now:()=>now,sources:{readiness:{}}}),ws=createProspectWorkspace({pool});
   const call=(app,user,method,path)=>app.route(new Request('https://prospectpilot.io'+path,{method}),user);
