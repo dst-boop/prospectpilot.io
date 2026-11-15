@@ -49,3 +49,44 @@ test('shutdown has a deadline for stuck connections',async()=>{
  const server={close(){},closeIdleConnections(){},closeAllConnections(){forced=true;}};
  await shutdown(server,{end:async()=>{}},{graceMs:10,logger:{warn(){},error(){}}});assert.equal(forced,true);
 });
+
+// node:http preserves explicit Host, unlike fetch's forbidden-header handling.
+async function rawFetch(url,options={}){
+ return new Promise((resolve,reject)=>{
+  const req=httpRequest(url,{setHost:false,...options},res=>{const chunks=[];res.on('data',chunk=>chunks.push(chunk));res.on('end',()=>resolve(new Response(options.method==='HEAD'?null:Buffer.concat(chunks),{status:res.statusCode,headers:res.headers})));});
+  req.on('error',reject);req.end();
+ });
+}
+test('candidate transport ignores forged forwarding and blocks every ordinary route before dispatch',async()=>{
+ const releaseCheckOrigin='https://candidate---service-abc-uc.a.run.app';let calls=0;
+ await withServer(async request=>{calls++;return Response.json({url:request.url});},{releaseCheckOrigin},async base=>{
+  const headers={host:new URL(releaseCheckOrigin).host,'x-forwarded-host':'prospectpilot.io',origin:'https://prospectpilot.io'};
+  for(const [path,method] of [['/api/prospect/me','GET'],['/api/prospect/contacts','POST'],['/login','GET'],['/api/release/readiness','POST'],['/health','POST']]){
+   const r=await rawFetch(base+path,{method,headers});assert.equal(r.status,403);assert.equal(r.headers.get('cache-control'),'no-store');await r.text();
+  }
+  for(const host of [new URL(releaseCheckOrigin).host+':443',new URL(releaseCheckOrigin).host.toUpperCase()])assert.equal((await rawFetch(base+'/api/prospect/me',{headers:{...headers,host}})).status,403);
+  for(const host of [new URL(releaseCheckOrigin).host+':badport','user@'+new URL(releaseCheckOrigin).host,new URL(releaseCheckOrigin).host+'/path',new URL(releaseCheckOrigin).host+'?x=1',new URL(releaseCheckOrigin).host+'#hash',''])assert.equal((await rawFetch(base+'/api/prospect/me',{headers:{...headers,host}})).status,400);
+  assert.equal(calls,0);
+  const r=await rawFetch(base+'/api/release/readiness',{headers});assert.equal(r.status,200);assert.equal((await r.json()).url,releaseCheckOrigin+'/api/release/readiness');
+  assert.equal((await rawFetch(base+'/health',{headers,method:'HEAD'})).status,200);
+ });
+});
+test('candidate transport retains real session authentication and canonical proxy behavior',async()=>{
+ const {createHandler}=await import('../handler.mjs');
+ const releaseCheckOrigin='https://candidate---service-abc-uc.a.run.app';
+ const claims={uid:'owner',email:'owner@example.test',email_verified:true,firebase:{sign_in_provider:'google.com'}};
+ let verified=0,checks=0;
+ const app=createHandler({origins:['https://prospectpilot.io'],ownerEmail:claims.email,releaseId:'synthetic-release',releaseCheckOrigin,releaseReadiness:async()=>{checks++;return true;},auth:{verifySessionCookie:async(value,revoked)=>{verified++;assert.equal(revoked,true);if(value!=='synthetic')throw Error('revoked');return claims;}},prospect:{route:async()=>({ok:true})}});
+ await withServer(app,{releaseCheckOrigin},async base=>{
+  const headers={host:new URL(releaseCheckOrigin).host,'x-forwarded-host':'prospectpilot.io'};
+  assert.equal((await rawFetch(base+'/api/release/readiness',{headers})).status,401);
+  assert.equal((await rawFetch(base+'/api/release/readiness',{headers:{...headers,cookie:'__session=revoked'}})).status,401);
+  const r=await rawFetch(base+'/api/release/readiness',{headers:{...headers,cookie:'__session=synthetic'}});assert.equal(r.status,200);assert.deepEqual(await r.json(),{ready:true,release_id:'synthetic-release',schema_version:'032'});
+  assert.equal(verified,2);assert.equal(checks,1);
+  // Existing Firebase Hosting proxy forwarding remains supported on non-candidate hosts.
+  const normal={host:'service-default-uc.a.run.app','x-forwarded-host':'prospectpilot.io',cookie:'__session=synthetic'};
+  assert.equal((await rawFetch(base+'/api/prospect/me',{headers:normal})).status,200);
+  assert.equal((await rawFetch(base+'/api/prospect/contacts',{method:'POST',headers:{...normal,origin:'https://prospectpilot.io'}})).status,200);
+  assert.equal((await rawFetch(base+'/api/prospect/me',{headers:{host:'prospectpilot.io',cookie:'__session=synthetic'}})).status,200);
+ });
+});

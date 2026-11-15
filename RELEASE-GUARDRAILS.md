@@ -8,6 +8,10 @@ A read-only Cloud Run audit reported revision `prospectpilot-00039-qpl` (created
 
 The repository release script did not originate an explicit HTTP/2 or builder-runtime setting. Its defect was preserving whatever the newest service template contained: an image-only update could carry the broken settings forward. It also printed the newest template image as the rollback target, even when that template was not serving, and routinely invoked a provisioning script that reapplied job IAM and scheduler configuration.
 
+## Networking release blocker
+
+The combined release now includes migration 032. [Networking rollout/rollback requirements](NETWORKING-RELEASE-GATE.md) supersede any assumption below that the last serving revision is automatically safe. The checked-in immutable rollback-floor policy is empty, so release stops in read-only preflight. PR100 source tests/local image IDs do not approve a production registry image. A separately verified compatible floor and private owner-session readiness input are required.
+
 ## Current release contract
 
 Prerequisites: an authenticated Google Cloud CLI with the current service-update flags, Bash, and Node.js 24. Prefer the existing authenticated Cloud Shell release environment. The local regression tests require Bash (Git Bash on Windows).
@@ -17,13 +21,13 @@ Run `bash release.sh` only as an authorized production release, from the reviewe
 The routine release now:
 
 1. Reads the actual serving revision and existing migration/research jobs. Refuses a rollout still reconciling, split traffic, a missing job, or a builder/default/cross-project job identity. A failed latest revision is allowed only while the actual 100%-serving revision is Ready.
-2. Prints that serving revision and the previous app/migration/research images. Full configuration snapshots stay in a private temporary directory and are deleted on exit; only safe metadata is printed.
+2. Verifies that the serving revision/digest matches the repository-reviewed networking rollback floor, refuses other reachable tagged revisions, and compares the newest template runtime environment/secret configuration with the serving revision. Only then prints a rollback command and prior images. Full configuration snapshots stay in a private temporary directory and are deleted on exit; only safe metadata is printed.
 3. Builds using `prospectpilot-builder` and the existing Docker test gate, then resolves the published tag to an immutable digest.
 4. Executes the existing migration job under its validated identity. Migrations must remain backward compatible with the old serving app and worker.
 5. Stages a named candidate with no ordinary traffic, explicitly using `prospectpilot-runtime`, HTTP/1 on port 8080, the serving revision's Cloud SQL connection, and HTTP `/health` startup/liveness checks. Deployment health checks are explicitly enabled.
-6. Inspects the exact candidate for Ready status, identity, immutable image, protocol, port, Cloud SQL attachment, health probes, and release marker. A failure cannot reach traffic promotion.
+6. Inspects the exact candidate for Ready status, identity, immutable image, protocol, port, Cloud SQL attachment, health probes, release marker, and exact runtime environment/secret parity. Verifies its traffic tag and performs an owner-authenticated, read-only database/migration readiness check. A failure cannot reach worker updates or traffic promotion.
 7. Updates only the image and explicit existing identity of the research job. Provider secrets, budgets, connection settings and scheduler configuration are retained. Optional `REFRESH_PLAN_CATALOG=1` requires an existing catalog job and updates/executes it without provisioning or scheduler changes.
-8. Rechecks that the prior traffic and newest revision have not changed, then promotes this exact revision, never `LATEST`.
+8. Rechecks that the prior traffic, tags and newest revision have not changed, repeats owner-authenticated database readiness, then promotes this exact revision, never `LATEST`.
 9. Runs the existing full public-surface verifier: required health, expected feature and release markers, no-store headers, login/public pages, unauthenticated API protection, and cross-origin refusal. Failure exits nonzero rather than claiming completion.
 
 `PUBLIC_BASE` defaults to `https://prospectpilot.io`. `PROJECT` and `REGION` retain their existing defaults. For another deployment, all named resources and the two dedicated identities must already exist there.
@@ -39,11 +43,11 @@ The standalone setup scripts remain provisioning tools. They are no longer calle
 
 ## Rollback and limits
 
-The script prints the exact traffic rollback command using the previous **serving revision**. Rolling traffic back reuses that immutable revision's identity and protocol, unlike rebuilding an old image on a broken newest template. It does not undo database migrations or restore job images. If job updates completed before a failure, inspect and restore the printed prior job image under its existing identity as needed. Do not reverse migrations automatically or retry paid work.
+The script prints a traffic rollback command only when the previous **serving revision** is the verified immutable networking rollback floor. The policy currently contains no such revision, so no command is printed. Rolling traffic back reuses that immutable revision's identity and protocol, unlike rebuilding an old image on a broken newest template. It does not undo database migrations or restore job images. Prior job images are diagnostic only, not approved rollback targets. If job updates completed before a failure, separately review compatibility before restoring any job image. Do not reverse migrations automatically or retry paid work.
 
 The release is not a transaction across Cloud Run, Cloud SQL and jobs. An operator must serialize releases; before-promotion checks detect observed competing deployments but cannot provide a cloud-wide lock. Migration and worker compatibility remain review gates.
 
-`/health` proves that the HTTP process started. It does not establish database readiness, paid-provider credentials, authorization correctness for a signed-in user, or end-to-end research success. Public verification runs **after** promotion and does not automatically roll back a failing release. Traffic propagation is not instantaneous, so an immediate public check may temporarily still reach the old revision. Re-run the read-only verifier to distinguish propagation from a real failure; do not repeat the deployment just to check it. Inspect the failure and use the printed rollback command if warranted. Signed-in workflow checks and monitoring remain necessary.
+`/health` proves that the HTTP process started. It does not establish database readiness, paid-provider credentials, authorization correctness for a signed-in user, or end-to-end research success. Public verification runs **after** promotion and does not automatically roll back a failing release. Traffic propagation is not instantaneous, so an immediate public check may temporarily still reach the old revision. Re-run the read-only verifier to distinguish propagation from a real failure; do not repeat the deployment just to check it. Inspect the failure and use the printed rollback command if warranted. The new owner-authenticated/database readiness gate runs before promotion; broader signed-in workflow checks and monitoring remain necessary.
 
 ## Verification
 

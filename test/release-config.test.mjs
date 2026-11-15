@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync} from 'node:fs';
+import {readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync, mkdirSync, copyFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
-import {servingRevision, releasePreflight, verifyCandidate, verifyUnchangedTraffic} from '../scripts/release-config.mjs';
+import {servingRevision, releasePreflight, verifyCandidate, verifyUnchangedTraffic, verifyRuntimeMatches, candidateOrigin, rollbackContractCommit} from '../scripts/release-config.mjs';
 
 const project = 'test-project';
 const identity = name => `${name}@${project}.iam.gserviceaccount.com`;
@@ -13,19 +13,31 @@ const runtime = identity('prospectpilot-runtime');
 const cloudSqlInstances = `${project}:us-central1:database`;
 const image = `us-central1-docker.pkg.dev/${project}/prospectpilot/app@sha256:${'a'.repeat(64)}`;
 const releaseId = 'review-test';
+const serviceUrl = 'https://prospectpilot-fixture.a.run.app';
+const readinessOrigin = candidateOrigin(serviceUrl, releaseId);
+const rollbackPolicy = () => ({schemaVersion: 1, contractCommit: rollbackContractCommit, floors: [{
+  project, region: 'us-central1', service: 'prospectpilot', revision: 'prospectpilot-serving', image,
+  sourceCommit: '402e079d7d31297bd56412d4c236bec18d98d130',
+  imageTestEvidence: 'https://github.com/dst-boop/prospectpilot.io/actions/runs/1',
+  buildProvenance: 'https://console.cloud.google.com/cloud-build/builds/fixture?project=test-project',
+}]});
 const ready = {conditions: [{type: 'Ready', status: 'True'}]};
 const container = () => ({image, ports: [{name: 'http1', containerPort: 8080}],
   startupProbe: {httpGet: {path: '/health', port: 8080}, failureThreshold: 24, timeoutSeconds: 5, periodSeconds: 5},
   livenessProbe: {httpGet: {path: '/health', port: 8080}, failureThreshold: 3, timeoutSeconds: 5, periodSeconds: 30},
-  env: [{name: 'PROSPECTPILOT_RELEASE_ID', value: releaseId}]});
+  env: [{name: 'PROSPECTPILOT_RELEASE_ID', value: releaseId},
+    {name: 'PROSPECTPILOT_RELEASE_CHECK_ORIGIN', value: readinessOrigin},
+    {name: 'PGHOST', value: '/cloudsql/synthetic-db'}, {name: 'PGDATABASE', value: 'synthetic-db'},
+    {name: 'PGPASSWORD', valueFrom: {secretKeyRef: {name: 'synthetic-db-password', key: '1'}}},
+    {name: 'APP_ORIGINS', value: 'https://example.invalid'}]});
 const revision = (name = 'prospectpilot-' + releaseId) => ({metadata: {name, annotations: {'run.googleapis.com/cloudsql-instances': cloudSqlInstances}},
   spec: {serviceAccountName: runtime, containers: [container()]}, status: structuredClone(ready)});
-const service = () => ({metadata: {generation: '10'}, spec: {template: {spec: {serviceAccountName: identity('prospectpilot-builder')}}},
-  status: {...structuredClone(ready), observedGeneration: 10, latestCreatedRevisionName: 'prospectpilot-failed',
+const service = () => ({metadata: {generation: '10'}, spec: {template: {...revision(), spec: {...revision().spec, serviceAccountName: identity('prospectpilot-builder')}}},
+  status: {...structuredClone(ready), observedGeneration: 10, url: serviceUrl, latestCreatedRevisionName: 'prospectpilot-failed',
     traffic: [{revisionName: 'prospectpilot-serving', percent: 100}]}});
 const job = name => ({metadata: {name}, spec: {template: {spec: {template: {spec: {serviceAccountName: identity('job-runtime'), containers: [{image}]}}}}}});
-const snapshot = () => ({project, service: service(), previous: revision('prospectpilot-serving'), migrate: job('prospectpilot-migrate'), research: job('prospectpilot-research')});
-const expected = {runtime, image, releaseId, cloudSqlInstances};
+const snapshot = () => ({project, region: 'us-central1', rollbackPolicy: rollbackPolicy(), service: service(), previous: revision('prospectpilot-serving'), migrate: job('prospectpilot-migrate'), research: job('prospectpilot-research')});
+const expected = {runtime, image, releaseId, cloudSqlInstances, readinessOrigin, previous: revision('prospectpilot-serving')};
 
 test('preflight uses the serving revision rather than a failed latest template', () => {
   const data = snapshot();
@@ -89,8 +101,8 @@ test('candidate guard requires the expected runtime identity, HTTP/1, probes, di
 });
 
 test('concurrent traffic or latest revision changes prevent promotion', () => {
-  const data = service(); data.status.latestCreatedRevisionName = 'candidate';
-  assert.equal(verifyUnchangedTraffic(data, 'prospectpilot-serving', 'candidate'), true);
+  const data = service(); data.status.latestCreatedRevisionName = 'prospectpilot-review-test'; data.status.traffic.push({tag: releaseId, revisionName: 'prospectpilot-review-test', url: readinessOrigin});
+  assert.equal(verifyUnchangedTraffic(data, 'prospectpilot-serving', 'prospectpilot-review-test', readinessOrigin), true);
   data.status.latestCreatedRevisionName = 'someone-elses-release';
   assert.throws(() => verifyUnchangedTraffic(data, 'prospectpilot-serving', 'candidate'), /Another release/);
   data.status.latestCreatedRevisionName = 'candidate'; data.status.traffic[0].revisionName = 'other';
@@ -104,8 +116,18 @@ const bash = process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' 
 function runRelease(scenario = 'ok', refresh = '0') {
   const directory = mkdtempSync(join(tmpdir(), 'prospectpilot-release-test-'));
   const mock = join(directory, 'mock.mjs');
+  // Copy the release into an isolated checkout so only synthetic tests supply
+  // a reviewed policy fixture; production has no policy-path/env override.
+  const checkout = join(directory, 'checkout');
+  mkdirSync(join(checkout, 'scripts'), {recursive: true});
+  for (const file of ['release.sh', 'scripts/release-config.mjs']) copyFileSync(join(root, file), join(checkout, file));
+  const policy = rollbackPolicy();
+  if (scenario === 'no-floor') policy.floors = [];
+  writeFileSync(join(checkout, 'scripts/release-rollback-policy.json'), JSON.stringify(policy));
   const fixture = {service: service(), previous: revision('prospectpilot-serving'), migrate: job('prospectpilot-migrate'),
     research: job('prospectpilot-research'), catalog: job('prospectpilot-plan-catalog'), candidate: revision(), image};
+  if (scenario === 'template-drift') fixture.service.spec.template.spec.containers[0].env.find(e => e.name === 'PGDATABASE').value = 'WRONG-PRIVATE-DATABASE';
+  if (scenario === 'unapproved-tag') fixture.service.status.traffic.push({tag: 'unsafe-old', revisionName: 'prospectpilot-unsafe', percent: 0});
   writeFileSync(join(directory, 'fixture.json'), JSON.stringify(fixture));
   writeFileSync(mock, `
 import {readFileSync,writeFileSync,appendFileSync,existsSync} from 'node:fs';
@@ -117,12 +139,21 @@ const statePath=join(dir,'candidate.json');
 const state=existsSync(statePath)?JSON.parse(readFileSync(statePath,'utf8')):null;
 const out=value=>console.log(typeof value==='string'?value:JSON.stringify(value));
 const is=(...prefix)=>prefix.every((value,i)=>args[i]===value);
-if (is('verify')) { if(scenario==='public-fails')process.exit(1); }
+if (is('readiness')) {
+ if(args.includes('--preflight')) { if(scenario==='session-missing')process.exit(1); }
+ else {
+  const readyFile=join(dir,'readiness-count.txt');
+  const count=existsSync(readyFile)?Number(readFileSync(readyFile,'utf8'))+1:1; writeFileSync(readyFile,String(count));
+  if(scenario==='readiness-fails'||(scenario==='readiness-late-fails'&&count>1))process.exit(1);
+ }
+}
+else if (is('verify')) { if(scenario==='public-fails')process.exit(1); }
 else if(is('run','services','describe')) {
  if(state){
   state.serviceReads=(state.serviceReads||0)+1; writeFileSync(statePath,JSON.stringify(state));
   f.service.status.latestCreatedRevisionName=state.name;
-  if(scenario==='concurrent'||(scenario==='concurrent-late'&&state.serviceReads>1))f.service.status.traffic[0].revisionName='another-release';
+  f.service.status.traffic.push({tag:state.id,revisionName:state.name,url:state.origin});
+  if(scenario==='concurrent'||(scenario==='concurrent-late'&&state.serviceReads>1)||(scenario==='concurrent-final'&&state.serviceReads>2))f.service.status.traffic[0].revisionName='another-release';
  }
  out(f.service);
 } else if(is('run','revisions','describe')) {
@@ -130,6 +161,9 @@ else if(is('run','services','describe')) {
  else {
   f.candidate.metadata.name=state.name;
   f.candidate.spec.containers[0].env[0].value=state.id;
+  f.candidate.spec.containers[0].env.find(e=>e.name==='PROSPECTPILOT_RELEASE_CHECK_ORIGIN').value=state.origin;
+  if(scenario==='candidate-drift')f.candidate.spec.containers[0].env.find(e=>e.name==='PGDATABASE').value='WRONG-PRIVATE-DATABASE';
+  if(scenario==='secret-drift')f.candidate.spec.containers[0].env.find(e=>e.name==='PGPASSWORD').valueFrom.secretKeyRef.key='wrong-secret-version';
   if(scenario==='wrong-identity')f.candidate.spec.serviceAccountName='prospectpilot-builder@test-project.iam.gserviceaccount.com';
   if(scenario==='http2')f.candidate.spec.containers[0].ports[0].name='h2c';
   out(f.candidate);
@@ -144,7 +178,9 @@ else if(is('artifacts','docker','images','describe'))out(scenario==='bad-digest'
 else if(is('run','services','update')) {
  if(scenario==='startup-fails')process.exit(1);
  const id=args.find(x=>x.startsWith('--revision-suffix=')).split('=')[1];
- writeFileSync(statePath,JSON.stringify({id,name:'prospectpilot-'+id}));
+ const vars=args.find(x=>x.startsWith('--update-env-vars=')).slice('--update-env-vars='.length).split(',');
+ const origin=vars.find(x=>x.startsWith('PROSPECTPILOT_RELEASE_CHECK_ORIGIN=')).slice('PROSPECTPILOT_RELEASE_CHECK_ORIGIN='.length);
+ writeFileSync(statePath,JSON.stringify({id,name:'prospectpilot-'+id,origin}));
 } else if(is('run','jobs','execute')) {
  if((scenario==='migration-fails'&&args[3]==='prospectpilot-migrate')||(scenario==='catalog-execute-fails'&&args[3]==='prospectpilot-plan-catalog'))process.exit(1);
 } else if(is('run','jobs','update')) {
@@ -156,13 +192,14 @@ else { console.error('Unexpected mocked command'); process.exit(99); }
 function gcloud() { command node "$MOCK_FILE" "$@"; }
 function node() {
   if [[ "$1" == scripts/verify-release.mjs ]]; then command node "$MOCK_FILE" verify "$@";
+  elif [[ "$1" == scripts/verify-candidate-readiness.mjs ]]; then command node "$MOCK_FILE" readiness "$@";
   else command node "$@"; fi
 }
 export -f gcloud node
 bash release.sh
 `;
   try {
-    const result = spawnSync(bash, ['-c', script], {cwd: root, encoding: 'utf8', timeout: 60000,
+    const result = spawnSync(bash, ['-c', script], {cwd: checkout, encoding: 'utf8', timeout: 60000,
       env: {...process.env, PROJECT: project, REGION: 'us-central1', REFRESH_PLAN_CATALOG: refresh,
         MOCK_DIR: directory, MOCK_FILE: mock.replaceAll('\\', '/'), SCENARIO: scenario}});
     if (result.error) throw result.error;
@@ -191,16 +228,20 @@ test('release stages an immutable HTTP/1 runtime candidate and gates promotion, 
   const worker = run.calls.find(commandIs('run', 'jobs', 'update', 'prospectpilot-research'));
   assert.deepEqual(worker.slice(4).map(arg => arg.split('=')[0]).sort(), ['--image', '--project', '--region', '--service-account'],
     'worker release must not replace env/secrets/budgets/commands or other existing settings');
-  assert.match(run.stdout, /Rollback revision: prospectpilot-serving/);
+  assert.match(run.stdout, /Verified networking rollback revision: prospectpilot-serving/);
+  const checks = run.calls.map((args,i) => ({args,i})).filter(({args}) => args[0] === 'readiness' && !args.includes('--preflight'));
+  assert.equal(checks.length, 2);
+  assert.ok(checks.every(({i}) => i > stageIndex && i < promoteIndex));
 });
 
 test('all build, migration, startup, configuration and concurrent-release failures stop before promotion', () => {
-  for (const scenario of ['missing-worker', 'builder-job', 'build-fails', 'bad-digest', 'migration-fails', 'startup-fails', 'wrong-identity', 'http2', 'concurrent', 'concurrent-late', 'worker-fails']) {
+  for (const scenario of ['missing-worker', 'builder-job', 'build-fails', 'bad-digest', 'migration-fails', 'startup-fails', 'wrong-identity', 'http2', 'concurrent', 'concurrent-late', 'concurrent-final', 'worker-fails', 'no-floor', 'template-drift', 'candidate-drift', 'secret-drift', 'unapproved-tag', 'session-missing', 'readiness-fails', 'readiness-late-fails']) {
     const run = runRelease(scenario);
     assert.notEqual(run.status, 0, scenario);
+    assert.doesNotMatch(run.stdout + run.stderr, /WRONG-PRIVATE|wrong-secret-version|synthetic-db-password/);
     assert.equal(run.calls.some(commandIs('run', 'services', 'update-traffic')), false, scenario);
-    if (['missing-worker', 'builder-job'].includes(scenario)) assert.equal(run.calls.some(commandIs('builds', 'submit')), false, scenario);
-    if (['startup-fails', 'wrong-identity', 'http2', 'concurrent'].includes(scenario)) assert.equal(run.calls.some(commandIs('run', 'jobs', 'update', 'prospectpilot-research')), false, scenario);
+    if (['missing-worker', 'builder-job', 'no-floor', 'template-drift', 'unapproved-tag', 'session-missing'].includes(scenario)) assert.equal(run.calls.some(commandIs('builds', 'submit')), false, scenario);
+    if (['startup-fails', 'wrong-identity', 'http2', 'concurrent', 'candidate-drift', 'secret-drift', 'readiness-fails'].includes(scenario)) assert.equal(run.calls.some(commandIs('run', 'jobs', 'update', 'prospectpilot-research')), false, scenario);
   }
 });
 
@@ -235,4 +276,53 @@ test('catalog and traffic update failures cannot claim a successful public relea
     assert.equal(run.calls.some(commandIs('run', 'services', 'update-traffic')), scenario === 'promotion-fails', scenario);
     assert.doesNotMatch(run.stdout, /Public release verified/);
   }
+});
+
+test('networking requires a reviewed exact serving-revision and registry-image rollback floor', () => {
+  for (const mutate of [
+    data => data.rollbackPolicy.floors = [],
+    data => data.rollbackPolicy.floors[0].revision = 'prospectpilot-not-serving',
+    data => data.rollbackPolicy.floors[0].image = 'sha256:' + 'a'.repeat(64),
+    data => data.rollbackPolicy.floors[0].sourceCommit = 'b543fa4',
+    data => data.rollbackPolicy.contractCommit = '0'.repeat(40),
+    data => delete data.rollbackPolicy.floors[0].imageTestEvidence,
+    data => delete data.rollbackPolicy.floors[0].buildProvenance,
+    data => data.service.status.traffic.push({tag: 'unsafe', revisionName: 'prospectpilot-older', percent: 0}),
+    data => data.previous.spec.serviceAccountName = identity('prospectpilot-builder'),
+    data => data.previous.status.imageDigest = image.replace('a'.repeat(64), 'b'.repeat(64)),
+  ]) { const data = snapshot(); mutate(data); assert.throws(() => releasePreflight(data)); }
+  const policy = JSON.parse(readFileSync(new URL('../scripts/release-rollback-policy.json', import.meta.url), 'utf8'));
+  assert.throws(() => releasePreflight({...snapshot(), rollbackPolicy: policy}), /Networking release blocked/,
+    'The checked-in policy must never approve a synthetic test floor. Real reviewed floors can be added without weakening the validator.');
+});
+
+test('critical runtime values, secret references and alias maps are compared without disclosure', () => {
+  for (const mutate of [
+    r => r.spec.containers[0].env.find(e => e.name === 'PGHOST').value = 'SENSITIVE-WRONG-HOST',
+    r => r.spec.containers[0].env.find(e => e.name === 'PGDATABASE').value = 'SENSITIVE-WRONG-DB',
+    r => r.spec.containers[0].env.find(e => e.name === 'PGPASSWORD').valueFrom.secretKeyRef.key = 'SECRET-WRONG-VERSION',
+    r => r.spec.containers[0].env.push({name: 'NEW_SECRET', value: 'SENSITIVE-PLAINTEXT'}),
+    r => r.metadata.annotations['run.googleapis.com/secrets'] = 'alias:projects/private/secrets/changed',
+    r => r.spec.volumes = [{name: 'secret', secret: {secretName: 'private-secret'}}],
+    r => r.spec.containers[0].command = ['another-server'],
+    r => r.spec.containers[0].env.push({...r.spec.containers[0].env[0]}),
+  ]) {
+    const changed = revision(); mutate(changed);
+    assert.throws(() => verifyRuntimeMatches(changed, expected.previous), error => {
+      assert.doesNotMatch(error.message, /SENSITIVE|SECRET-WRONG|PLAINTEXT|private-secret|another-server/);
+      return true;
+    });
+    assert.throws(() => verifyCandidate(changed, expected));
+  }
+  const reordered = revision(); reordered.spec.containers[0].env.reverse();
+  assert.equal(verifyRuntimeMatches(reordered, expected.previous), true);
+});
+
+test('candidate URLs and tags cannot redirect the signed-in readiness check', () => {
+  assert.equal(candidateOrigin(serviceUrl, releaseId), readinessOrigin);
+  for (const url of ['http://prospectpilot.run.app', 'https://run.app.attacker.invalid', 'https://user:password@service.run.app', serviceUrl + '/path', serviceUrl + '?query=1'])
+    assert.throws(() => candidateOrigin(url, releaseId));
+  const current = service(); current.status.latestCreatedRevisionName = 'prospectpilot-' + releaseId;
+  current.status.traffic.push({tag: releaseId, revisionName: 'prospectpilot-' + releaseId, url: 'https://wrong.run.app'});
+  assert.throws(() => verifyUnchangedTraffic(current, 'prospectpilot-serving', 'prospectpilot-' + releaseId, readinessOrigin), /tag/);
 });

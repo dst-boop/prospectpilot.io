@@ -119,3 +119,5 @@
 
 # Isolated execution contract is available only to build-stage tests.
 !advisor-reassignment-execution.mjs
+
+!release-readiness.mjs
