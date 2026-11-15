@@ -14,11 +14,11 @@ const result=await worker.fetch(new Request('https://prospectpilot.io/api/beta/w
 const original=(await pg.query('SELECT payload FROM discovery_leads LIMIT 1')).rows[0].payload;
 await db.prepare('INSERT INTO discovery_leads(id,team,owner_user_id,owner_email,payload) SELECT ?,team,?,?,? FROM discovery_leads LIMIT 1').bind('other-lead','other-owner','other@example.com',original).run();
 await db.prepare('INSERT INTO discovery_leads(id,team,owner_user_id,owner_email,payload) SELECT ?,team,?,?,? FROM discovery_leads LIMIT 1').bind('email-owned','legacy-owner','DST@FINANCIALPLANNERSOFAMERICA.COM',original).run();
-const owned=await worker.fetch(new Request('https://prospectpilot.io/api/beta/week',{headers}),{DB:db});assert.equal((await owned.json()).total_owned,2);
+const owned=await worker.fetch(new Request('https://prospectpilot.io/api/beta/week',{headers}),{DB:db});assert.equal((await owned.json()).total_owned,1);
 const preview=await worker.fetch(new Request('https://prospectpilot.io/api/enrichment/preview',{method:'POST',headers:{...headers,'content-type':'application/json'},body:JSON.stringify({provider:'zoominfo',csv:'Email,Business Phone\ntest@example.com,6315550123'})}),{DB:db});
 assert.equal(preview.status,200,await preview.clone().text());const plan=await preview.json();
-// Remove duplicate fixture so email matching has exactly one owned target.
-if(!plan.counts.ready){await db.prepare('DELETE FROM discovery_leads WHERE id=?').bind('email-owned').run();}
+// The same-email foreign UID must never participate in matching.
+assert.equal(plan.counts.ready,1);
 const fresh=await worker.fetch(new Request('https://prospectpilot.io/api/enrichment/preview',{method:'POST',headers:{...headers,'content-type':'application/json'},body:JSON.stringify({provider:'zoominfo',csv:'Email,Business Phone\ntest@example.com,6315550123'})}),{DB:db});const ready=await fresh.json();assert.equal(ready.counts.ready,1);
 const commitRequest=()=>new Request('https://prospectpilot.io/api/enrichment/commit',{method:'POST',headers:{...headers,'content-type':'application/json'},body:JSON.stringify({batch_id:ready.batch_id})});
 const committed=await worker.fetch(commitRequest(),{DB:db});assert.equal(committed.status,200,await committed.clone().text());assert.equal((await committed.json()).applied,1);

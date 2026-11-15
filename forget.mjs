@@ -24,8 +24,12 @@ import {candidateKeys,hash} from './lead-quality.mjs';
 import {normalizeContact} from './prospect-data-quality.mjs';
 
 export const LEAD_TEAM='wealth-management';
-// Who may see (and so delete) a Research Lab lead: its owner, or an admin.
-export const LEAD_VISIBLE_SQL=`team=$1 AND (owner_user_id=$2 OR lower(owner_email)=lower($3) OR EXISTS(SELECT 1 FROM discovery_users WHERE user_id=$2 AND role='admin'))`;
+// Ownership is the immutable authentication UID, never an email address.
+// Email-only legacy rows are not claimed automatically: recovery must establish
+// the original owner separately before an explicitly authorized migration.
+export const ownsLead=(row,uid)=>typeof uid==='string'&&uid.trim().length>0&&row.owner_user_id===uid;
+// Parameters: team, authenticated UID. The existing admin policy is unchanged.
+export const LEAD_VISIBLE_SQL=`team=$1 AND NULLIF(btrim($2),'') IS NOT NULL AND (owner_user_id=$2 OR EXISTS(SELECT 1 FROM discovery_users WHERE user_id=$2 AND role='admin'))`;
 
 const fail=(status,message)=>Object.assign(Error(message),{status});
 const parse=value=>typeof value==='string'?JSON.parse(value):value||{};
@@ -52,7 +56,7 @@ export async function forgottenKeys(client,uid,keys){
 export async function forgetPerson(client,user,{contactId='',leadId=''},{contactKeys}){
   if(!contactId&&!leadId)throw fail(422,'Choose the person to delete.');
   const contacts=new Map(),leads=new Map();
-  const leadParams=[LEAD_TEAM,user.uid,user.email||''];
+  const leadParams=[LEAD_TEAM,user.uid];
   // Serialize with every writer that could bring this person back mid-delete:
   // Research Lab saves hold 505006, directory imports and provider results
   // hold prospect:<uid>. The global lock comes first, so deleters never cycle.
@@ -65,7 +69,7 @@ export async function forgetPerson(client,user,{contactId='',leadId=''},{contact
     contacts.set(row.id,row);
   }
   if(leadId){
-    const row=(await client.query(`SELECT id,payload,owner_user_id FROM discovery_leads WHERE ${LEAD_VISIBLE_SQL} AND id=$4 FOR UPDATE`,[...leadParams,leadId])).rows[0];
+    const row=(await client.query(`SELECT id,payload,owner_user_id FROM discovery_leads WHERE ${LEAD_VISIBLE_SQL} AND id=$3 FOR UPDATE`,[...leadParams,leadId])).rows[0];
     if(!row)throw fail(404,'Lead not found.');
     leads.set(row.id,row);
   }
@@ -73,7 +77,7 @@ export async function forgetPerson(client,user,{contactId='',leadId=''},{contact
   // linked to (only if this user may see it), and this user's contacts
   // linked to the lead.
   for(const id of [...contacts.keys()])
-    for(const row of (await client.query(`SELECT id,payload,owner_user_id FROM discovery_leads WHERE ${LEAD_VISIBLE_SQL} AND id IN (SELECT lead_id FROM advisor_contact_links WHERE contact_id=$4 AND user_id=$2)`,[...leadParams,id])).rows)
+    for(const row of (await client.query(`SELECT id,payload,owner_user_id FROM discovery_leads WHERE ${LEAD_VISIBLE_SQL} AND id IN (SELECT lead_id FROM advisor_contact_links WHERE contact_id=$3 AND user_id=$2)`,[...leadParams,id])).rows)
       leads.set(row.id,row);
   for(const id of [...leads.keys()])
     for(const row of (await client.query('SELECT pc.id,pc.payload FROM prospect_contacts pc JOIN advisor_contact_links acl ON acl.contact_id=pc.id AND acl.user_id=pc.user_id WHERE acl.lead_id=$1 AND pc.user_id=$2',[id,user.uid])).rows)
