@@ -95,7 +95,7 @@ async function wealthfeedRoutes(request,env,user,path){
   }
   if(path==='/api/wealthfeed/disconnect'){await execute(db,'DELETE FROM wealthfeed_connections WHERE user_id=?',user.user_id);return json({connected:false});}
   if(!connection)throw new HttpError(409,'Connect your WealthFeed account first.');
-  const owned=(await visibleLeadRows(db,user)).filter(({row})=>row.owner_user_id===user.user_id||lower(row.owner_email)===lower(user.email));
+  const owned=(await visibleLeadRows(db,user)).filter(({row})=>ownsLead(row,user));
   const key=await WF.open(connection.encrypted_key,user.user_id,env);
   async function provider(path,body){
     // Atomic per-user pace control also persists WealthFeed Retry-After across requests.

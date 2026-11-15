@@ -71,7 +71,7 @@ async function weeklyRoutes(request, env, user, path, url) {
   }
   const visible = await visibleLeadRows(db, user);
   // An administrator's team visibility must never inflate their personal calling target.
-  const owned = visible.filter(({row}) => row.owner_user_id === user.user_id || lower(row.owner_email) === lower(user.email));
+  const owned = visible.filter(({row}) => ownsLead(row, user));
   const blocks = new Set((await many(db, 'SELECT phone FROM lead_call_blocks')).map(row => row.phone));
   if (path === '/api/beta/week' && request.method === 'GET') {
     const week = callWeek();
