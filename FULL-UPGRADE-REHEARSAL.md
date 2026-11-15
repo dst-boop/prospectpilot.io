@@ -21,6 +21,8 @@ pnpm upgrade:rehearse  # PGlite only; PostgreSQL is visibly skipped
 STAGING_DATABASE_URL=postgres://postgres:synthetic-ci-only@127.0.0.1:5432/prospectpilot_test pnpm upgrade:postgres
 ```
 
+The Git-history rehearsal is intentionally separate from the ordinary `test/*.test.mjs` image-build suite: production image contexts have neither Git nor historical objects. CI runs the explicit `pnpm upgrade:postgres` step before the ordinary suite and image build; it cannot silently substitute a skipped image test for this evidence.
+
 The PostgreSQL command must connect to PostgreSQL major version 16. It fails without the explicit test connection. Only the fixed test credentials, loopback host and `prospectpilot_test` database are accepted; inherited PG overrides, URL parameters and production mode are rejected. The subprocess environment is allowlisted and does not inherit provider/auth/database credentials. A defense-in-depth network guard allows only the disposable database port. It is not an OS firewall.
 
 Each run owns a random `pp_staging_*` schema and drops only that schema. CI provisions an ephemeral `postgres:16` service and injects only published synthetic credentials. No workflow secret, cloud deployment action, app server or paid provider is used.
