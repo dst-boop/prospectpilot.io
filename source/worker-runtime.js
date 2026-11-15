@@ -1,10 +1,14 @@
 import { qualifierMetadata } from './qualifier-runtime.js';
+import {createPublicGet} from '../native-research.mjs';
 const PAGE_HTML = typeof DISCOVERY_HTML === "string" ? DISCOVERY_HTML : "";
 const TEAM = "wealth-management";
 const API = "/api/v3/discovery";
 const MAX_IMPORT_BYTES = 5_000_000;
 const MAX_IMPORT_ROWS = 5_000;
 const CRAWLER_AGENT = "WealthLeadDiscoveryBot";
+// Keep robots-policy identity and content negotiation unchanged.
+export const legacySourceHeaders = Object.freeze({userAgent:`${CRAWLER_AGENT}/1.0`,accept:'text/html,application/xhtml+xml,text/plain;q=0.8'});
+const publicSourceGet = createPublicGet(legacySourceHeaders);
 const MAX_CRAWL_PAGES = 12;
 const MAX_CRAWL_BYTES = 1_000_000;
 const MAX_SOURCE_PAGES_PER_COMPANY = 4;
@@ -1045,23 +1049,22 @@ async function mapInBatches(values, size, mapper) {
   return output;
 }
 
-export async function fetchPublicPage(target, timeoutMs = 10_000) {
+export async function fetchPublicPage(target, timeoutMs = 10_000, get = publicSourceGet) {
   const deadline = AbortSignal.timeout(timeoutMs);
   let url = safeTargetUrl(target);
   if (!url) throw new Error("unsafe or invalid URL");
   for (let redirects = 0; redirects < 4; redirects += 1) {
-    const response = await fetch(url, { redirect: "manual", signal: deadline, headers: { "user-agent": `${CRAWLER_AGENT}/1.0`, accept: "text/html,application/xhtml+xml,text/plain;q=0.8" } });
-    if ([301, 302, 303, 307, 308].includes(response.status)) {
-      const location = response.headers.get("location") || "";
-      await discardResponse(response);
-      const next = safeTargetUrl(new URL(location, url).href);
+    // Textual hostname checks cannot detect private DNS answers or rebinding.
+    // Use the shared resolver-pinned public transport for every redirect hop.
+    let response;
+    try { response = await get(url, {signal:deadline,maxBytes:MAX_CRAWL_BYTES,followRedirects:false}); }
+    catch(error) { if(Number.isInteger(error?.status)&&error.status>=400&&error.status<=599)throw new Error(`HTTP ${error.status}`);throw error; }
+    if (response.redirect) {
+      const next = safeTargetUrl(response.redirect);
       if (!next) throw new Error("redirected to an unsafe URL"); url = next; continue;
     }
-    if (!response.ok) { await discardResponse(response); throw new Error(`HTTP ${response.status}`); }
-    if (!/text\/html|application\/xhtml\+xml|application\/xml|text\/xml|text\/plain/i.test(response.headers.get("content-type") || "text/html")) {
-      await discardResponse(response); throw new Error("not an HTML or XML page");
-    }
-    return { url: url.href, html: await readLimitedResponse(response) };
+    if (!/text\/html|application\/xhtml\+xml|application\/xml|text\/xml|text\/plain/i.test(response.type || "text/html")) throw new Error("not an HTML or XML page");
+    return { url: url.href, html: response.text };
   }
   throw new Error("too many redirects");
 }
@@ -1783,7 +1786,7 @@ async function requestJSON(request) {
 
 function csvCell(value) {
   let output = String(value ?? "");
-  if (/^[=+\-@]/.test(output)) output = `'${output}`;
+  if (/^[\s]*[=+\-@\t\r]/.test(output)) output = `'${output}`;
   return /[",\r\n]/.test(output) ? `"${output.replaceAll('"', '""')}"` : output;
 }
 
@@ -2470,7 +2473,8 @@ export default {
       return new Response("Not found", { status: 404 });
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500;
-      if (status === 500) console.error("Prospect Discovery request failed", error);
+      // Database/provider errors can contain full row payloads or credentials.
+      if (status === 500) console.error(JSON.stringify({event:'legacy_request_failed',code:/^[A-Z0-9_]{1,40}$/i.test(error?.code||'')?error.code:'unknown'}));
       return json({ detail: status === 500 ? "The request could not be completed." : error.message }, status);
     }
   },
