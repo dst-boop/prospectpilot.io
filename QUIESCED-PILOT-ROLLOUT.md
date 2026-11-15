@@ -44,9 +44,9 @@ Failure gate: keep maintenance, inspect transaction outcome. Verify ledger/schem
 
 ## Gate D: validate before reopening
 
-1. Start the exact target web image with no ordinary traffic. Keep workers/scheduler paused. Verify release ID, expected feature versions, schema033 readiness, correct identity/connection and signed-in UID isolation.
+1. Start the exact target web image with no ordinary traffic. Keep workers/scheduler paused. Verify release ID, expected feature versions, schema033 readiness, correct identity/connection and signed-in UID isolation. Explicitly require /version.read_only === false for the normal candidate; a healthy read-only response is not full service.
 2. Exercise owner-authorized synthetic canary records only: review decision/residence/contact → priority → follow-up → reload; include duplicate save and wrong-UID denial. Keep fixture IDs for cleanup using the tested deletion path, never broad SQL deletion.
-3. Demonstrate the read-only candidate on schema033: authenticated worklist/brief still use advice-decision policy; all mutation routes/webhooks fail closed; worker produces executed:false and no provider/DB job changes. Verify visual search/pagination at desktop/mobile widths after improvements.
+3. Demonstrate the read-only candidate on schema033 and explicitly require /version.read_only === true: authenticated worklist/brief still use advice-decision policy; all mutation routes/webhooks fail closed; worker produces executed:false and no provider/DB job changes. Verify visual search/pagination at desktop/mobile widths after improvements.
 4. If healthy, route web traffic deliberately and monitor failures/latency/lock waits. Reconcile webhooks, paid reservations, expired leases and queued work BEFORE enabling normal workers. Resume one controlled worker execution, verify its outcome/costs, then restore the verified scheduler. Do not blindly drain/replay paid jobs.
 5. Confirm public/custom-domain and signed-in behavior, deletion/privacy invariants, correct worker image, no stray writer revisions and backup availability. Record monitoring owner and explicit rollback/degradation triggers.
 
