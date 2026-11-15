@@ -35,3 +35,9 @@ This branch starts at `b543fa4`, a supplied production marker, not independently
 Dependencies, package lock, migration list, all SQL schemas, runtime deployment configuration, and the release scripts are unchanged. The same 12 ownership regressions run against PostgreSQL 16 in CI; CI checks out the PR head explicitly. The draft targets a frozen baseline branch so its merge does not silently include newer main changes. No production database, deployment, migration, or real ownership remediation is performed.
 
 Legacy records without a usable owner UID become unavailable to ordinary users even if email matches. Existing administrator access and explicit legacy sharing remain separate permissions. The size of affected production inventory is unknown because no live-data audit was performed. Treat loss of access as a recovery case, never automatically reattach by email. Deploying requires independent source/image/schema provenance and release approval. A code rollback has no schema rollback requirement but would reopen the email-reuse authorization vulnerability; prefer a forward fix.
+
+### Baseline test-clock correction
+
+The first full run produced 596 passing tests, three failures, and one local PostgreSQL-only skip. All three failures reproduced on unchanged `b543fa4`: October report windows excluded database-clock ledger rows written in November. This branch also ports only `test/lead-costs.test.mjs` from the existing test correction `0635b0c`, fixing fixture timestamps without changing production accounting behavior or adding dependencies.
+
+Direct synthetic baseline-versus-hotfix probes confirmed the security difference: recycled-email visible records changed from 1 to 0; foreign stale-link suppression changed from true to false; UID-less email-matched visibility changed from 1 to 0.
