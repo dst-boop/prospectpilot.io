@@ -85,3 +85,10 @@
 !brand.svg
 
 !prospect-brief.mjs
+
+# Supervisor preview is fail-closed until authoritative adapters are configured.
+!team-lead-hub.mjs
+!team-hub.html
+!team-hub-client.js
+!team-hub.css
+!advisor-reassignment-preview.mjs

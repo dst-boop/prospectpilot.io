@@ -1,9 +1,10 @@
+import {isTeamLeadHubPath} from './team-lead-hub.mjs';
 import {loginDestination} from './login-destination.mjs';
 import {QUALITY_VERSION} from './lead-quality.mjs';
 import {CADENCE_VERSION} from './outreach-cadence.mjs';
 import {randomUUID} from 'node:crypto';
 const responseJSON=(detail,status)=>Response.json({detail},{status,headers:{'Cache-Control':'no-store'}});
-export function createHandler({auth,db,worker,loginHtml,loginScript,homeHtml,siteStyle,brandMark,ownerEmail,origins,providerKey='',linkedin,nativeResearch,warn,warnPage,warnScript,researchJobs,lab,labPage,labScript,labStyle,prospect,prospectPage,prospectScript,prospectJobsScript,prospectStyle,billing=null,releaseId=''}) {
+export function createHandler({auth,db,worker,loginHtml,loginScript,homeHtml,siteStyle,brandMark,ownerEmail,origins,providerKey='',linkedin,nativeResearch,warn,warnPage,warnScript,researchJobs,lab,labPage,labScript,labStyle,prospect,prospectPage,prospectScript,prospectJobsScript,prospectStyle,billing=null,teamHub=null,releaseId=''}) {
   const allowed=new Set(origins);
   const authorized=claims=>typeof claims.uid==='string'&&claims.uid.length>0&&claims.email_verified===true&&typeof claims.email==='string'&&claims.email.includes('@')&&['google.com','password'].includes(claims.firebase?.sign_in_provider);
   return async request=>{
@@ -48,6 +49,7 @@ export function createHandler({auth,db,worker,loginHtml,loginScript,homeHtml,sit
     let claims;if(cookie){try{claims=await auth.verifySessionCookie(cookie,true);}catch{}}
     if(url.pathname==='/'&&request.method==='GET'&&homeHtml&&(!claims||!authorized(claims)))return publicPage(homeHtml);
     if(!claims||!authorized(claims))return url.pathname.startsWith('/api/')?responseJSON('Sign in to ProspectPilot.',401):new Response(null,{status:303,headers:{Location:'/login?next='+encodeURIComponent(loginDestination(url.pathname+url.search)),'Cache-Control':'no-store'}});
+    if(isTeamLeadHubPath(url.pathname))return teamHub ? teamHub.route(request,claims) : responseJSON('Team preview is not configured. No records have been read.',503);
     if((prospect&&url.pathname==='/api/prospect/me'||lab&&url.pathname==='/api/lab/me')&&request.method==='GET')return Response.json({uid:claims.uid,email:claims.email,name:claims.name||'',...(url.pathname==='/api/lab/me'?{capabilities:{legacy_tools:!!ownerEmail&&claims.email.toLowerCase()===ownerEmail.toLowerCase()}}:{})},{headers:{'Cache-Control':'private, no-store'}});
     if(prospect && url.pathname==='/prospect-jobs-client.js' && request.method==='GET')return new Response(prospectJobsScript,{headers:{'Content-Type':'text/javascript; charset=utf-8','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
     if(prospect && (['/prospect','/prospect-client.js','/prospect.css'].includes(url.pathname)||(!lab&&url.pathname==='/')) && request.method==='GET') {
