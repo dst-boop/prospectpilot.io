@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {PGlite} from '@electric-sql/pglite';
+import {createOwnershipTestDatabase} from './ownership-test-database.mjs';
 import {createResearchLab} from '../research-lab.mjs';
 import {createProspectWorkspace} from '../prospect-workspace.mjs';
 import {ownsLead} from '../forget.mjs';
@@ -16,7 +16,7 @@ const person=header+'Jamie,Rivera,Synthetic Company,Director,jamie@example.test,
 const second='Pat,Lee,Other Synthetic Company,Controller,pat@example.test,,Albany,NY,US';
 const unclear=header+'Pat,Lee,Other Synthetic Company,Treasurer,pat@example.test,https://www.linkedin.com/in/synthetic-jamie,Albany,NY,US';
 async function fixture(){
- const db=new PGlite();
+ const db=await createOwnershipTestDatabase();
  for(const file of migrations)await db.exec(readFileSync(new URL('../'+file,import.meta.url),'utf8'));
  const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
  const lab=createResearchLab({pool,now:()=>now,sources:{readiness:{},quote:()=>0}}),ws=createProspectWorkspace({pool});

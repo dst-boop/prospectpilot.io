@@ -18,7 +18,7 @@ Existing administrator access and legacy explicit `shared_with` read/workflow pe
 
 ## Verification
 
-`test/owner-identity.test.mjs` uses only synthetic in-memory PGlite fixtures for recycled-email read/write/delete denial, import deduplication, suppression handoff, stale linked deletion, same-UID changed-email access, tombstone isolation, identity reviews and null/empty legacy ownership.
+`test/owner-identity.test.mjs` uses only synthetic fixtures (in-memory PGlite locally; a fresh isolated PostgreSQL schema when `POSTGRES_TEST_URL` is provided by CI) for recycled-email read/write/delete denial, import deduplication, suppression handoff, stale linked deletion, same-UID changed-email access, tombstone isolation, identity reviews and null/empty legacy ownership.
 
 `test/legacy-owner-identity.test.mjs` covers the legacy API paths, explicit shared access, import scope, and both pre-commit and atomic-commit UID reassignment. `test/database.test.mjs` asserts a same-email different-UID record is excluded from owned weekly/enrichment results.
 

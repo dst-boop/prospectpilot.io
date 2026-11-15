@@ -1,14 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {PGlite} from '@electric-sql/pglite';
+import {createOwnershipTestDatabase} from './ownership-test-database.mjs';
 import {createDatabase} from '../database.mjs';
 import worker from '../generated/worker.mjs';
 
 const API='/api/v3/discovery';
 const csv='First Name,Last Name,Company,Title,Email\nJane,Smith,Example Consulting,Owner,jane@example.com';
 async function fixture(t){
-  const pg=new PGlite();t.after(()=>pg.close());
+  const pg=await createOwnershipTestDatabase();t.after(()=>pg.close());
   await pg.exec(readFileSync(new URL('../generated/schema.sql',import.meta.url),'utf8'));
   const db=createDatabase({query:(...a)=>pg.query(...a),connect:async()=>({query:(...a)=>pg.query(...a),release(){}})});
   async function call(path,{uid='new-owner',email='recycled@example.com',method='GET',body,env={}}={}){
