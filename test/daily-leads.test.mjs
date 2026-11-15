@@ -207,6 +207,7 @@ test('the delivery imports into Contacts and drives the daily review to the goal
   try{
     for(const file of readFileSync(new URL('../migrate.mjs',import.meta.url),'utf8').match(/'(generated\/schema\.sql|migrations\/[^']+\.sql)'/g).map(s=>s.slice(1,-1)))
       await db.exec(readFileSync(new URL('../'+file,import.meta.url),'utf8'));
+    await db.exec("CREATE TABLE prospectpilot_migrations (id TEXT PRIMARY KEY); INSERT INTO prospectpilot_migrations(id) VALUES ('029')");
     const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
     const app=createProspectWorkspace({pool}),user={uid:'advisor',email:'advisor@example.com'},other={uid:'other',email:'other@example.com'};
     const call=(who,method,path,body)=>app.route(new Request('https://prospectpilot.io/api/prospect/'+path,{method,headers:{'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{})}),who);
