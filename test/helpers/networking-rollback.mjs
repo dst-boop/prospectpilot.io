@@ -91,8 +91,8 @@ async function preCaptureSchema(pool) {
 }
 
 const rows = async (pool, table) => (await pool.query(`SELECT * FROM ${table} ORDER BY 1,2`)).rows;
-const deleteContact = (pool, forget, id) => transaction(pool, client =>
-  forget(client, owner, {contactId: id}, {contactKeys: identityLookupKeys}));
+const deleteContact = (pool, forget, contactKeys, id) => transaction(pool, client =>
+  forget(client, owner, {contactId: id}, {contactKeys}));
 
 // Each import probe sees the same post-deletion state; a successful negative
 // control must not create a collision that masks the next import surface.
@@ -107,7 +107,7 @@ async function probeWorkspace(pool, run) {
   }
 }
 
-export async function verifyNetworkingRollback(pool, forget, {legacyNegativeControl = false} = {}) {
+export async function verifyNetworkingRollback(pool, forget, {legacyNegativeControl = false, contactKeys = identityLookupKeys} = {}) {
   await preCaptureSchema(pool);
   const app = createProspectWorkspace({pool});
   await app.importCSV(owner, {source: 'Synthetic pre-upgrade import', csv: originalCSV});
@@ -134,14 +134,14 @@ export async function verifyNetworkingRollback(pool, forget, {legacyNegativeCont
   // A thrown operation after DELETE must roll back both cascading deletes and
   // tombstones. This executes the selected rollback module, not copied SQL.
   await assert.rejects(transaction(pool, async client => {
-    await forget(client, owner, {contactId: id}, {contactKeys: identityLookupKeys});
+    await forget(client, owner, {contactId: id}, {contactKeys});
     throw Error('Synthetic transaction failure after deletion');
   }), /Synthetic transaction failure/);
   assert.deepEqual(await rows(pool, 'prospect_contacts'), beforeContacts);
   assert.deepEqual(await rows(pool, 'prospect_networking_captures'), captures);
   assert.deepEqual(await rows(pool, 'prospect_forgotten'), []);
 
-  assert.deepEqual(await deleteContact(pool, forget, id), {deleted: true, contacts: 1, leads: 0});
+  assert.deepEqual(await deleteContact(pool, forget, contactKeys, id), {deleted: true, contacts: 1, leads: 0});
   assert.equal((await app.networkingHistory(owner)).captures.length, 0, '032 FK cascade removes the private ledger');
   assert.equal((await app.networkingHistory(other)).captures[0].id, otherSaved.capture.id, 'another owner retains their capture');
   assert.equal((await pool.query('SELECT count(*)::int AS n FROM prospect_forgotten WHERE user_id=$1', [other.uid])).rows[0].n, 0);

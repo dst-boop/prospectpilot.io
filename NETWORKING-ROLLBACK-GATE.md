@@ -26,6 +26,9 @@ database name containing `test`, and no URL options. It never falls back to
 application connection settings. Every run creates a randomized private schema,
 omits `public` from its search path, and removes only that schema in `finally`.
 Fixture people, owners, context, and notes are synthetic. No provider API runs.
+Loopback and database naming are guardrails, not proof of isolation: a local
+tunnel or a database named `production_test` would pass that URL validation.
+The operator must use a verified disposable server, never a production proxy.
 
 ```sh
 # PGlite mirror always runs; PostgreSQL cases also run when explicitly set.
@@ -35,20 +38,26 @@ node --test test/networking-rollback.test.mjs
 POSTGRES_TEST_URL=postgres://postgres:synthetic-ci-only@127.0.0.1:5432/prospectpilot_test \
   node scripts/verify-networking-rollback.mjs
 
-# Gate a reviewed rollback module in its own extracted source tree.
+# Gate reviewed rollback deletion AND its identity-key callback from that image.
 # Keep its relative imports/dependencies intact. Never execute unknown code.
 POSTGRES_TEST_URL=postgres://postgres:synthetic-ci-only@127.0.0.1:5432/prospectpilot_test \
-  node scripts/verify-networking-rollback.mjs --forget-module /path/to/rollback/forget.mjs
+  node scripts/verify-networking-rollback.mjs \
+    --forget-module /path/to/rollback/forget.mjs \
+    --contact-keys-module /path/to/rollback/prospect-workspace.mjs
 ```
 
-The last command must fail for `test/fixtures/forget-b543fa4.mjs`. The ordinary
+The last command must fail when given `test/fixtures/forget-b543fa4.mjs` and
+`prospect-workspace.mjs` as its current-key negative-control callback. The ordinary
 suite explicitly expects that negative-control vulnerability so it can detect a
 fixture that accidentally stops reproducing the old gap. A passing negative
 control is **not** approval of that rollback target.
 
 The current-source gate runs as a separate non-skipping CI step. For a release,
 also run it with the deletion module and dependencies from the exact proposed
-rollback image. Passing current source alone cannot approve a different image.
+rollback image, including that image's `identityLookupKeys` callback. The command
+requires both external modules together and reports each source file's SHA-256.
+Record the immutable image digest as well; these two hashes do not attest to all
+transitive dependencies. Passing current source alone cannot approve a different image.
 This focused 031-to-032 upgrade is not evidence for an unknown live migration
 ledger. If the verified live ledger predates 031, separately test every pending
 migration and the corresponding worker/application changes before rollout.

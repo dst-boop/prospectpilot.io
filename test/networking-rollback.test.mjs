@@ -5,6 +5,7 @@ import {readFileSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {forgetPerson} from '../forget.mjs';
+import {identityLookupKeys} from '../prospect-workspace.mjs';
 import {forgetPerson as legacyForget} from './fixtures/forget-b543fa4.mjs';
 import {validateRollbackTestURL, withRollbackDatabase, verifyNetworkingRollback} from './helpers/networking-rollback.mjs';
 
@@ -32,10 +33,23 @@ test('standalone PostgreSQL release gate fails rather than silently skipping wit
   assert.doesNotMatch(result.stderr, /ECONNREFUSED|ENOTFOUND|production\.invalid/);
 });
 
+test('external rollback gate requires that image\'s identity-key callback module too', () => {
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/verify-networking-rollback.mjs', import.meta.url)),
+    '--forget-module', fileURLToPath(new URL('../forget.mjs', import.meta.url))],
+  {env: {...process.env, POSTGRES_TEST_URL: 'postgres://127.0.0.1:1/prospectpilot_test'}, encoding: 'utf8', timeout: 10000});
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Usage:.*--contact-keys-module/);
+  assert.doesNotMatch(result.stderr, /ECONNREFUSED|ENOTFOUND/);
+});
+
 for (const engine of ['pglite', 'postgres']) {
   const options = {skip: engine === 'postgres' && !process.env.POSTGRES_TEST_URL, timeout: 60000};
   test(`${engine}: 031 upgrade, repeated 032, capture-aware rollback deletion and three reimport surfaces stay private`, options,
-    () => withRollbackDatabase(engine, pool => verifyNetworkingRollback(pool, forgetPerson)));
+    () => withRollbackDatabase(engine, async pool => {
+      let callbackCalls = 0;
+      await verifyNetworkingRollback(pool, forgetPerson, {contactKeys: person => { callbackCalls++; return identityLookupKeys(person); }});
+      assert.ok(callbackCalls >= 4, 'both deletion transactions use the supplied rollback identity callback');
+    }));
   test(`${engine}: b543fa4 historical negative control loses capture aliases after rollback deletion`, options,
     () => withRollbackDatabase(engine, pool => verifyNetworkingRollback(pool, legacyForget, {legacyNegativeControl: true})));
 }
