@@ -126,6 +126,17 @@ These are recorded so they are not reopened by accident.
     so there is no priced server-side action to walk. Lead Qualifier's `zi`
     step does not come across; its CSV import is the path.
 
+13. **Research Lab licensed search draws on the plan allowance from its own
+    ledger.** Its reservations stay in `lab_costs`, and the month-to-date
+    figure the allowance is checked against adds them to `prospect_charges`.
+    They are not copied into `prospect_charges`: a charge there belongs to a
+    provider task, and cost per lead reads both ledgers, so a copy would count
+    the same dollar twice. Only server-reserved rows count (`configured_estimate`);
+    costs an advisor enters by hand never do. The advisor's Research Lab daily
+    budget still applies. The deployment's shared daily cap does not yet cover
+    Research Lab search — it defaults to 0, so applying it would switch
+    licensed search off wherever it is unset. That is a deployment decision.
+
 ## Open items
 
 - **Legacy owner-only batch tables** (`enrichment_batches`, `wealthfeed_jobs`,
@@ -157,5 +168,5 @@ These are recorded so they are not reopened by accident.
 | B | Lead Qualifier's "Move to ProspectPilot" export, in the columns the contact import already reads; `test/lead-qualifier-import.test.mjs` pins the contract | Done |
 | C | WhitePages/Trestle phone check (`check_phone`) on the provider queue and budget | Done |
 | D | Claude web research (`web_research` job) and profile screenshots (read once, never stored) are done. SEC proxy ages and the employer-site reader were already covered (`lab-sources.mjs`, `native-research.mjs`). AI QC is superseded by the five evidence gates | Done |
-| F | Selling memberships (decision 8): **per-advisor plan allowances (done)**; **Stripe billing: Checkout, customer portal, signed webhook, lapsed subscriptions pause paid lookups (done)**; **hybrid pricing: plans with yearly prices, a one-time free trial, promotion codes and top-up packs, priced in PRICING.md (done)**; then per-firm compliance settings in place of the Equitable-specific ones, the daily 8 a.m. leads as a per-advisor queue job on built-in data, and Research Lab licensed search counted against the same allowance | In progress |
+| F | Selling memberships (decision 8): **per-advisor plan allowances (done)**; **Stripe billing: Checkout, customer portal, signed webhook, lapsed subscriptions pause paid lookups (done)**; **hybrid pricing: plans with yearly prices, a one-time free trial, promotion codes and top-up packs, priced in PRICING.md (done)**; **Research Lab licensed search counted against the same allowance (done, decision 13)**; then per-firm compliance settings in place of the Equitable-specific ones, and the daily 8 a.m. leads as a per-advisor queue job on built-in data | In progress |
 | E | Email and `.ics` through the advisor's Outlook, and ZoomInfo CSV drop-to-import, are done (decisions 6 and 7). List sharing is implemented with owner/editor/viewer authorization and Postgres regression tests (see `SETUP-sharing.md`). **Autopilot is done** (`prospect-autopilot.mjs`, migration 031): the ladder runs on the provider queue rather than in a page, ordered by configured price so free steps rule people out before paid ones, under one approved maximum that bounds the whole run. What remains: redirect leads.financialplannersofamerica.com and retire Lead Qualifier | In progress |

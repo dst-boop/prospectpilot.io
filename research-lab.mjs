@@ -73,7 +73,7 @@ const visibleSQL=LEAD_VISIBLE_SQL;
 // Why a source task came back short, in words an advisor can act on. Each task
 // counts once per reason, however many of its pages hit the same wall.
 const LOSS_REASONS=[
-  [/budget/i,'Daily provider budget reached'],[/not configured/i,'Source not configured'],
+  [/budget/i,'Daily provider budget reached'],[/monthly allowance|subscription is not active/i,'Plan allowance used up or subscription paused'],[/not configured/i,'Source not configured'],
   [/disallows/i,'Site blocks automated reading'],[/No official website/i,'No company website found'],
   [/did not establish the employer/i,'Page did not name the employer'],
   [/SEC registrant|proxy filing|proxy is older/i,'No usable SEC proxy filing'],
@@ -209,7 +209,11 @@ export async function assessInventory(ids,assess,{clock=()=>performance.now(),bu
   return {status:failed||remaining?'partial':'completed',assessed,failed,skipped,remaining,errors,candidates:[]};
 }
 
-export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>new Date()}={}) {
+// allowance(client,userId,micros) answers with a refusal message when the
+// advisor's membership plan cannot cover a paid reservation, or null when it
+// can (prospect-jobs.mjs allowanceRefusal). It is the same monthly allowance
+// the contact lookups draw on.
+export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>new Date(),allowance=async()=>null}={}) {
   async function targetFor(user,client=pool) {
     const config=parse((await client.query('SELECT configuration FROM lab_settings WHERE user_id=$1',[user.uid])).rows[0]?.configuration)||{};
     return config.qualification_target==='rollover_100k'?'rollover_100k':'legacy';
@@ -474,6 +478,9 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       const freeFallback=config.sources.some(source=>source!=='web_search'&&sources.quote(source)===0);
       if(!freeFallback&&config.sources.includes('web_search')&&sources.quote('web_search')==null)throw fail(422,'Licensed web search is not configured. Deselect it to use free sources.');
       if(!freeFallback&&config.sources.includes('web_search')&&sources.quote('web_search')>config.daily_budget_micros)throw fail(422,'The daily provider budget cannot cover one search query. Increase the budget or deselect licensed web search.');
+      // A run that could only use licensed search is refused up front when the
+      // plan cannot cover one query; each query is checked again when reserved.
+      if(!freeFallback&&config.sources.includes('web_search')){const refusal=await allowance(pool,user.uid,sources.quote('web_search'));if(refusal)throw fail(422,refusal);}
       // A campaign by place finds its own companies in the worker; the plan
       // catalog and saved leads are the fallback only for a campaign without one.
       const plans=config.location?[]:await selectEmployers(pool,config,user.uid);
@@ -559,6 +566,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
         const ceiling=Math.min(Number(task.budget_micros),settingsRow?Number(settingsRow.daily_budget_micros):Number(task.budget_micros));
         const spent=Number((await client.query(`SELECT COALESCE(sum(amount_micros),0) AS n FROM lab_costs WHERE user_id=$1 AND category='provider' AND created_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,[task.user_id])).rows[0].n);
         if(spent+quote>ceiling)skip='Daily provider budget reached. No paid request made.';
+        else skip=await allowance(client,task.user_id,quote)||'';
       }
       if(skip){await client.query("UPDATE lab_tasks SET status='skipped',result=$1::jsonb,completed_at=now(),lease_until=NULL WHERE id=$2",[JSON.stringify({status:'skipped',errors:[skip]}),task.id]);return {...task,skipped:true};}
       if(quote>0)await client.query("INSERT INTO lab_costs(id,run_id,user_id,category,amount_micros,basis,note) VALUES($1,$2,$3,'provider',$4,'configured_estimate','Reserved before licensed search; reconcile against provider billing.')",[`task:${task.id}`,task.run_id,task.user_id,quote]);

@@ -43,6 +43,7 @@ Use the existing release process after configuration. Migrations 008 and 009 mus
 
 With `PROSPECT_PLANS` set, every paid reservation is checked against the advisor's plan before any provider request:
 - It counts the advisor's month-to-date reservations.
+- Research Lab licensed web search draws on the same allowance. Its reservations stay in `lab_costs` and are added to the month-to-date figure; costs an advisor enters by hand are not. The advisor's own Research Lab daily budget still applies. The shared daily cap (`PROSPECT_DAILY_BUDGET_MICROS`) does not cover Research Lab search.
 - It runs on the server and is serialised per advisor.
 - A job that would go past the allowance is skipped with no request and no charge. The advisor sees what is left in the tools panel and in the cost quote.
 - The shared daily cap still applies to everyone.
