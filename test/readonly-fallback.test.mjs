@@ -63,3 +63,21 @@ test('native PostgreSQL connection fence rejects accidental writes', {skip:!proc
   assert.deepEqual((await db.query('SELECT * FROM fence_fixture')).rows,[{value:'unchanged'}]);
  }finally{await client.end();await db.close();}
 });
+
+test('read-only worklist pages and search retain owner scope', {timeout:60000},async()=>{
+ const s=await createSyntheticStaging({readOnly:true});
+ try{
+  const lab=createResearchLab({pool:s.database.pool,sources:{readiness:{}}});
+  const csv='First Name,Last Name,Company,Email\n'+Array.from({length:27},(_,i)=>'Fixture'+String(i).padStart(2,'0')+',Person,Synthetic,person'+i+'@example.test').join('\n');
+  await lab.importCSV(s.identities.advisor,{csv});
+  const login=await s.request('/auth/session',{method:'POST',body:{idToken:'synthetic-id-advisor'}});
+  const cookie=login.headers.get('set-cookie').split(';')[0];
+  const first=await (await s.request('/api/fallback/worklist',{cookie})).json();
+  const second=await (await s.request('/api/fallback/worklist?offset=24',{cookie})).json();
+  assert.equal(first.total,27);assert.equal(first.items.length,24);assert.equal(second.items.length,3);
+  assert.equal(new Set([...first.items,...second.items].map(x=>x.lead.id)).size,27);
+  const search=await (await s.request('/api/fallback/worklist?search=Fixture26',{cookie})).json();
+  assert.equal(search.total,1);assert.equal(search.items[0].lead.first_name,'Fixture26');
+  const missing=await (await s.request('/api/fallback/worklist?search=NoSuchName',{cookie})).json();assert.equal(missing.total,0);
+ }finally{await s.close();}
+});
