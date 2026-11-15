@@ -474,3 +474,17 @@ test('advisor detail carries cited evidence without changing ownership, action o
   assert.equal(blocked.brief.evidence_summary.unknowns[0].state,'blocked');
  }finally{await db.close();}
 });
+
+test('conversation coaching is additive to authorized detail and disappears after suppression',async()=>{
+ const {db,lab,user,id}=await fixture();try{
+  let detail=await lab.advisor.detail(user,id);
+  assert.equal(detail.conversation_guidance.status,'hold');assert.equal(detail.conversation_guidance.opening,undefined);
+  await reviewBasics(lab,user,id);
+  detail=await lab.advisor.detail(user,id);
+  assert.equal(detail.conversation_guidance.status,'prepare');assert.match(detail.conversation_guidance.opening,/\[your name\]/);
+  assert.equal(detail.activities.length,0,'opening guidance does not log a conversation');
+  await assert.rejects(lab.advisor.detail({uid:'not-owner',email:'not-owner@example.com'},id),{status:404});
+  await db.query("UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{suppressed}','true')::text WHERE id=$1",[id]);
+  detail=await lab.advisor.detail(user,id);assert.equal(detail.conversation_guidance,null);assert.equal(detail.action.contact,null);
+ }finally{await db.close();}
+});

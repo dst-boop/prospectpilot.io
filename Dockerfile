@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-cert
 COPY --from=build /app/node_modules ./node_modules
 COPY package.json ./
 COPY contact-benchmark.mjs ./
-COPY advisor-pipeline.mjs ./
+COPY advisor-pipeline.mjs advisor-conversation-guidance.mjs ./
 COPY --from=build /app/generated ./generated
 COPY scripts ./scripts
 COPY prospect-brief.mjs prospect-brief-evidence.mjs advisor-workflow.mjs outreach-cadence.mjs forget.mjs lead-costs.mjs web-research.mjs lab.html lab.css lab-client.js lead-quality.mjs age-band.mjs source-catalog.mjs plan-catalog.mjs rollover-playbooks.mjs lab-sources.mjs robots-policy.mjs research-lab.mjs ./

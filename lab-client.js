@@ -310,14 +310,9 @@ async function loadWorklist(){
 const inboundLabel=channel=>({phone:'they called',email:'they emailed',linkedin:'they replied on LinkedIn'})[channel]||'they contacted me';
 function renderConversation(){
   const a=currentWorkflow.action,q=current.quality;
-  const discovery=['Walk me through where your retirement savings live today — current plan, any former employer plans, IRAs, anything else.',
-    'When you left a previous employer, what did you decide to do with that plan — or is it still sitting there?',
-    'What does retirement look like for you — age, lifestyle, anything you are already planning around?',
-    'Have you worked with an advisor before? What worked, and what did not?',
-    'If we found something worth fixing, what would you want to happen next?'];
-  const questions={age:'What is your current age?',residence:'Which state do you currently live in?',retirement:'Do you still have a retirement account from a previous employer, or another retirement account you would like reviewed?',contact:'What is the best way to contact you for an agreed follow-up?',net_worth:'If you want a planning review, would you be comfortable sharing an authorized financial summary?',movable_assets:'Would you like to confirm the retirement account amount available for a transfer review?' };
   $('conversationBrief').innerHTML=`<p><strong>Next action: ${esc(a.label)}</strong></p><p>${esc(a.reason)}</p>${a.due_at?`<p>Saved time: ${esc(when(a.due_at))}</p>`:''}<details><summary>Remaining evidence and pacing</summary>${cadenceLine(currentWorkflow.cadence)}<p>${q.gaps.length?'Still unknown: '+esc(q.gaps.map(k=>labels[k]).join(' · ')):'Required qualification evidence is reviewed; this is not a recommendation to transfer assets.'}</p></details>`;
   if(labels[a.field]&&!terminal(a)){const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent='Review '+labels[a.field];button.onclick=()=>startEvidence(a.field);$('conversationBrief').append(button);}
+  renderConversationGuide();
   renderBriefSummary();
   renderDraft();
   $('contactActions').replaceChildren();const c=a.contact;
@@ -631,4 +626,22 @@ $('pilotAudit').onclick=async()=>{
     $('pilotStatus').textContent=`${sample.items.length} prospects sampled from the current worklist order (not random). ${sample.items.filter(i=>i.signal?.rank===2).length} have a reviewed recent personal event; ${sample.items.filter(i=>i.quality.gates.contact.state==='confirmed').length} have reviewed contact evidence. Sample request: ${elapsed} ms. This measures recorded evidence coverage, not independent accuracy. Keep this file to audit the same people again.`;
   }catch(e){$('pilotStatus').textContent='Audit sample unavailable: '+e.message;}finally{$('pilotAudit').disabled=false;}
 };
+
+function renderConversationGuide(){
+  const guide=currentWorkflow?.conversation_guidance,action=currentWorkflow?.action;
+  if(!guide||!action||terminal(action))return;
+  const section=document.createElement('details');section.className='conversation-guide';
+  section.innerHTML=`<summary>First conversation guide</summary><p class="muted">${esc(guide.label)}</p><p><strong>Objective:</strong> ${esc(guide.objective)}</p><p>${esc(guide.notice)}</p>`;
+  if(guide.status!=='prepare')section.innerHTML+=`<p><strong>Before outreach:</strong> ${esc(guide.reason)}</p>`;
+  else{
+    section.innerHTML+=`<h4>Ask permission to begin</h4><p class="coaching-example">${esc(guide.opening)}</p><h4>Discover what matters</h4><ol>${guide.questions.map(q=>`<li>${esc(q)}</li>`).join('')}</ol><p>${esc(guide.listening)}</p><details><summary>Respond without pressure</summary>${guide.objections.map(o=>`<h4>${esc(o.concern)}</h4><p class="coaching-example">${esc(o.response)}</p>${o.action?`<p>${esc(o.action)}</p>`:''}`).join('')}</details><h4>Agree a next step, if wanted</h4><p class="coaching-example">${esc(guide.closing)}</p><ul>${guide.capture.map(item=>`<li>${esc(item)}</li>`).join('')}</ul>`;
+    const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent='Record conversation outcome';
+    // Navigation only: never prefill a statement, select an outcome or save activity.
+    const workflow=currentWorkflow;
+    button.onclick=()=>{if(currentWorkflow!==workflow||!current||activitySaving)return;$('outcomeDetails').open=true;$('activityNote').focus();};
+    section.append(button);
+  }
+  $('conversationBrief').append(section);
+}
+
 init();

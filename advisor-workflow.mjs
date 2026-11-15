@@ -4,6 +4,7 @@ import {assessLead, leadIdentity, hash, csvCell, leadScores} from './lead-qualit
 import {cadenceState, admitTouch, restPeriod, nextFollowUp, composeTouch, firstTouchSLA, dialBudget, TOUCH_OUTCOMES, INBOUND_OUTCOMES} from './outreach-cadence.mjs';
 import {phoneReadiness} from './prospect-data-quality.mjs';
 import {advisorPipeline} from './advisor-pipeline.mjs';
+import {conversationGuidance} from './advisor-conversation-guidance.mjs';
 
 export function withDirectoryRestrictions(lead,contacts=[]) {
  const imported_dnc=new Set(lead.imported_dnc||[]);
@@ -202,7 +203,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const quality=assessLead(lead,rows.map(r=>parse(r.payload)),{now:now(),target:await targetFor(user)});
     const cadence=await cadenceFor(user,id,lead,quality,pool,await dialsToday(user));
     const action=nextAction(lead,quality,now(),cadence),brief=prospectBrief(lead,quality,rows.map(r=>parse(r.payload)),now());
-    return {action,cadence,brief,
+    return {action,cadence,brief,conversation_guidance:conversationGuidance(action,quality,cadence),
       // The words for the next touch, not a description of them.
       draft:TERMINAL_BUCKETS.has(action.bucket)||!cadence.step?null:contextualDraft(composeTouch(cadence.step,{lead,advisor:await profile(user),now:now(),sent:cadence.progress.done}),brief),
       schedules:TERMINAL_BUCKETS.has(action.bucket)?null:nextFollowUp(cadence,{now:now()}),
