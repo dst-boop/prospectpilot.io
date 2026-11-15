@@ -78,6 +78,7 @@
 !billing.mjs
 !prospect-preparation.mjs
 !advisor-workflow.mjs
+!advisor-pipeline.mjs
 !outreach-cadence.mjs
 
 !home.html

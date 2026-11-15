@@ -3,6 +3,7 @@ import {randomUUID} from 'node:crypto';
 import {assessLead, leadIdentity, hash, csvCell, leadScores} from './lead-quality.mjs';
 import {cadenceState, admitTouch, restPeriod, nextFollowUp, composeTouch, firstTouchSLA, dialBudget, TOUCH_OUTCOMES, INBOUND_OUTCOMES} from './outreach-cadence.mjs';
 import {phoneReadiness} from './prospect-data-quality.mjs';
+import {advisorPipeline} from './advisor-pipeline.mjs';
 
 export function withDirectoryRestrictions(lead,contacts=[]) {
  const imported_dnc=new Set(lead.imported_dnc||[]);
@@ -408,8 +409,18 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
   async function scoreboard(user,{days=30}={}) {
     days=Number(days);
     if(!Number.isSafeInteger(days)||days<1||days>365)throw fail(422,'Choose a window between 1 and 365 days.');
-    const since=new Date(now().getTime()-days*86400000).toISOString();
+    const asOf=now(),since=new Date(asOf.getTime()-days*86400000).toISOString();
     const rows=(await pool.query(`SELECT d.id,d.created_at AS added_at,
+        -- Independent recorded milestones. Do not infer an approach from a
+        -- held meeting, or backfill a booking/conversation from client status.
+        -- Future-dated rows cannot contribute to the as-of snapshot.
+        min(a.created_at) FILTER(WHERE a.outcome IN ('no_answer','connected','follow_up','meeting_booked')
+          AND a.direction IS DISTINCT FROM 'inbound' AND a.created_at <= $6::timestamptz) AS pipeline_approached_at,
+        min(a.created_at) FILTER(WHERE a.outcome IN ('connected','follow_up','meeting_booked','meeting_held')
+          AND a.created_at <= $6::timestamptz) AS pipeline_conversation_at,
+        min(a.created_at) FILTER(WHERE a.outcome='meeting_booked' AND a.created_at <= $6::timestamptz) AS pipeline_booked_at,
+        min(a.created_at) FILTER(WHERE a.outcome='meeting_held' AND a.created_at <= $6::timestamptz) AS pipeline_held_at,
+        min(a.created_at) FILTER(WHERE a.outcome='became_client' AND a.created_at <= $6::timestamptz) AS pipeline_client_at,
         -- Approaches only. A prospect who called in first did not make the
         -- service level: it measures whether the advisor reached them within a
         -- business day, and counting their call would report that as met on a
@@ -423,7 +434,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
           AND a.next_at < $6::timestamptz AND a.next_at >= $4::timestamptz)::int AS due_meetings
       FROM discovery_leads d LEFT JOIN advisor_activities a ON a.lead_id=d.id AND a.user_id=$2
       WHERE ${visibleSQL} GROUP BY d.id,d.created_at`,
-      ['wealth-management',user.uid,user.email,since,[...TOUCH_OUTCOMES],now().toISOString()])).rows;
+      ['wealth-management',user.uid,user.email,since,[...TOUCH_OUTCOMES],asOf.toISOString()])).rows;
     // Every recorded attendance, dated by the meeting it settles rather than by
     // when somebody got round to logging it. An advisor who writes up Tuesday's
     // meetings on Friday would otherwise move them into Friday's window: a
@@ -502,7 +513,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const first=new Map();for(const r of settled)if(r.outcome==='meeting_held'&&!first.has(r.lead_id))first.set(r.lead_id,r);
     const discovered=[...first.values()].filter(r=>new Date(r.met_at)>=new Date(since));
     const second=discovered.filter(r=>r.booked_after);
-    return {window_days:days,since,
+    return {window_days:days,since,pipeline:advisorPipeline(rows,{since,asOf}),
       added:cohort.length,worked:worked.length,
       // A prospect added but never touched is the gap the SLA exists to close,
       // so it is reported next to the hit rate rather than filtered out of it.

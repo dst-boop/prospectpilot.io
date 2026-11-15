@@ -262,9 +262,12 @@ $('identityList').onclick=async event=>{
 async function loadWorklist(){
   const serial=++workRequest;loadingWorklist();document.querySelectorAll('[data-queue]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.queue===$('workView').value)));
   try{
-  const data=await request('/api/lab/worklist?'+new URLSearchParams({view:$('workView').value,search:$('workSearch').value,offset:workOffset,limit:24}));if(serial!==workRequest)return;
-  if(workOffset>0&&workOffset>=data.total){workOffset=0;return loadWorklist();}
+  const loading=request('/api/lab/worklist?'+new URLSearchParams({view:$('workView').value,search:$('workSearch').value,offset:workOffset,limit:24}));
+  // The summary has its own read and loading/error state. A failed worklist
+  // refresh must not leave old pipeline figures looking freshly checked.
   if($('funnelPanel').open)loadScoreboard().catch(()=>{});
+  const data=await loading;if(serial!==workRequest)return;
+  if(workOffset>0&&workOffset>=data.total){workOffset=0;return loadWorklist();}
   workTotal=data.total;$('workDue').textContent=num(data.counts.due);$('workReady').textContent=num(data.counts.ready);$('workConversations').textContent=num(data.activity.conversations);$('workMeetings').textContent=num(data.activity.meetings);
   if(data.dials){$('workDials').textContent=num(data.dials.remaining);$('workDialsNote').textContent=data.dials.reason;}
   const available=data.items.filter(item=>!terminal(item.action));
@@ -322,14 +325,29 @@ function renderConversation(){
   $('activityHistory').innerHTML=(current.lead.notes?`<p class="existing-notes">${esc(current.lead.notes)}</p>`:'')+(currentWorkflow.activities.length?currentWorkflow.activities.map(a=>`<div class="activity-entry"><strong>${esc(outcomeLabel(a.outcome))}</strong>${a.direction==='inbound'?` <span class="inbound-tag">${esc(inboundLabel(a.channel))}</span>`:''}${a.logged_by?` <span class="by-tag">${esc(a.logged_by)}</span>`:''} · ${esc(when(a.created_at))}<p>${esc(a.note)}</p>${a.next_at?`<small>Next: ${esc(when(a.next_at))}</small>`:''}</div>`).join(''):'<p>No outcomes recorded yet.</p>');
 }
 let scoreboardRequest=0;
+function renderPipeline(pipeline){
+  if(!pipeline){$('pipeline').innerHTML='<p class="muted">Recorded milestones are unavailable for this summary.</p>';return;}
+  const date=value=>{const at=new Date(value);return value&&Number.isFinite(at.getTime())?at.toISOString().slice(0,10)+' UTC':'Unavailable';};
+  const cutoff=value=>{const at=new Date(value);return value&&Number.isFinite(at.getTime())?at.toISOString().replace('T',' ').replace('Z',' UTC'):'Unavailable';};
+  $('pipeline').innerHTML=`<h3>Progress of the same records</h3><p>${esc(pipeline.scope)}</p>`+
+    `<p class="muted">Added ${esc(cutoff(pipeline.since))} through ${esc(cutoff(pipeline.as_of))} · ${num(pipeline.records)} records</p>`+
+    (pipeline.records===0?'<p class="empty">No accessible research records were added in this window. Older records can still contribute to the activity measurements below.</p>':'')+
+    `<ol class="pipeline-stages">${pipeline.stages.map(stage=>`<li><h4>${esc(stage.label)}</h4><strong>${num(stage.count)}</strong>`+
+      `<small>${stage.id==='added'?'Records in this cohort':num(stage.not_recorded)+' without this milestone logged'}</small>`+
+      `<small>${stage.latest_first_recorded_at?'Latest first record: '+esc(date(stage.latest_first_recorded_at)):'No date recorded'}</small>`+
+      `<details><summary>What counts</summary><p>${esc(stage.basis)}</p></details></li>`).join('')}</ol>`+
+    `<p class="muted">${esc(pipeline.basis)}</p><h3>Activity measurements</h3>`;
+}
 async function loadScoreboard(){
   const serial=++scoreboardRequest;
   $('scoreboard').setAttribute('aria-busy','true');
   $('scoreboard').innerHTML='<p role="status">Loading funnel summary…</p>';
+  $('pipeline').innerHTML='';
   $('scoreboardBasis').textContent='';
   try{
   const b=await request('/api/lab/scoreboard?days=30');
   if(serial!==scoreboardRequest)return;
+  renderPipeline(b.pipeline);
   // A rate with nothing in its denominator is not zero, it is unmeasured. Say
   // so rather than printing a 0% nobody earned.
   $('scoreboard').innerHTML=b.measured.map(m=>{
@@ -347,6 +365,7 @@ async function loadScoreboard(){
   $('scoreboardBasis').textContent=[b.basis,...gaps].join(' ');
   }catch(error){
     if(serial!==scoreboardRequest)return;
+    $('pipeline').innerHTML='';
     $('scoreboard').innerHTML='<div role="alert"><p>Funnel summary could not load. '+esc(error.message)+'</p><button id="retryScoreboard" class="secondary" type="button">Retry funnel summary</button></div>';
     $('scoreboardBasis').textContent='Figures are unavailable until the summary reloads.';
     $('retryScoreboard').onclick=()=>loadScoreboard();
