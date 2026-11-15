@@ -22,7 +22,7 @@
 
 Migration 032 creates `prospect_networking_captures` and its owner/history index. It uses the existing PostgreSQL database and migration runner. Runtime assets are included in the Docker image.
 
-Rollback application code without dropping this table. The additive schema is unused by older code; retaining it preserves saved private captures. No production migration, data access, or deployment is part of this change. The integration is reviewed through a non-production draft PR.
+Do not roll back to arbitrary older application code. Even with this table retained, old contact deletion can cascade away captured aliases without tombstones, allowing later reimport. A compatible immutable rollback floor must already be verified and serving before networking writes are enabled. Keep schema 032, captures and tombstones; see [the networking release gate](NETWORKING-RELEASE-GATE.md). Its checked-in floor policy is empty, so routine release is blocked before any build or migration. No production migration, data access or deployment is part of this change.
 
 ## Verification scope
 

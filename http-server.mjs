@@ -1,8 +1,11 @@
+import {candidateOrigin,READINESS_PATH} from './release-readiness.mjs';
 import {Readable} from 'node:stream';
 import {pipeline} from 'node:stream/promises';
 
 class HttpFailure extends Error {constructor(status,message){super(message);this.status=status;}}
-export function createHttpHandler(handler,{maxBodyBytes=5_000_000,maxInflight=40,logger=console}={}) {
+export function createHttpHandler(handler,{maxBodyBytes=5_000_000,maxInflight=40,logger=console,releaseCheckOrigin=''}={}) {
+  const candidate=candidateOrigin(releaseCheckOrigin);
+  const candidateHost=candidate?new URL(candidate).hostname:null;
   let active=0;
   return async(req,res)=>{
     const reject=(status,message)=>{res.writeHead(status,{'Cache-Control':'no-store','Content-Type':'text/plain; charset=utf-8','Connection':'close',...(status===503?{'Retry-After':'5'}:{})});res.end(message);res.once('finish',()=>req.destroy());};
@@ -12,9 +15,19 @@ export function createHttpHandler(handler,{maxBodyBytes=5_000_000,maxInflight=40
     const disconnect=()=>{if(!res.writableFinished)abort.abort();};
     req.once('aborted',disconnect);res.once('close',disconnect);
     try{
-      const host=String(req.headers['x-forwarded-host']||req.headers.host||'').split(',')[0].trim();
+      const rawHost=String(req.headers.host||'').trim();
+      let rawHostname;
+      try{
+        const parsedHost=new URL('https://'+rawHost);
+        if(!rawHost||/[\s/\\?#@]/.test(rawHost)||parsedHost.username||parsedHost.password||parsedHost.pathname!=='/'||parsedHost.search||parsedHost.hash)throw Error('Invalid host');
+        rawHostname=parsedHost.hostname.replace(/\.$/,'');
+      }catch{if(candidateHost)throw new HttpFailure(400,'Invalid request address.');}
+      const candidateRequest=!!candidateHost&&rawHostname===candidateHost;
+      // Firebase Hosting forwarding is retained except on the isolated candidate.
+      const host=candidateRequest?candidateHost:String(req.headers['x-forwarded-host']||rawHost).split(',')[0].trim();
       if(!host||!req.url?.startsWith('/')||req.url.startsWith('//')||req.url.includes('\\'))throw new HttpFailure(400,'Invalid request address.');
       let url;try{url=new URL(req.url,'https://'+host);}catch{throw new HttpFailure(400,'Invalid request address.');}
+      if(candidateRequest&&!((url.pathname===READINESS_PATH&&req.method==='GET')||(['/health','/healthz'].includes(url.pathname)&&['GET','HEAD'].includes(req.method))))throw new HttpFailure(403,'Release readiness unavailable.');
       const length=req.headers['content-length'];
       if(length!==undefined&&(!/^\d+$/.test(length)||Number(length)>maxBodyBytes))throw new HttpFailure(413,'File exceeds 5 MB.');
       const chunks=[];let size=0;

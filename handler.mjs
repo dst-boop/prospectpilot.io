@@ -1,16 +1,19 @@
+import {candidateOrigin,READINESS_PATH,RELEASE_SCHEMA_VERSION} from './release-readiness.mjs';
 import {isTeamLeadHubPath} from './team-lead-hub.mjs';
 import {loginDestination} from './login-destination.mjs';
 import {QUALITY_VERSION} from './lead-quality.mjs';
 import {CADENCE_VERSION} from './outreach-cadence.mjs';
 import {randomUUID} from 'node:crypto';
 const responseJSON=(detail,status)=>Response.json({detail},{status,headers:{'Cache-Control':'no-store'}});
-export function createHandler({auth,db,worker,loginHtml,loginScript,homeHtml,siteStyle,brandMark,ownerEmail,origins,providerKey='',linkedin,nativeResearch,warn,warnPage,warnScript,researchJobs,lab,labPage,labScript,labStyle,prospect,prospectPage,prospectScript,prospectJobsScript,prospectStyle,networkingPage,networkingScript,networkingStyle,billing=null,teamHub=null,releaseId=''}) {
+export function createHandler({auth,db,worker,loginHtml,loginScript,homeHtml,siteStyle,brandMark,ownerEmail,origins,providerKey='',linkedin,nativeResearch,warn,warnPage,warnScript,researchJobs,lab,labPage,labScript,labStyle,prospect,prospectPage,prospectScript,prospectJobsScript,prospectStyle,networkingPage,networkingScript,networkingStyle,billing=null,teamHub=null,releaseId='',releaseCheckOrigin='',releaseReadiness=null}) {
   const allowed=new Set(origins);
   const authorized=claims=>typeof claims.uid==='string'&&claims.uid.length>0&&claims.email_verified===true&&typeof claims.email==='string'&&claims.email.includes('@')&&['google.com','password'].includes(claims.firebase?.sign_in_provider);
   return async request=>{
     const url=new URL(request.url);
     if(['/health','/healthz'].includes(url.pathname)&&['GET','HEAD'].includes(request.method))return new Response('ok',{headers:{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store'}});
-    if(!allowed.has(url.origin))return responseJSON('Use the ProspectPilot website address.',403);
+    const readiness=url.pathname===READINESS_PATH;
+    if(readiness&&request.method!=='GET')return responseJSON('Release readiness unavailable.',405);
+    if(!allowed.has(url.origin)&&!(readiness&&candidateOrigin(releaseCheckOrigin)===url.origin))return responseJSON('Use the ProspectPilot website address.',403);
     if(url.pathname==='/version'&&request.method==='GET')return Response.json({application:'ProspectPilot',feature_set:lab?'research-lab-v1':'legacy',quality_version:lab?QUALITY_VERSION:null,advisor_workspace_version:lab?'advisor-workflow-1':null,cadence_version:lab?CADENCE_VERSION:null,contact_workspace_version:prospect?'professional-contacts-1':null,release_id:releaseId},{headers:{'Cache-Control':'no-store'}});
     // Stripe calls this server to server, so it has no Origin and no session;
     // the signature on the raw body is what authenticates it.
@@ -49,6 +52,12 @@ export function createHandler({auth,db,worker,loginHtml,loginScript,homeHtml,sit
     let claims;if(cookie){try{claims=await auth.verifySessionCookie(cookie,true);}catch{}}
     if(url.pathname==='/'&&request.method==='GET'&&homeHtml&&(!claims||!authorized(claims)))return publicPage(homeHtml);
     if(!claims||!authorized(claims))return url.pathname.startsWith('/api/')?responseJSON('Sign in to ProspectPilot.',401):new Response(null,{status:303,headers:{Location:'/login?next='+encodeURIComponent(loginDestination(url.pathname+url.search)),'Cache-Control':'no-store'}});
+    if(readiness){
+      if(!ownerEmail||claims.email.toLowerCase()!==ownerEmail.toLowerCase())return responseJSON('Release readiness unavailable.',403);
+      try{if(!releaseId||!releaseReadiness||await releaseReadiness()!==true)return responseJSON('Release readiness unavailable.',503);}
+      catch{return responseJSON('Release readiness unavailable.',503);}
+      return Response.json({ready:true,release_id:releaseId,schema_version:RELEASE_SCHEMA_VERSION},{headers:{'Cache-Control':'no-store'}});
+    }
     if(isTeamLeadHubPath(url.pathname))return teamHub ? teamHub.route(request,claims) : responseJSON('Team preview is not configured. No records have been read.',503);
     if((prospect&&url.pathname==='/api/prospect/me'||lab&&url.pathname==='/api/lab/me')&&request.method==='GET')return Response.json({uid:claims.uid,email:claims.email,name:claims.name||'',...(url.pathname==='/api/lab/me'?{capabilities:{legacy_tools:!!ownerEmail&&claims.email.toLowerCase()===ownerEmail.toLowerCase()}}:{})},{headers:{'Cache-Control':'private, no-store'}});
     if(prospect && networkingPage && ['/networking','/networking-client.js','/networking.css'].includes(url.pathname) && request.method==='GET') {

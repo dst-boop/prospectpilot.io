@@ -43,3 +43,7 @@ Each run owns a random `pp_staging_*` schema and drops only that schema. CI prov
 This covers synthetic schema/record compatibility, not actual production contents, data scale, concurrent deployment lock timing, live Firebase, external providers, browser behavior, or a full rolling mixed-version deployment. The rollback candidate retains new tables and data; it does not promise the removed networking/autopilot features are available. Production approval still needs the deployed revision/migration history to be verified and an actual backup/restore and release plan reviewed separately.
 
 Local PGlite success and CI PostgreSQL16 success are separate evidence. Inspect the exact PR commit's CI result before treating the PostgreSQL portion as passed.
+
+## Release enforcement
+
+The [networking release gate](NETWORKING-RELEASE-GATE.md) refuses an unverified previous serving revision as rollback. This source rehearsal does not populate the immutable registry-image policy or satisfy live auth/database readiness. The policy remains empty until exact image provenance and compatibility evidence are independently reviewed.
