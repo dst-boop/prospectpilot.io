@@ -6,7 +6,7 @@ export {sourceStrength};
 import {matchPlans, selectEmployers, catalogSummary} from './plan-catalog.mjs';
 import {applyPlaybook, findPlaybook, playbookChoices, belowAgeFloor} from './rollover-playbooks.mjs';
 import {SOURCE_CATALOG} from './source-catalog.mjs';
-import {LEAD_TEAM,LEAD_VISIBLE_SQL,forgetPerson,forgottenKeys} from './forget.mjs';
+import {LEAD_TEAM,LEAD_VISIBLE_SQL,ownsLead,forgetPerson,forgottenKeys} from './forget.mjs';
 import {identityLookupKeys} from './prospect-workspace.mjs';
 import {csvRows} from './warn.mjs';
 
@@ -215,7 +215,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     return config.qualification_target==='rollover_100k'?'rollover_100k':'legacy';
   }
   async function accessible(user,id,client=pool,lock=false) {
-    const row=(await client.query(`SELECT discovery_leads.*,(SELECT jsonb_agg(pc.payload) FROM advisor_contact_links acl JOIN prospect_contacts pc ON pc.id=acl.contact_id AND pc.user_id=acl.user_id WHERE acl.lead_id=discovery_leads.id) AS linked_contacts FROM discovery_leads WHERE ${visibleSQL} AND id=$4${lock?' FOR UPDATE':''}`,[TEAM,user.uid,user.email,id])).rows[0];
+    const row=(await client.query(`SELECT discovery_leads.*,(SELECT jsonb_agg(pc.payload) FROM advisor_contact_links acl JOIN prospect_contacts pc ON pc.id=acl.contact_id AND pc.user_id=acl.user_id WHERE acl.lead_id=discovery_leads.id AND acl.user_id=discovery_leads.owner_user_id) AS linked_contacts FROM discovery_leads WHERE ${visibleSQL} AND id=$3${lock?' FOR UPDATE':''}`,[TEAM,user.uid,id])).rows[0];
     if(!row)throw fail(404,'Lead not found or unavailable to this account.');
     return {...row,lead:withDirectoryRestrictions({...parse(row.payload),id:row.id},row.linked_contacts)};
   }
@@ -256,13 +256,13 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     offset=integer(offset,0,1000000,0);limit=integer(limit,1,100,50);
     if(status&&!['verified','promising','incomplete','excluded','identity_review','unassessed'].includes(status))throw fail(422,'Invalid quality filter.');
     if(![true,false,'true','false'].includes(compact))throw fail(422,'Invalid compact result setting.');
-    const needle=String(search).trim().replace(/\s+/g,' ').slice(0,100),params=[TEAM,user.uid,user.email,status,needle];
+    const needle=String(search).trim().replace(/\s+/g,' ').slice(0,100),params=[TEAM,user.uid,status,needle];
     const scope=`FROM discovery_leads d LEFT JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2 AND q.rule_version='${qualificationVersion(target)}'
-      WHERE ${visibleSQL} AND ($4='' OR COALESCE(q.status,'unassessed')=$4)
-      AND ($5='' OR strpos(lower(concat_ws(' ',d.payload::jsonb->>'first_name',d.payload::jsonb->>'last_name')),lower($5))>0
-        OR strpos(lower(d.payload::jsonb->>'company'),lower($5))>0)`;
+      WHERE ${visibleSQL} AND ($3='' OR COALESCE(q.status,'unassessed')=$3)
+      AND ($4='' OR strpos(lower(concat_ws(' ',d.payload::jsonb->>'first_name',d.payload::jsonb->>'last_name')),lower($4))>0
+        OR strpos(lower(d.payload::jsonb->>'company'),lower($4))>0)`;
     const rows=(await pool.query(`SELECT d.id,d.payload,q.status AS recorded_status,count(*) OVER()::int AS total ${scope}
-      ORDER BY q.score DESC NULLS LAST,d.id LIMIT $6 OFFSET $7`,[...params,limit,offset])).rows;
+      ORDER BY q.score DESC NULLS LAST,d.id LIMIT $5 OFFSET $6`,[...params,limit,offset])).rows;
     const total=rows[0]?.total??(offset>0?(await pool.query(`SELECT count(*)::int AS total ${scope}`,params)).rows[0].total:0);
     const ids=rows.map(r=>r.id);
     const records=ids.length?(await pool.query('SELECT lead_id,payload FROM lab_observations WHERE user_id=$1 AND lead_id=ANY($2::text[])',[user.uid,ids])).rows:[];
@@ -284,10 +284,10 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     const key=v=>String(v||'').trim().toLowerCase().replace(/\s+/g,' ');
     const company=key(seed.company),role=key(seed.current_title);
     if(!company&&!role)return {people:[],truncated:false,status:'missing_context',searched:false,missing_fields:['company','current_title']};
-    const rows=(await pool.query(`SELECT d.id,d.payload FROM discovery_leads d WHERE ${visibleSQL} AND d.id<>$4
-      AND (($5<>'' AND lower(regexp_replace(trim(d.payload::jsonb->>'company'),'\\s+',' ','g'))=$5)
-        OR ($6<>'' AND lower(regexp_replace(trim(d.payload::jsonb->>'current_title'),'\\s+',' ','g'))=$6))
-      ORDER BY d.id LIMIT 101`,[TEAM,user.uid,user.email,id,company,role])).rows;
+    const rows=(await pool.query(`SELECT d.id,d.payload FROM discovery_leads d WHERE ${visibleSQL} AND d.id<>$3
+      AND (($4<>'' AND lower(regexp_replace(trim(d.payload::jsonb->>'company'),'\\s+',' ','g'))=$4)
+        OR ($5<>'' AND lower(regexp_replace(trim(d.payload::jsonb->>'current_title'),'\\s+',' ','g'))=$5))
+      ORDER BY d.id LIMIT 101`,[TEAM,user.uid,id,company,role])).rows;
     const people=[];
     for(const row of rows.slice(0,100)) {
       const {lead}=await accessible(user,row.id);
@@ -314,7 +314,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     const people=new Map();
     for(const r of rows){const key=personKey(parse(r.payload));if(key){if(!people.has(key))people.set(key,[]);people.get(key).push(r);}}
     const admin=(await client.query("SELECT 1 FROM discovery_users WHERE user_id=$1 AND role='admin'",[user.uid])).rows.length>0;
-    const writable=row=>row.owner_user_id===user.uid||String(row.owner_email||'').toLowerCase()===String(user.email||'').toLowerCase()||admin;
+    const writable=row=>ownsLead(row,user.uid)||admin;
     let added=0,duplicates=0,rejected=0,ambiguous=0,probable=0;
     for(const raw of candidates.slice(0,5000)) {
       const lead=normalizeLead(mapResearchRow(raw),{source:raw.source_names?.[0]||source,owner_email:user.email});
@@ -373,7 +373,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     location:[p.city,p.state].filter(Boolean).join(', '),email:p.email||'',phone:p.phone||p.mobile_phone||'',linkedin_url:p.linkedin_url||'',sources:(p.source_names||[]).slice(0,5)});
   async function reviewAccess(client,user) {
     const admin=(await client.query("SELECT 1 FROM discovery_users WHERE user_id=$1 AND role='admin'",[user.uid])).rows.length>0;
-    return row=>row.owner_user_id===user.uid||String(row.owner_email||'').toLowerCase()===String(user.email||'').toLowerCase()||admin;
+    return row=>ownsLead(row,user.uid)||admin;
   }
   async function identityReviews(user) {
     return transaction(pool,async client=>{
@@ -387,7 +387,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
         const matches=r.match_ids.map(id=>leads.get(id)).filter(Boolean);
         // Another advisor's record is counted, never shown.
         return {id:r.id,kind:r.kind,reason:r.reason,created_at:r.created_at,
-          arrival:arrival?reviewSummary(arrival.id,parse(arrival.payload)):reviewSummary(null,parse(r.candidate).lead||{}),
+          arrival:arrival&&writable(arrival)?reviewSummary(arrival.id,parse(arrival.payload)):reviewSummary(null,parse(r.candidate).lead||{}),
           matches:matches.filter(writable).map(m=>reviewSummary(m.id,parse(m.payload))),held_elsewhere:matches.filter(m=>!writable(m)).length};
       })};
     });
@@ -484,7 +484,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       }
       if(!employers.length&&config.playbook&&!config.location)throw fail(422,`No employer plans matched “${findPlaybook(config.playbook).label}”${config.states.length?' in '+config.states.join(', '):''}. Add more states, or check that the DOL plan catalog is loaded.`);
       if(!employers.length&&!config.location) {
-        const saved=(await pool.query(`SELECT payload FROM discovery_leads WHERE ${visibleSQL} ORDER BY updated_at DESC LIMIT 2000`,[TEAM,user.uid,user.email])).rows;
+        const saved=(await pool.query(`SELECT payload FROM discovery_leads WHERE ${visibleSQL} ORDER BY updated_at DESC LIMIT 2000`,[TEAM,user.uid])).rows;
         employers=[...new Map(saved.map(r=>parse(r.payload)).filter(l=>l.company&&(!config.states.length||config.states.includes(l.state))).map(l=>[nameKey(l.company),{company:l.company,website:l.company_website||'',city:'',state:''}])).values()];
       }
       employers=employers.filter(e=>!nameKey(e.company).includes('equitable')).slice(0,config.max_companies);
@@ -501,7 +501,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
         const id=randomUUID();
         const row=(await client.query(`INSERT INTO lab_runs(id,user_id,user_email,kind,idempotency_key,configuration,budget_micros) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7) RETURNING *`,[id,user.uid,user.email,kind,key,JSON.stringify(config),config.daily_budget_micros])).rows[0];
         if(kind==='inventory') {
-          const ids=(await client.query(`SELECT d.id FROM discovery_leads d LEFT JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2 WHERE ${visibleSQL} ORDER BY q.evaluated_at ASC NULLS FIRST,d.id`,[TEAM,user.uid,user.email])).rows.map(r=>r.id);
+          const ids=(await client.query(`SELECT d.id FROM discovery_leads d LEFT JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2 WHERE ${visibleSQL} ORDER BY q.evaluated_at ASC NULLS FIRST,d.id`,[TEAM,user.uid])).rows.map(r=>r.id);
           for(let i=0;i<ids.length;i+=100)await client.query('INSERT INTO lab_tasks(id,run_id,task_key,source,payload) VALUES($1,$2,$3,$4,$5::jsonb)',[randomUUID(),id,`inventory:${i}`,'inventory',JSON.stringify({ids:ids.slice(i,i+100)})]);
           if(!ids.length)return (await client.query("UPDATE lab_runs SET status='completed',completed_at=now(),message='No saved leads to assess.' WHERE id=$1 RETURNING *",[id])).rows[0];
         } else {
@@ -685,7 +685,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     let cursor='';
     for(;;) {
       const rows=(await pool.query(`SELECT d.id,d.payload,q.evaluated_at::text AS assessment_version FROM discovery_leads d JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2 AND q.rule_version='${qualificationVersion(target)}'
-        WHERE ${visibleSQL} AND q.status='verified' AND d.id>$4 ORDER BY d.id LIMIT 100`,[TEAM,user.uid,user.email,cursor])).rows;
+        WHERE ${visibleSQL} AND q.status='verified' AND d.id>$3 ORDER BY d.id LIMIT 100`,[TEAM,user.uid,cursor])).rows;
       if(!rows.length)break;
       const ids=rows.map(r=>r.id),obs=(await pool.query('SELECT lead_id,payload FROM lab_observations WHERE user_id=$1 AND lead_id=ANY($2::text[])',[user.uid,ids])).rows;
       // Preserve timestamp precision and only downgrade the exact assessment we read.
@@ -697,7 +697,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       verified AS (SELECT (first_verified_at AT TIME ZONE 'UTC')::date AS day,count(*)::int AS n FROM lab_qualification WHERE user_id=$1 AND status='verified' AND rule_version='${qualificationVersion(target)}' AND first_verified_at IS NOT NULL GROUP BY 1),
       costs AS (SELECT (created_at AT TIME ZONE 'UTC')::date AS day,sum(amount_micros) AS micros FROM lab_costs WHERE user_id=$1 GROUP BY 1)
       SELECT d.day::text,COALESCE(p.sourced,0) AS new_sourced,COALESCE(p.imported,0) AS imported,COALESCE(v.n,0) AS newly_verified,COALESCE(c.micros,0) AS cost_micros FROM days d LEFT JOIN people p USING(day) LEFT JOIN verified v USING(day) LEFT JOIN costs c USING(day) ORDER BY d.day`,[user.uid,days])).rows;
-    const inventory=(await pool.query(`SELECT COALESCE(q.status,'unassessed') AS status,count(*)::int AS n FROM discovery_leads d LEFT JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2 AND q.rule_version='${qualificationVersion(target)}' WHERE ${visibleSQL} GROUP BY 1`,[TEAM,user.uid,user.email])).rows;
+    const inventory=(await pool.query(`SELECT COALESCE(q.status,'unassessed') AS status,count(*)::int AS n FROM discovery_leads d LEFT JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2 AND q.rule_version='${qualificationVersion(target)}' WHERE ${visibleSQL} GROUP BY 1`,[TEAM,user.uid])).rows;
     const sourceRows=(await pool.query(`SELECT t.source,count(*)::int AS attempts,count(*) FILTER(WHERE t.status IN ('failed','partial','skipped'))::int AS gaps,COALESCE(sum((t.result->>'added')::int),0)::int AS new_people,COALESCE(sum(t.reserved_micros),0) AS cost_micros,COALESCE(sum((t.result->>'duration_ms')::bigint),0) AS duration_ms FROM lab_tasks t JOIN lab_runs r ON r.id=t.run_id WHERE r.user_id=$1 AND r.created_at>=(((now() AT TIME ZONE 'UTC')::date-($2::int-1))::timestamp AT TIME ZONE 'UTC') GROUP BY t.source`,[user.uid,days])).rows;
     // Attribute each newly acquired person to its original source, never to every
     // repeated lookup. Qualified yield is a cohort outcome, not model accuracy.
@@ -732,7 +732,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       const restricted=contacts.filter(c=>c.payload.suppressed===true);
       const restrictionIds=new Set();
       if(restricted.length){
-        const owned=(await client.query('SELECT id,payload FROM discovery_leads WHERE team=$1 AND (owner_user_id=$2 OR lower(owner_email)=lower($3))',[TEAM,user.uid,user.email])).rows.map(r=>({...r,lead:parse(r.payload)}));
+        const owned=(await client.query("SELECT id,payload FROM discovery_leads WHERE team=$1 AND owner_user_id=$2 AND NULLIF(btrim($2),'') IS NOT NULL",[TEAM,user.uid])).rows.map(r=>({...r,lead:parse(r.payload)}));
         for(const c of restricted){
           const keys=new Set(candidateKeys(c.payload).filter(k=>k.startsWith('email:')||k.startsWith('linkedin:')));
           if(!keys.size)continue;
@@ -746,13 +746,13 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       }
       const restriction_links=restrictionIds.size;
       const key='directory:'+hash(JSON.stringify(contacts));
-      const handoffIds=async()=>[...new Set((await client.query(`SELECT a.lead_id FROM advisor_contact_links a JOIN prospect_contacts p ON p.id=a.contact_id AND p.user_id=a.user_id WHERE a.user_id=$1 AND a.contact_id=ANY($2::text[]) AND COALESCE(p.payload->>'suppressed','false')!='true' ORDER BY a.contact_id`,[user.uid,ids])).rows.map(row=>row.lead_id))];
+      const handoffIds=async()=>[...new Set((await client.query(`SELECT a.lead_id FROM advisor_contact_links a JOIN prospect_contacts p ON p.id=a.contact_id AND p.user_id=a.user_id JOIN discovery_leads d ON d.id=a.lead_id AND d.owner_user_id=a.user_id WHERE a.user_id=$1 AND a.contact_id=ANY($2::text[]) AND COALESCE(p.payload->>'suppressed','false')!='true' ORDER BY a.contact_id`,[user.uid,ids])).rows.map(row=>row.lead_id))];
       const prior=(await client.query('SELECT id FROM lab_runs WHERE user_id=$1 AND idempotency_key=$2',[user.uid,key])).rows[0];if(prior)return {replayed:true,run:prior,restriction_links,lead_ids:await handoffIds()};
       const permitted=contacts.filter(c=>!c.payload.suppressed),run={id:randomUUID()};
       await client.query("INSERT INTO lab_runs(id,user_id,user_email,kind,idempotency_key,status) VALUES($1,$2,$3,'import',$4,'running')",[run.id,user.uid,user.email,key]);
       const candidates=permitted.map(c=>({...withDirectoryRestrictions(c.payload,[c.payload]),current_title:c.payload.title,source_names:['Contact directory: '+(c.payload.source||'reported identifiers')]}));
       const result=await saveCandidates(client,user,candidates,run,'Contact directory');
-      const saved=(await client.query('SELECT d.id,d.payload FROM discovery_leads d JOIN lab_run_leads l ON l.lead_id=d.id WHERE l.run_id=$1',[run.id])).rows;
+      const saved=(await client.query('SELECT d.id,d.payload FROM discovery_leads d JOIN lab_run_leads l ON l.lead_id=d.id WHERE l.run_id=$1 AND d.owner_user_id=$2',[run.id,user.uid])).rows;
       let linked=0;
       for(const c of permitted){const keys=new Set(candidateKeys(c.payload));const matches=saved.filter(r=>candidateKeys(parse(r.payload)).some(k=>keys.has(k)));if(matches.length!==1)continue;
         await client.query('INSERT INTO advisor_contact_links(contact_id,lead_id,user_id) VALUES($1,$2,$3) ON CONFLICT(contact_id,user_id) DO UPDATE SET lead_id=EXCLUDED.lead_id',[c.id,matches[0].id,user.uid]);linked++;

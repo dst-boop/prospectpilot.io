@@ -960,8 +960,13 @@ async function allLeadRows(db) {
   return many(db, "SELECT id,owner_user_id,owner_email,payload,created_at,updated_at FROM discovery_leads WHERE team=? ORDER BY updated_at DESC", TEAM);
 }
 
+// Email is display/contact metadata, never proof of ownership.
+function ownsLead(row, user) {
+  return typeof user?.user_id === "string" && user.user_id.trim().length > 0 && row?.owner_user_id === user.user_id;
+}
+
 function canReadLead(row, lead, user) {
-  return user.role === "admin" || row.owner_user_id === user.user_id || lower(row.owner_email) === lower(user.email) || array(lead.shared_with).map(lower).includes(lower(user.email));
+  return user.role === "admin" || ownsLead(row, user) || array(lead.shared_with).map(lower).includes(lower(user.email));
 }
 
 function leadFromRow(row) {
@@ -981,6 +986,8 @@ async function saveCandidates(db, user, candidates, campaignId = "") {
   const current = await allLeadRows(db);
   const byKey = new Map();
   current.forEach(row => {
+    // Imports may merge only records this user can own/edit, not shared or email-matched records.
+    if (user.role !== "admin" && !ownsLead(row, user)) return;
     const lead = leadFromRow(row);
     if (lead) for (const key of identityKeys(lead)) byKey.set(key, { row, lead });
   });
@@ -2436,8 +2443,8 @@ async function leadRoutes(request, db, user, path, url) {
     else items = items.filter(({ lead }) => lead.identity_status !== "excluded");
     if (zoomInfoStatus !== "not_submitted" || url.searchParams.has("zoominfo_status")) items = items.filter(({ lead }) => normalizeZoomInfoMatchStatus(lead.zoominfo_match_status) === zoomInfoStatus);
     if (minPriority) items = items.filter(({ lead }) => Number(lead.priority_score || 0) >= minPriority);
-    if (ownership === "mine") items = items.filter(({ row }) => row.owner_user_id === user.user_id || lower(row.owner_email) === lower(user.email));
-    if (ownership === "shared") items = items.filter(({ row, lead }) => row.owner_user_id !== user.user_id && lower(row.owner_email) !== lower(user.email) && array(lead.shared_with).map(lower).includes(lower(user.email)));
+    if (ownership === "mine") items = items.filter(({ row }) => ownsLead(row, user));
+    if (ownership === "shared") items = items.filter(({ row, lead }) => !ownsLead(row, user) && array(lead.shared_with).map(lower).includes(lower(user.email)));
     if (priorityBand === "high") {
       const highPriorityIds = highPriorityLeadIds(items.map(item => item.lead));
       items = items.filter(({ lead }) => highPriorityIds.has(lead.id));
@@ -2460,7 +2467,7 @@ async function leadRoutes(request, db, user, path, url) {
   if (request.method !== "PATCH") throw new HttpError(405, "Method not allowed.");
   const patch = await requestJSON(request);
   const workflowOnly = new Set(["follow_up_status", "follow_up_date", "notes"]);
-  if (user.role !== "admin" && row.owner_user_id !== user.user_id && lower(row.owner_email) !== lower(user.email)) {
+  if (user.role !== "admin" && !ownsLead(row, user)) {
     if (Object.keys(patch).some(key => !workflowOnly.has(key))) throw new HttpError(403, "Shared advisors can update only follow-up status, date, and notes.");
   }
   const allowed = new Set(["first_name", "last_name", "current_title", "company", "location", "email", "linkedin_url", "identity_status", "follow_up_status", "follow_up_date", "notes"]);
@@ -2492,7 +2499,7 @@ async function bulkRoute(request, db, user) {
       if (!row || !lead || !canReadLead(row, lead, user)) throw new HttpError(404, "Lead not found.");
       let ownerUserId = row.owner_user_id, ownerEmail = row.owner_email;
       if (action === "delete") {
-        if (user.role !== "admin" && row.owner_user_id !== user.user_id) throw new HttpError(403, "Only the owner or an admin can delete this lead.");
+        if (user.role !== "admin" && !ownsLead(row, user)) throw new HttpError(403, "Only the owner or an admin can delete this lead.");
         await execute(db, "DELETE FROM discovery_leads WHERE id=? AND team=?", id, TEAM);
       } else if (action === "update") {
         if (body.follow_up_status) {
@@ -2781,7 +2788,7 @@ async function enrichmentRoutes(request, env, user, path) {
   const reply=(value,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json','cache-control':'no-store'}});
   if(path==='/api/enrichment/status'&&request.method==='GET')return reply({providers:ENRICH.providers,release:ENRICH.releaseStatus,connection:'File exchange only. Your provider account is not connected.'});
   // Read access alone does not authorize enrichment writes or exporting shared leads.
-  const owned=(await visibleLeadRows(db,user)).filter(({row})=>row.owner_user_id===user.user_id||lower(row.owner_email)===lower(user.email));
+  const owned=(await visibleLeadRows(db,user)).filter(({row})=>ownsLead(row,user));
   if(path==='/api/enrichment/leads'&&request.method==='GET')return reply({leads:owned.map(({lead})=>{
     const phone=[lead.phone,lead.mobile_phone,lead.business_phone].some(callNumber);
     const locator=!!(lead.email||phone||lead.linkedin_url||(lead.first_name&&lead.last_name&&(lead.address||(lead.city&&lead.state))));
@@ -2826,7 +2833,7 @@ async function enrichmentRoutes(request, env, user, path) {
     // The guard CHECK aborts the entire D1 batch if another writer changed any target.
     const conditions=snapshot.map(()=>'(SELECT payload FROM discovery_leads WHERE id=?) IS NOT DISTINCT FROM ?').join(' AND ');
     const params=snapshot.flatMap(s=>[s.id,s.payload]);
-    const statements=[db.prepare("SELECT id FROM discovery_leads WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id FOR UPDATE").bind(JSON.stringify(snapshot.map(s=>s.id))),db.prepare(`INSERT INTO enrichment_commit_guards(id,ok) SELECT ?,CASE WHEN (${conditions}) AND (SELECT status FROM enrichment_batches WHERE id=?)='preview' AND (SELECT count(*) FROM discovery_leads WHERE id IN (SELECT value FROM json_each(?)) AND (owner_user_id=? OR lower(owner_email)=lower(?)))=? THEN 1 ELSE 0 END`).bind(batch.id,...params,batch.id,JSON.stringify(snapshot.map(s=>s.id)),user.user_id,user.email,snapshot.length)];
+    const statements=[db.prepare("SELECT id FROM discovery_leads WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id FOR UPDATE").bind(JSON.stringify(snapshot.map(s=>s.id))),db.prepare(`INSERT INTO enrichment_commit_guards(id,ok) SELECT ?,CASE WHEN (${conditions}) AND (SELECT status FROM enrichment_batches WHERE id=?)='preview' AND (SELECT count(*) FROM discovery_leads WHERE id IN (SELECT value FROM json_each(?)) AND owner_user_id=?)=? THEN 1 ELSE 0 END`).bind(batch.id,...params,batch.id,JSON.stringify(snapshot.map(s=>s.id)),user.user_id,snapshot.length)];
     merged.forEach(l=>statements.push(db.prepare('UPDATE discovery_leads SET payload=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(JSON.stringify(l),l.id)));
     const applied=(saved.applied||0)+snapshot.length;
     const processed=new Set(snapshot.map(s=>s.id));
@@ -2913,9 +2920,9 @@ async function weeklyRoutes(request, env, user, path, url) {
     await execute(db,'INSERT INTO lead_call_preferences(user_id,location,age_focus,timely_focus,ideal_prospect,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET location=excluded.location,age_focus=excluded.age_focus,timely_focus=excluded.timely_focus,ideal_prospect=excluded.ideal_prospect,updated_at=excluded.updated_at',user.user_id,body.location,body.age_focus,body.timely_focus,text(body.ideal_prospect,300),now());
     return json({saved:true});
   }
-  const visible = (await many(db, "SELECT id,owner_user_id,owner_email,payload,created_at,updated_at FROM discovery_leads WHERE team=? AND (owner_user_id=? OR lower(owner_email)=lower(?)) ORDER BY updated_at DESC", TEAM, user.user_id, user.email)).map(row=>{const lead=leadFromRow(row);return {row,lead:lead?qualifyLead(lead):null};}).filter(item=>item.lead&&isUsableStoredLead(item.lead)&&canReadLead(item.row,item.lead,user));
+  const visible = (await many(db, "SELECT id,owner_user_id,owner_email,payload,created_at,updated_at FROM discovery_leads WHERE team=? AND owner_user_id=? ORDER BY updated_at DESC", TEAM, user.user_id)).map(row=>{const lead=leadFromRow(row);return {row,lead:lead?qualifyLead(lead):null};}).filter(item=>item.lead&&isUsableStoredLead(item.lead)&&canReadLead(item.row,item.lead,user));
   // An administrator's team visibility must never inflate their personal calling target.
-  const owned = visible.filter(({row}) => row.owner_user_id === user.user_id || lower(row.owner_email) === lower(user.email));
+  const owned = visible.filter(({row}) => ownsLead(row, user));
   const blocks = new Set((await many(db, 'SELECT phone FROM lead_call_blocks')).map(row => row.phone));
   if (path === '/api/beta/week' && request.method === 'GET') {
     const week = callWeek();
@@ -3052,7 +3059,7 @@ async function wealthfeedRoutes(request,env,user,path){
   }
   if(path==='/api/wealthfeed/disconnect'){await execute(db,'DELETE FROM wealthfeed_connections WHERE user_id=?',user.user_id);return json({connected:false});}
   if(!connection)throw new HttpError(409,'Connect your WealthFeed account first.');
-  const owned=(await visibleLeadRows(db,user)).filter(({row})=>row.owner_user_id===user.user_id||lower(row.owner_email)===lower(user.email));
+  const owned=(await visibleLeadRows(db,user)).filter(({row})=>ownsLead(row,user));
   const key=await WF.open(connection.encrypted_key,user.user_id,env);
   async function provider(path,body){
     // Atomic per-user pace control also persists WealthFeed Retry-After across requests.
@@ -3167,7 +3174,7 @@ async function researchRoutes(request,env,user,path,url){
  if(path==='/api/research/records'&&request.method==='GET')return json({records:array(lead.research_records).filter(r=>r.status!=='machine_matched'||(r.engine_version===3&&r.subject_signature===researchSignature(lead))),native_research:Object.fromEntries(Object.entries(lead.native_research||{}).filter(([,v])=>v.engine_version===3&&v.signature===researchSignature(lead))),profile:researchProfile(lead)});
  if(path==='/api/research/job'&&request.method==='GET')return json({job:env.RESEARCH_JOBS?await env.RESEARCH_JOBS.status(id,user):null});
  if(request.method!=='POST')throw new HttpError(405,'Method not allowed.');
- if(user.role!=='admin'&&row.owner_user_id!==user.user_id&&lower(row.owner_email)!==lower(user.email))throw new HttpError(403,'Only the lead owner can add research.');
+ if(user.role!=='admin'&&!ownsLead(row,user))throw new HttpError(403,'Only the lead owner can add research.');
  if(path==='/api/research/job'){if(!env.RESEARCH_JOBS)throw new HttpError(503,'Background research is not configured.');return json({job:await env.RESEARCH_JOBS.enqueue(id,user,researchSignature(lead))},202);}
  const source=RESEARCH_SOURCES.find(s=>s.id===body.source);if(!source)throw new HttpError(422,'Choose a source.');
  if(path==='/api/research/auto'){
@@ -3178,7 +3185,7 @@ async function researchRoutes(request,env,user,path,url){
    if(cached?.engine_version===3&&cached?.signature===signature&&(source.id!=='warn'||cached.feed_version===2)&&Date.now()-Date.parse(cached.checked_at)<(cached.status==='partial'?60000:3600000))return json({...cached,cached:true});
    const result=await env.NATIVE_RESEARCH(lead,source.id);
    const fresh=await one(db,'SELECT * FROM discovery_leads WHERE id=? AND team=?',id,TEAM);const current=leadFromRow(fresh);
-   if(!current||!canReadLead(fresh,current,user)||(user.role!=='admin'&&fresh.owner_user_id!==user.user_id&&lower(fresh.owner_email)!==lower(user.email)))throw new HttpError(403,'Lead access changed.');
+   if(!current||!canReadLead(fresh,current,user)||(user.role!=='admin'&&!ownsLead(fresh,user)))throw new HttpError(403,'Lead access changed.');
    if(researchSignature(current)!==signature)throw new HttpError(409,'Lead details changed. Research this lead again.');
    const records=array(current.research_records).filter(r=>r.status!=='machine_matched'||(r.engine_version===3&&r.subject_signature===signature));
    const persisted=[];let omitted=0;
