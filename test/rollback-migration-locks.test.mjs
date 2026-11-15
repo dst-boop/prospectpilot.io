@@ -10,7 +10,7 @@ test('native PostgreSQL: 030–033 retains table locks until commit; blocked ope
   const lab=createResearchLab({pool,sources:{readiness:{}}});
   await lab.importCSV(owner,{csv:'First Name,Last Name,Company,Email\nSynthetic,Lock,Example,lock@example.test'});
   const id=(await lab.list(owner)).leads[0].lead.id;
-  await pool.query("INSERT INTO lab_observations(lead_id,user_id,field,payload) SELECT $1,$2,'age','{}'::jsonb FROM generate_series(1,10000)",[id,owner.uid]);
+  await pool.query("INSERT INTO lab_observations(lead_id,user_id,field,payload) SELECT $1,$2||'-'||n,'age','{}'::jsonb FROM generate_series(1,10000) AS n",[id,owner.uid]);
   const migration=await pool.connect(),reader=await pool.connect();
   try{
    await migration.query('BEGIN');
