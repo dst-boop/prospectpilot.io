@@ -256,6 +256,14 @@ Financial criteria require participant disclosure or an authorized financial doc
 
 Traditional/contributory, rollover, and Roth IRAs support reviewed trustee-to-trustee transfers to matching tax-type destinations. Employer plans retain the existing distribution routes and in-service permission check. Unknown, stale, conflicting or suppressed records do not qualify. Age evidence uses whole attained years and accounts conservatively for possible birthdays; a 73-year-old needs current-day evidence to remain confirmed.
 
+## Isolated signed-in staging smoke
+
+Run `pnpm staging:smoke` for the in-memory smoke suite, or follow
+[STAGING-SMOKE.md](STAGING-SMOKE.md) to run the same journey against disposable
+PostgreSQL 16. This exercises the actual HTTP/auth handlers with fake identities,
+fictional contacts and zero-cost provider adapters. It is not a real Firebase or
+deployed-staging validation. Nothing is deployed.
+
 ## Try the application locally
 
 After installing dependencies, run `pnpm demo` and open [the local demonstration](http://127.0.0.1:8088). It uses the actual workspace and Research Lab APIs with an in-memory PostgreSQL-compatible database and clearly labeled fictional records. Contact search, lists, provider-job simulation, verification simulation, exports and Research Lab reviews work. External source calls are disabled. State resets when stopped; do not enter real personal information. Production still uses `pnpm start`, Firebase authentication and Cloud SQL.

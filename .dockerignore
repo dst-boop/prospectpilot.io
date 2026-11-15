@@ -108,3 +108,8 @@
 !networking.html
 !networking-client.js
 !networking.css
+
+# Read by staging safety tests in the build stage only.
+!.github/
+!.github/workflows/
+!.github/workflows/tests.yml
