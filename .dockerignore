@@ -85,3 +85,6 @@
 !brand.svg
 
 !prospect-brief.mjs
+
+# Preview module is required by the build-stage regression tests; no runtime route is wired.
+!advisor-reassignment-preview.mjs
