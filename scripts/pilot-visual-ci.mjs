@@ -33,7 +33,7 @@ try {
  await page.waitForTimeout(500);
  const saved=await (await staging.request('/api/lab/leads/'+leadId,{cookie})).json();
  if(saved.lead.follow_up_status!=='Follow-up')throw Error('UI follow-up save failed: '+await page.locator('#activityError').innerText());
- await page.locator('[data-close=detail]').click();
+ await page.locator('#detail').waitFor({state:'hidden'});
  await page.setViewportSize({width:1440,height:1000});
  console.log('TITLE',await page.title());console.log((await page.locator('body').innerText()).slice(0,7000));
  await page.screenshot({path:'/tmp/pilot-desktop.png',fullPage:true});
