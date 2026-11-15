@@ -110,3 +110,5 @@ header{flex-wrap:wrap}header nav{flex-wrap:wrap;align-items:center}.workspace-me
 [data-queue][aria-pressed="true"]{background:#173b70;color:white;border-color:#173b70}.brief-summary{border-bottom:1px solid #dbe3ee;padding-bottom:1rem;margin-bottom:1rem}.contact-review-route{padding:.75rem;border:1px solid #dbe3ee;border-radius:.5rem;margin:.5rem 0}#prepareDetails,#outcomeDetails,#evidenceDetails{margin-top:1rem}#draftBody{min-height:9rem}
 
 .daily-due-summary{font-weight:600;border-top:1px solid var(--line);padding-top:12px}.daily-start #dailyScope{font-size:13px;max-width:72ch}.work-readiness{margin:10px 0;font-size:13px}.work-readiness summary{font-weight:600;cursor:pointer}.work-readiness p{margin:6px 0;overflow-wrap:anywhere}
+
+.brief-evidence{overflow-wrap:anywhere}.brief-evidence h4{margin:1rem 0 .35rem}.brief-evidence ul{padding-left:1.25rem}.brief-evidence li{margin:.65rem 0}.brief-evidence details{margin:.75rem 0}.brief-evidence summary{cursor:pointer;font-weight:600}.brief-citation{display:block;color:#52657b;margin:.3rem 0;line-height:1.5}

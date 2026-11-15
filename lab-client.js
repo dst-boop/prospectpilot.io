@@ -564,13 +564,26 @@ function startEvidence(field,verdict='unknown'){
   $('evidenceDetails').open=true;$('reviewField').value=field;$('verdict').value=verdict;reviewFields();
   $('reviewForm').scrollIntoView({behavior:'smooth',block:'start'});$('reviewSource').focus({preventScroll:true});
 }
+function briefCitation(source){
+  if(!source)return '';
+  const date=value=>value?String(value).slice(0,10):'Unknown';
+  const label=source.source||'Source not recorded';
+  return `<small class="brief-citation">${link(source.url,label)}${safeURL(source.url)?'':' (source link not recorded)'}<br>Source date: ${esc(date(source.source_date))} | Observed: ${esc(date(source.observed_at))} | Reviewed: ${esc(date(source.reviewed_at))}${source.first_seen||source.last_seen?`<br>First recorded here: ${esc(date(source.first_seen))} | Last recorded here: ${esc(date(source.last_seen))}. These are record dates, not source publication dates.`:''}</small>`;
+}
+function briefEvidenceView(summary){
+  if(!summary)return '';
+  const rows=items=>items.map(item=>`<li><strong>${esc(item.label)}:</strong> ${esc(item.statement)}${item.identity_basis?`<p>Identity match: ${esc(item.identity_basis)}</p>`:''}${briefCitation(item.citation)}</li>`).join('');
+  return `<div class="brief-evidence"><details><summary>Reviewed facts (${summary.reviewed.length})</summary><p class="muted">Recorded advisor reviews, not independent verification by ProspectPilot.</p>${summary.reviewed.length?`<ul>${rows(summary.reviewed)}</ul>`:'<p>No current reviewed facts are available for this record.</p>'}</details><details><summary>Reported professional context (${summary.reported.length})</summary><p>Source claims, not verified personal facts. A reported city or state is not confirmed residence.</p><ul>${rows(summary.reported)}</ul></details><h4>Interpretation, not a fact</h4><p>${esc(summary.interpretation)}</p><details open><summary>Unknowns and holds (${summary.unknowns.length})</summary>${summary.unknowns.length?`<ul>${summary.unknowns.map(item=>`<li><strong>${esc(labels[item.field]||title(item.field))} (${esc(item.state)}):</strong> ${esc(item.reason)}${briefCitation(item.citation)}</li>`).join('')}</ul>`:'<p>Required evidence is reviewed. Planning priorities and permission still need to be established with the person.</p>'}</details><p class="muted">${esc(summary.limits)}</p><small>Assessed: ${esc(summary.as_of)}</small></div>`;
+}
 function renderBriefSummary(){
   const b=currentWorkflow?.brief;if(!b)return;
   const section=document.createElement('section');section.className='brief-summary';
-  section.innerHTML=`<p><strong>Why this person:</strong> ${esc(b.signal.label)}</p><p>${esc(b.signal.note)}</p>${b.signal.date?`<p>${esc(b.signal.date)} · ${link(b.signal.url,b.signal.source)}</p>`:''}<p><strong>Financial evidence:</strong> ${esc(b.qualification)}</p><p><strong>Contact:</strong> ${esc(b.contact_status)} — ${esc(b.contact_reason)}</p><details><summary>Two questions to start with</summary><ol>${b.questions.map(q=>`<li>${esc(q)}</li>`).join('')}</ol></details>`;
-  const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent='Review a personal event';button.onclick=()=>startEvidence('personal_event');section.append(button);
-  $('conversationBrief').prepend(section);renderGuidedReview();
+  const a=currentWorkflow.action;
+  section.innerHTML=`<p><strong>Why this is on your worklist:</strong> ${esc(a.label)}. ${esc(a.reason)}</p><p><strong>Research signal:</strong> ${esc(b.signal.label)}</p><p>${esc(b.signal.note)}</p>${b.signal.date?`<p>${esc(b.signal.date)} | ${link(b.signal.url,b.signal.source)}</p>`:''}<p><strong>Financial evidence:</strong> ${esc(b.qualification)}</p><p><strong>Contact:</strong> ${esc(b.contact_status)} - ${esc(b.contact_reason)}</p>${briefEvidenceView(b.evidence_summary)}${!terminal(a)?`<details><summary>Two questions to start with</summary><ol>${b.questions.map(q=>`<li>${esc(q)}</li>`).join('')}</ol></details>`:''}`;
+  if(!terminal(a)){const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent='Review a personal event';button.onclick=()=>startEvidence('personal_event');section.append(button);}
+  $('conversationBrief').append(section);renderGuidedReview();
 }
+
 function renderGuidedReview(){
   const target=$('guidedReview');if(!target)return;target.replaceChildren();
   const b=currentWorkflow?.brief;if(!b||!current)return;

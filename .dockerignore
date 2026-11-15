@@ -85,6 +85,7 @@
 !brand.svg
 
 !prospect-brief.mjs
+!prospect-brief-evidence.mjs
 
 # Supervisor preview is fail-closed until authoritative adapters are configured.
 !team-lead-hub.mjs

@@ -409,3 +409,24 @@ test('normal future cadence steps are scheduled rather than held',()=>{
  const action=nextAction(scheduledLead,quality,now,cadence);assert.equal(action.bucket,'scheduled');
  assert.equal(worklistReadiness(action,quality).state,'scheduled');
 });
+test('advisor detail carries cited evidence without changing ownership, action or suppression gates',async()=>{
+ const {db,lab,user,id}=await fixture();try{
+  await reviewBasics(lab,user,id);
+  const current=await lab.detail(user,id);
+  await lab.review(user,id,{field:'personal_event',verdict:'confirmed',source:'Synthetic company announcement',url:'https://example.com/announcements/jamie',note:'Fictional role change, not a financial disclosure.',observed_at:'2026-09-10',identity_signature:current.quality.identity_signature,value:{type:'job_change',event_date:'2026-09-01',identity_confirmed:true,identity_basis:'Synthetic employer, title and professional profile match.'}});
+  const detail=await lab.advisor.detail(user,id),summary=detail.brief.evidence_summary;
+  assert.equal(detail.action.bucket,'ready');
+  assert.equal(detail.action.contact.address,'jamie@example.com');
+  assert.equal(summary.reviewed.find(r=>r.field==='personal_event').citation.url,'https://example.com/announcements/jamie');
+  assert.equal(summary.reviewed.find(r=>r.field==='personal_event').citation.source_date,null);
+  assert.equal(summary.reviewed.find(r=>r.field==='contact').statement,'Reviewed email ownership: jamie@example.com.');
+  assert.ok(summary.unknowns.some(r=>r.field==='retirement'));
+  assert.match(detail.brief.qualification,/not confirmed/);
+  await assert.rejects(lab.advisor.detail({uid:'stranger',email:'stranger@example.com'},id),{status:404});
+  await lab.advisor.save(user,id,{outcome:'do_not_contact',signature:detail.action.signature,idempotency_key:'brief-dnc'});
+  const blocked=await lab.advisor.detail(user,id);
+  assert.equal(blocked.action.contact,null);assert.equal(blocked.action.bucket,'closed');
+  assert.equal(blocked.brief.evidence_summary.reviewed.length,0);
+  assert.equal(blocked.brief.evidence_summary.unknowns[0].state,'blocked');
+ }finally{await db.close();}
+});
