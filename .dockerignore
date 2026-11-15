@@ -126,3 +126,6 @@
 !legacy-owner-recovery.mjs
 
 !readonly-fallback.mjs
+
+# Distribution planner is opt-in and build-test-only until firm adapter review.
+!team-distribution-plan.mjs
