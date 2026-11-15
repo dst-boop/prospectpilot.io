@@ -30,7 +30,7 @@ Candidate checks are recorded below only when actually run. All local records ar
 - Production asset build passed with Node 24.22.1.
 - Focused advisor/UI/release/verifier suite passed: 89 tests, zero failures or skips.
 - Initial full local suite exposed three pre-existing date-dependent lead-cost failures. The test-only clock fix from `0635b0c6971e1c18239b50b3e4ea5f6006091281` pins fictional ledger rows to the fixture month. Application cost logic and real records are unchanged.
-- Full local re-run passed: 609 tests, 607 passed, zero failures, two PostgreSQL-only skips (no local PostgreSQL endpoint).
+- Full local application suite and focused release checks passed. The latest complete counts, including the shared PGlite/PostgreSQL regression, are recorded on the draft PR. Native PostgreSQL checks are skipped locally because no local endpoint is configured.
 - Six Python tests, four shell syntax checks, changed JavaScript syntax checks, and whitespace checks passed.
 - Independent code review found no new blocker. Fresh synthetic desktop and 390x844 browser checks passed readiness disclosure, view changes, unmatched search, and brief open/close. Mobile document width was 375px within the 390px viewport. Browser error injection/race stress was not repeated; automated tests cover stale/error responses.
 - The [draft PR](https://github.com/dst-boop/prospectpilot.io/pull/98) records the latest exact-head CI result. A passed local run is not a claim that CI or release gates have passed.
