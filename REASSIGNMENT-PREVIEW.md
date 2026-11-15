@@ -1,8 +1,11 @@
-# Departed-advisor reassignment: preview foundation
+# Departed-advisor reassignment: supervisor preview
 
-Status: isolated development only. No server route, database adapter, UI, ownership
-write, account revocation, provider call, migration, deployment, or public push is
-included. This is not a usable end-to-end offboarding feature yet.
+Status: isolated development only. The planner now has an authenticated,
+supervisor-gated Team Lead Hub UI and read-only HTTP boundary, exercised with
+fictional accounts in the local demo. Production fails closed because no
+authoritative firm policy, roster, or complete database adapter is configured.
+No ownership write, account revocation, provider call, migration, deployment, or
+public push is included. This is not an end-to-end offboarding feature yet.
 
 ## Why this increment exists
 
@@ -97,12 +100,77 @@ or costs are rewritten; no outreach occurs.
 
 Focused tests: `node --test test/advisor-reassignment-preview.test.mjs`.
 The normal repository build/test suite remains required before any publication.
-The preview module is allowlisted for build-stage tests only and is deliberately not
-imported by the production server. Full checks and platform limitations are reported
-with this increment; focused tests alone are not a release-readiness claim.
+The preview module and UI are packaged with the server, but no live data adapter or
+supervisor policy is enabled. Full checks and platform limitations are reported with
+each increment; focused tests alone are not a release-readiness claim.
+
+## Team Lead Hub increment
+
+`/team-hub` shows the departing and receiving advisor, counts for all ten planner
+collections, stable record IDs, identity collisions, review blockers, preservation
+requirements, and the inventory fingerprint. It exposes no apply button or route.
+Individual-record selection, due-follow-up details, an unassigned team queue, and
+an immutable transfer receipt remain future work; the preview does not claim them.
+
+`team-lead-hub.mjs` reserves `/api/team-hub/*` before legacy administration. Firebase
+session verification remains in `handler.mjs`. Every page, asset and API request
+requires an authoritative `authorizeSupervisor({actor})` grant with the exact
+`actorUid`, scope `team-lead-hub-preview`, and firm `team`. Legacy owner email,
+request roles, email domains, and client headers never grant access to this hub.
+`listAdvisors({actor,team})` must return the authorized roster only. Labels and UIDs
+are the only identity fields exposed, with active/verified eligibility state.
+
+The preview POST accepts only `source_uid` and `target_uid`, requires JSON and an
+exact same-origin header, checks both UIDs against the current roster, then asks
+the planner's separate exact-pair authorization adapter. The pair grant must match
+the hub's team. Account and snapshot reads occur only after both checks succeed.
+All responses are private/no-store; internal adapter errors are redacted even when
+they carry an HTTP status. No mutation adapter is present.
+
+`server.mjs` intentionally configures only static UI assets. Requests fail with 503
+until application-owned supervisor, roster, account and snapshot adapters exist.
+This must not be enabled by inserting the legacy global team or a hard-coded owner
+email as a substitute. A real firm-ownership and membership model is still needed.
+
+The local demo at `/team-hub` uses `scripts/team-hub-demo.mjs`, with fixed fictional
+accounts and coherent per-UID inventories. It has no production provider, auth
+management or database client. It stays separate from the demo contact directory so
+previewing cannot accidentally mutate or transfer demonstration contacts.
+
+The client clears old previews on selection changes, cancellation, refresh,
+navigation and session errors. Abort signals plus request generations prevent late
+responses from reviving dismissed results. Back/Forward restores a fresh directory;
+sign-in returns to `/team-hub` without carrying advisor IDs in the URL. No preview
+is automatically generated after login or navigation.
+
+Focused checks: `node --test test/team-lead-hub.test.mjs test/team-hub-client.test.mjs`.
+The demo integration test also checks the HTTP preview and verifies the ordinary
+contact directory is unchanged afterward. Review fixes cover status-bearing error
+redaction, Back during directory loading, safe login return, and reversed fixtures.
+
+### Supervisor UI validation (November 15, 2026)
+
+- Build passed with `node build.mjs`.
+- Full Node suite: 701 tests, 700 passed, 0 failed, 1 pre-existing skip. The
+  package test command was run directly as `node --test test/*.test.mjs` because
+  `npm` was not on the selected desktop's PATH.
+- All 38 new hub route/client tests passed, including authentication/isolation,
+  duplicate submission, stale responses, cancel/close, lost access and recovery.
+- Six Python tests passed with the existing bundled Python interpreter.
+- JavaScript syntax, all four release/setup shell syntax checks, and Git whitespace
+  checks passed. No lint or type-check script is defined in this repository.
+- Local Chrome verified fictional advisor selection, disabled unverified recipient,
+  inventory totals, review gates, exact IDs and collisions, close/reopen, selection
+  changes while loading, reversed advisors, and Back/Forward recovery. No console
+  warnings or errors were observed in the hub flow.
+- Independent review findings were fixed and re-reviewed with no remaining
+  actionable findings in this scope.
+- Not run: real PostgreSQL integration (no `POSTGRES_TEST_URL`), Docker image build
+  (Docker unavailable), real Firebase/staging supervisor journeys, live data access,
+  any transfer execution, deployment, or remote CI.
 
 
-### Verified on this isolated increment (November 15, 2026)
+### Earlier planner-only validation (November 15, 2026)
 
 - Build: `node build.mjs` passed.
 - Final full Node suite: 663 tests, 662 passed, 0 failed, 1 pre-existing skip.

@@ -22,6 +22,7 @@ COPY prospect-brief.mjs advisor-workflow.mjs outreach-cadence.mjs forget.mjs lea
 COPY prospect.html prospect.css prospect-client.js prospect-workspace.mjs prospect-providers.mjs prospect-data-quality.mjs prospect-domain-check.mjs ./
 COPY prospect-jobs.mjs prospect-autopilot.mjs prospect-jobs-client.js billing.mjs ./
 COPY prospect-preparation.mjs ./
+COPY team-lead-hub.mjs advisor-reassignment-preview.mjs team-hub.html team-hub-client.js team-hub.css ./
 COPY migrations ./migrations
 COPY server.mjs http-server.mjs handler.mjs login-destination.mjs database.mjs migrate.mjs home.html site.css brand.svg login.html research-jobs.mjs research-worker.mjs warn.mjs warn.html warn-client.js native-research.mjs linkedin.mjs linkedin.html linkedin-client.js ./
 USER node

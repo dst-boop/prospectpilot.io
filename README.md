@@ -260,6 +260,12 @@ Traditional/contributory, rollover, and Roth IRAs support reviewed trustee-to-tr
 
 After installing dependencies, run `pnpm demo` and open [the local demonstration](http://127.0.0.1:8088). It uses the actual workspace and Research Lab APIs with an in-memory PostgreSQL-compatible database and clearly labeled fictional records. Contact search, lists, provider-job simulation, verification simulation, exports and Research Lab reviews work. External source calls are disabled. State resets when stopped; do not enter real personal information. Production still uses `pnpm start`, Firebase authentication and Cloud SQL.
 
+The local demo also includes a [Team Lead Hub preview](http://127.0.0.1:8088/team-hub)
+with fictional advisors. Review inventory, duplicates, unfinished work, and access
+gates without moving any records. The production hub remains disabled until an
+authoritative firm policy and complete read-only data adapters are configured.
+See [the preview safety contract](REASSIGNMENT-PREVIEW.md).
+
 ## Measure source performance
 
 The source table reports unique people first acquired during the reporting period, currently qualified people in that cohort, observed qualification yield, and reserved provider cost per qualified person. Repeated lookups and duplicate imports do not inflate acquisition counts. This cohort yield is different from the daily newly-verified count, which can include older acquisitions reviewed today. Provider-only costs are not total acquisition cost; record labor, subscriptions and infrastructure in the cost ledger.
