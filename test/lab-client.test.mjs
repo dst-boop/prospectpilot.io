@@ -611,3 +611,12 @@ test('failed outcome save unlocks fields and retains draft for a deliberate retr
  assert.equal(c.element('activityEntryFields').disabled,false);assert.equal(c.run('hasActivityDraft()'),true);
  assert.equal(c.element('activityNote').value,'Keep this synthetic note');assert.equal(c.element('detail').open,true);
 });
+
+
+test('pending outcome save blocks evidence mutation and deletion',async()=>{
+  const c=client();c.run('activitySaving=true;');
+  await c.element('reviewForm').onsubmit({preventDefault(){}});
+  await c.element('forgetLead').onclick();
+  assert.equal(c.pending.length,0);
+  assert.match(c.element('activityError').textContent,/Wait for the save result/);
+});
