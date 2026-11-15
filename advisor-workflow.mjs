@@ -75,6 +75,36 @@ export function nextAction(lead,quality,now=new Date(),cadence=null) {
   return {...base,cadence,bucket:gap==='contact'&&quality.gates.contact.state==='unknown'?'enrich':'review',rank:30+(100-quality.score)/10,label:fields[gap]||'Review this prospect',reason:quality.gates[gap]?.reason||'Review the saved evidence.',field:gap};
 }
 
+// A read-only explanation of the existing gates, not permission to contact.
+// Keep timing separate from contact ownership and financial qualification.
+export function worklistReadiness(action,quality) {
+  const cadence=action.cadence;
+  const identityReview=quality.status==='identity_review';
+  const paused=identityReview||action.held||['resting','capped','blocked'].includes(cadence?.status)
+    ||(cadence?.step?.due&&!cadence.step.ready);
+  const terminal=TERMINAL_BUCKETS.has(action.bucket);
+  const later=['scheduled','resting'].includes(action.bucket);
+  const reviewed=!!action.contact&&quality.gates.contact.state==='confirmed';
+  const required=quality.required_fields||Object.keys(quality.gates);
+  const gaps=required.filter(field=>quality.gates[field]?.state!=='confirmed');
+  const state=terminal?'finished':paused||action.bucket==='resting'?'paused':later?'scheduled':reviewed?'reviewed':'verify';
+  return {state,contact_reviewed:reviewed,
+    label:({finished:'Prospecting finished',paused:'Outreach on hold',scheduled:'Saved for later',reviewed:'Contact route reviewed',verify:'Verify before contact'})[state],
+    reason:terminal||later||identityReview?action.reason:paused?(cadence?.step?.hold||cadence?.reason||action.reason)
+      :reviewed?'The saved contact route has current reviewed ownership evidence. Review the brief before any approach.'
+      :quality.gates.contact.reason||'Confirm a contact route belongs to this person before using it.',
+    contact_label:reviewed?'Reviewed '+action.contact.channel+' route':terminal||identityReview?'No contact shortcut is available for this record.':quality.gates.contact.reason||'Contact ownership not confirmed.',
+    fit_label:gaps.length?gaps.map(field=>fields[field]||field).join('; ')+'.':'All required criteria have current reviewed evidence.'};
+}
+
+export function dailyWorklistSummary(items,at=new Date()) {
+  const due=items.filter(item=>item.action.bucket==='due');
+  const held=due.filter(item=>item.readiness.state==='paused');
+  const reviewed=due.filter(item=>item.readiness.state!=='paused'&&item.readiness.contact_reviewed);
+  return {as_of:at.toISOString(),due:due.length,with_reviewed_route:reviewed.length,
+    needs_contact_review:due.length-held.length-reviewed.length,on_hold:held.length};
+}
+
 export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visibleSQL,now=()=>new Date(),targetFor=async()=> 'legacy'}) {
   // The advisor's own details, so a drafted message signs itself rather than
   // leaving the advisor to paste their name into every touch.
@@ -211,11 +241,13 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     // Directory restrictions are applied before anything is assessed or paced,
     // so a phone that became do-not-call in the directory is refused here too.
     const target=await targetFor(user);
-    const all=rows.map(r=>{const lead=withDirectoryRestrictions({...parse(r.payload),id:r.id},r.linked_contacts),quality=assessLead(lead,observations.get(r.id)||[],{now:now(),target});
-      const cadence=cadenceState({activities:history.get(r.id)||[],lead,quality,rest:resting.get(r.id)||null,now:now(),dials});
-      const s=leadScores(lead,quality,{now:now(),weights});
+    const assessedAt=now();
+    const all=rows.map(r=>{const lead=withDirectoryRestrictions({...parse(r.payload),id:r.id},r.linked_contacts),quality=assessLead(lead,observations.get(r.id)||[],{now:assessedAt,target});
+      const cadence=cadenceState({activities:history.get(r.id)||[],lead,quality,rest:resting.get(r.id)||null,now:assessedAt,dials});
+      const s=leadScores(lead,quality,{now:assessedAt,weights});
       const scores={priority:s.priority,qualification:s.qualification.score,opportunity:s.opportunity.score,confidence:s.confidence.score,contactability:s.contactability.score};
-      return {lead:{id:lead.id,first_name:lead.first_name,last_name:lead.last_name,company:lead.company,current_title:lead.current_title,location:lead.location||[lead.city,lead.state].filter(Boolean).join(', '),notes:lead.notes||''},quality,scores,action:nextAction(lead,quality,now(),cadence)};});
+      const action=nextAction(lead,quality,assessedAt,cadence);
+      return {lead:{id:lead.id,first_name:lead.first_name,last_name:lead.last_name,company:lead.company,current_title:lead.current_title,location:lead.location||[lead.city,lead.state].filter(Boolean).join(', '),notes:lead.notes||''},quality,scores,action,readiness:worklistReadiness(action,quality)};});
     // Review and enrich share one group; the advisor's priority orders it.
     const group=action=>action.rank>=30&&action.rank<=40?30:action.rank;
     all.sort((a,b)=>group(a.action)-group(b.action)||(a.action.due_at||'').localeCompare(b.action.due_at||'')||b.scores.priority.score-a.scores.priority.score||b.quality.score-a.quality.score||a.lead.id.localeCompare(b.lead.id));
@@ -227,7 +259,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       count(DISTINCT a.lead_id) FILTER(WHERE a.outcome='meeting_booked')::int AS meetings FROM advisor_activities a
       JOIN discovery_leads d ON d.id=a.lead_id WHERE a.user_id=$2 AND ${visibleSQL}
       AND a.created_at >= $4::timestamptz AND a.outcome = ANY($5::text[])`,['wealth-management',user.uid,user.email,new Date(now().getTime()-7*86400000).toISOString(),[...TOUCH_OUTCOMES]])).rows[0];
-    return {items:filtered.slice(offset,offset+limit),counts,total:filtered.length,offset,limit,activity,dials,scope_total:rows[0]?.scope_total||0,scanned:rows.length,truncated:(rows[0]?.scope_total||0)>rows.length};
+    return {items:filtered.slice(offset,offset+limit),daily:dailyWorklistSummary(all,assessedAt),counts,total:filtered.length,offset,limit,activity,dials,scope_total:rows[0]?.scope_total||0,scanned:rows.length,truncated:(rows[0]?.scope_total||0)>rows.length};
   }
   async function save(user,id,input) {
     if(!Object.hasOwn(outcomes,input.outcome))throw fail(422,'Choose a conversation outcome.');

@@ -4,7 +4,8 @@ import {PGlite} from '@electric-sql/pglite';
 import {readFileSync} from 'node:fs';
 import {createResearchLab} from '../research-lab.mjs';
 import {assessLead} from '../lead-quality.mjs';
-import {nextAction,workflowSignature} from '../advisor-workflow.mjs';
+import {cadenceState} from '../outreach-cadence.mjs';
+import {nextAction,workflowSignature,worklistReadiness,dailyWorklistSummary} from '../advisor-workflow.mjs';
 test('directory DNC restrictions remain effective after handoff and after a later import',async()=>{
  const {db,lab,user}=await fixture();try{
   const contact={...lead,phone:'+12125550199',mobile_phone:'+12125550199',phone_origin:'mobile',phone_restrictions:{direct:null,mobile:false}};
@@ -326,4 +327,55 @@ test('unresolved identity pauses drafts, follow-up suggestions and contact loggi
   d=await lab.advisor.detail(user,id);assert.ok(d.draft);assert.notEqual(d.cadence.status,'blocked');
   assert.match(await (await lab.advisor.exportEnrichment(user,{ids:[id]})).text(),/Jamie/);
  }finally{await db.close();}
+});
+
+test('readiness separates reviewed contact from fit, holds, identity review and terminal records',()=>{
+ const quality={status:'candidate',required_fields:['contact','residence','retirement','movable_assets'],gates:{contact:{state:'confirmed',reason:'Current review.'},residence:{state:'confirmed'},retirement:{state:'unknown'},movable_assets:{state:'unknown'}}};
+ const action={bucket:'due',contact:{channel:'email',address:'synthetic@example.com'},reason:'Follow-up due.'};
+ const ready=worklistReadiness(action,quality);
+ assert.equal(ready.state,'reviewed');assert.equal(ready.contact_reviewed,true);
+ assert.match(ready.fit_label,/retained retirement assets and transfer eligibility/);assert.match(ready.fit_label,/100,000/);
+ for(const cadence of [{status:'resting',reason:'Rest until next month.'},{status:'blocked',reason:'Contact restricted.'},{status:'hold',step:{due:true,ready:false,hold:'Daily dials spent.'}}]){
+  const held=worklistReadiness({...action,cadence},quality);assert.equal(held.state,'paused');assert.match(held.reason,/Rest|restricted|spent/);
+ }
+ assert.equal(worklistReadiness({...action,bucket:'scheduled'},quality).state,'scheduled');
+ for(const bucket of ['closed','clients'])assert.equal(worklistReadiness({...action,bucket,contact:null},quality).state,'finished');
+ const identity=worklistReadiness({...action,bucket:'review',contact:null,reason:'Resolve conflicting identifiers.'},{...quality,status:'identity_review'});
+ assert.equal(identity.state,'paused');assert.equal(identity.contact_reviewed,false);assert.match(identity.reason,/conflicting identifiers/);
+ const expired=worklistReadiness({...action,contact:null},{...quality,gates:{...quality.gates,contact:{state:'stale',reason:'Review has expired.'}}});
+ assert.equal(expired.state,'verify');assert.equal(expired.contact_reviewed,false);assert.match(expired.reason,/expired/);
+});
+
+test('daily counts partition due work without counting future, resting or terminal records',()=>{
+ const items=[['due','reviewed',true],['due','verify',false],['due','paused',true],['due','paused',false],['scheduled','scheduled',true],['resting','paused',true],['clients','finished',false],['closed','finished',false],['meetings','reviewed',true]].map(([bucket,state,contact_reviewed])=>({action:{bucket},readiness:{state,contact_reviewed}}));
+ assert.deepEqual(dailyWorklistSummary(items,now),{as_of:now.toISOString(),due:4,with_reviewed_route:1,needs_contact_review:1,on_hold:2});
+ assert.equal(dailyWorklistSummary([],now).due,0);
+});
+
+test('daily summary uses the authorized searched scan, not the chosen view or page',async()=>{
+ const {db,lab,user,id}=await fixture();try{
+  await reviewBasics(lab,user,id);
+  await lab.importCSV(user,{csv:'First Name,Last Name,Company,Title,Email,Country\nCasey,Synthetic,Another Example,Director,casey@synthetic.example,US'});
+  await db.query(`UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{follow_up_date}','"2026-09-10T10:00:00Z"')::text`);
+  await lab.importCSV({uid:'other',email:'other@example.com'},{csv:'First Name,Last Name,Company,Title,Email,Country\nPrivate,Example,Private Company,Director,private@synthetic.example,US'});
+  await db.query("UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{follow_up_date}','\"2026-09-10T10:00:00Z\"')::text");
+  const page=await lab.advisor.worklist(user,{view:'due',offset:1,limit:1});
+  assert.equal(page.items.length,1);assert.equal(page.daily.due,2);assert.equal(page.daily.with_reviewed_route,1);assert.equal(page.daily.needs_contact_review,1);
+  assert.equal(page.daily.as_of,now.toISOString());assert.ok(page.items[0].readiness);
+  assert.equal((await lab.advisor.worklist(user,{view:'closed'})).daily.due,2);
+  const searched=await lab.advisor.worklist(user,{search:'Jamie Rivera'});assert.equal(searched.daily.due,1);assert.equal(searched.daily.with_reviewed_route,1);
+  assert.equal((await lab.advisor.worklist(user,{search:'Private'})).daily.due,0);
+  await db.query(`UPDATE lab_observations SET payload=jsonb_set(payload,'{observed_at}','"2020-01-01"') WHERE lead_id=$1 AND field='contact'`,[id]);
+  const expired=await lab.advisor.worklist(user,{search:'Jamie Rivera'});assert.equal(expired.daily.with_reviewed_route,0);assert.equal(expired.daily.needs_contact_review,1);
+ }finally{await db.close();}
+});
+
+
+test('normal future cadence steps are scheduled rather than held',()=>{
+ const scheduledLead={...lead,follow_up_status:'Contacted',follow_up_date:'2026-09-13T15:00:00Z'};
+ const quality=assessLead(scheduledLead,[],{now});
+ const cadence=cadenceState({lead:scheduledLead,quality,now,activities:[{outcome:'no_answer',channel:'email',step:'opener',created_at:now.toISOString()}]});
+ assert.equal(cadence.step.due,false);assert.equal(cadence.step.ready,false);
+ const action=nextAction(scheduledLead,quality,now,cadence);assert.equal(action.bucket,'scheduled');
+ assert.equal(worklistReadiness(action,quality).state,'scheduled');
 });

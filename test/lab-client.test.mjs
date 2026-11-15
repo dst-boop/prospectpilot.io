@@ -467,3 +467,33 @@ test('work cards show one open action and disclose separate scores on demand',as
  assert.match(html,/<details class="score-line"><summary>Priority 42/);
  assert.match(html,/Qualification 1 · Opportunity 2 · Confidence 3 · Contact 4/);
 });
+
+
+const dailySummary={as_of:'2026-09-12T15:00:00Z',due:3,with_reviewed_route:1,needs_contact_review:1,on_hold:1};
+const dailyItem=(name,state='reviewed',bucket='due')=>({...lead(name),action:{bucket,label:'Follow-up due',reason:'Review the saved conversation.',held:state==='paused'},readiness:{state,label:state==='paused'?'Outreach on hold':'Contact route reviewed',reason:'<script>unsafe</script>',contact_label:'Reviewed email route',fit_label:'Confirm retirement assets and transfer eligibility.'}});
+test('daily summary names search and scan limits, and readiness text is escaped',async()=>{
+ const c=client();c.element('workView').value='today';c.element('workSearch').value='Example';
+ const load=c.run('loadWorklist()');
+ c.pending[0].respond({...emptyQueue,total:1,counts:{all:3,due:3,ready:0},daily:dailySummary,scanned:2000,scope_total:2300,truncated:true,items:[dailyItem('A')]});await load;
+ assert.match(c.element('dailyDueSummary').textContent,/3 follow-ups due: 1 with a reviewed contact route, 1 need contact review, 1 on hold/);
+ assert.match(c.element('dailyScope').textContent,/Current search, across all views/);assert.match(c.element('dailyScope').textContent,/2,000 of 2,300/);
+ assert.match(c.element('dailyScope').textContent,/do not establish retirement assets or transfer eligibility/);
+ assert.match(c.element('workList').innerHTML,/&lt;script&gt;unsafe/);assert.doesNotMatch(c.element('workList').innerHTML,/<script>/);
+});
+test('next action skips held work when another task can proceed and honestly labels hold-only views',async()=>{
+ const c=client();c.element('workView').value='due';c.run("var opened=null;openLead=id=>opened=id");
+ let load=c.run('loadWorklist()');c.pending[0].respond({...emptyQueue,total:2,counts:{all:2,due:2,ready:0},daily:dailySummary,items:[dailyItem('held','paused'),dailyItem('review','verify')]});await load;
+ c.element('startNext').onclick();assert.equal(c.run('opened'),'review');
+ load=c.run('loadWorklist()');c.pending[1].respond({...emptyQueue,total:1,counts:{all:1,due:1,ready:0},daily:dailySummary,items:[dailyItem('held','paused')]});await load;
+ assert.equal(c.element('dailyTitle').textContent,'Review what is on hold.');assert.equal(c.element('startNext').textContent,'Review hold');c.element('startNext').onclick();assert.equal(c.run('opened'),'held');
+ load=c.run('loadWorklist()');c.pending[2].respond({...emptyQueue,total:1,counts:{all:1,due:0,ready:0},daily:dailySummary,items:[dailyItem('later','scheduled','scheduled')]});await load;
+ assert.equal(c.element('dailyTitle').textContent,'Review your upcoming follow-up.');assert.equal(c.element('startNext').textContent,'Review scheduled follow-up');
+});
+test('daily summary clears on loading and errors and ignores an old response',async()=>{
+ const c=client();c.element('workView').value='today';c.element('dailyDueSummary').textContent='Old counts';c.element('dailyScope').textContent='Old scope';
+ const old=c.run('loadWorklist()');assert.equal(c.element('dailyDueSummary').textContent,'Checking due follow-ups.');assert.equal(c.element('dailyScope').textContent,'');
+ const fresh=c.run('loadWorklist()');c.pending[1].respond({...emptyQueue,daily:dailySummary});await fresh;
+ c.pending[0].respond({...emptyQueue,daily:{...dailySummary,due:99}});await old;assert.match(c.element('dailyDueSummary').textContent,/^3 follow-ups/);
+ const failed=c.run('loadWorklist()');c.pending[2].respond({detail:'Unavailable'},503);await assert.rejects(failed);
+ assert.equal(c.element('dailyDueSummary').textContent,'Due follow-up summary unavailable.');assert.equal(c.element('dailyScope').textContent,'');assert.equal(c.element('startNext').disabled,true);
+});
