@@ -86,7 +86,7 @@ test('the check would notice a module that is missing from either list', () => {
 
 test('isolated firm-boundary test inputs reach only the build context', t => {
   const ignore = readOptional('.dockerignore'), runtime = read('Dockerfile').split('AS runtime')[1];
-  for (const file of ['firm-preview-boundary.mjs','schema-drafts/firm-preview-boundary.sql']) {
+  for (const file of ['firm-preview-boundary.mjs','firm-scoped-snapshot.mjs','schema-drafts/firm-preview-boundary.sql']) {
     assert.ok(read(file).length > 0, file + ' is required by the build-stage regression suite');
     if (ignore) assert.equal(dockerignored(file,ignore),false,file + ' must reach the build-stage tests');
     assert.ok(!runtime.includes(file),file + ' is not runtime-wired');

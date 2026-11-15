@@ -97,3 +97,5 @@
 !firm-preview-boundary.mjs
 !schema-drafts/
 !schema-drafts/firm-preview-boundary.sql
+
+!firm-scoped-snapshot.mjs
