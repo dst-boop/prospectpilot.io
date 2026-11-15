@@ -26,7 +26,7 @@ export function searchFilters(input={}) {
  return filters;
 }
 async function tx(pool,fn){if(pool.transactionClient)return fn(pool.transactionClient);const c=await pool.connect();let broken;try{await c.query('BEGIN');const value=await fn(c);await c.query('COMMIT');return value;}catch(e){try{await c.query('ROLLBACK');}catch(error){broken=error;}throw e;}finally{c.release(broken);}}
-export function createProspectWorkspace({pool,jobs,checkDomain=createDomainChecker(),resolveRecipient,scope=null}) {
+export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=createDomainChecker(),resolveRecipient,scope=null}) {
  async function expireVerification(user){const now=new Date(),cutoff=new Date(now.getTime()-30*86400000).toISOString();await pool.query(`UPDATE prospect_contacts SET payload=jsonb_set(payload,'{email_status}','"unverified"'),updated_at=now() WHERE user_id=$1 ${scope?"AND id IN (SELECT contact_id FROM prospect_list_members WHERE list_id=$4)":''} AND payload->>'email_status' IN ('valid','invalid','catch_all','unknown') AND (payload->'email_verification'->>'email' IS DISTINCT FROM payload->>'email' OR COALESCE(payload->'email_verification'->>'checked_at','')<$2 OR payload->'email_verification'->>'checked_at'>$3)`,[user.uid,cutoff,now.toISOString(),...(scope?[scope.id]:[])]);}
  // Lock the parent first for both access and share changes. A revocation waits
  // for an in-flight scoped operation; later requests cannot reuse old access.
@@ -392,6 +392,10 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
   const scoped=path.match(/^\/api\/prospect\/lists\/([^/]+)\/(contacts(?:\/[^/]+(?:\/prepare)?)?|import(?:\/preview)?|export|members)$/);
   if(!scope&&scoped)return scopedRoute(request,user,scoped[1],scoped[2]);
   if(jobs && (path==='/api/prospect/providers'||path.startsWith('/api/prospect/jobs')))return jobs.route(request,user);
+  // Autopilot walks the same provider jobs, so it is refused wherever they are.
+  // Scoped (shared-list) requests never reach it: a run spends the list
+  // owner's budget, so only the owner starts one.
+  if(autopilot&&!scope&&path.startsWith('/api/prospect/autopilot'))return autopilot.route(request,user);
   // Cost per lead for the signed-in advisor only; never someone else's.
   if(!scope&&path==='/api/prospect/lead-costs'&&method==='GET')return leadCosts(pool,Object.fromEntries(url.searchParams),{userId:user.uid});
   if(path==='/api/prospect/contacts'&&method==='GET'){if(!scope&&url.searchParams.get('list_id'))return scopedRoute(request,user,url.searchParams.get('list_id'),'contacts');return search(user,Object.fromEntries(url.searchParams));}

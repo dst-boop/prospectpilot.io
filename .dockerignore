@@ -73,6 +73,7 @@
 !prospect-domain-check.mjs
 !prospect-providers.mjs
 !prospect-jobs.mjs
+!prospect-autopilot.mjs
 !prospect-jobs-client.js
 !billing.mjs
 !prospect-preparation.mjs

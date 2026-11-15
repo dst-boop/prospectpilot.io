@@ -106,6 +106,26 @@ These are recorded so they are not reopened by accident.
      assistant reaching ProspectPilot through a connector is later work. It
      never powers ProspectPilot's own features.
 
+9. **Autopilot runs on the queue, not in the page.** Lead Qualifier's own
+   comment conceded the weakness — "the loop runs in the page" — so a closed
+   tab paused a run the operator was paying for. ProspectPilot already has the
+   worker and the five-minute scheduler, so a run is a row the queue advances
+   and the browser is not part of it.
+10. **The ladder's order comes from the prices, not from a list.** Lead
+    Qualifier hardcoded free → ZoomInfo → WhitePages → web → QC; a repricing
+    made that order wrong and nothing noticed. Here the steps sort on their
+    configured price, so a repricing reorders the ladder, and a step with no
+    price or no credentials is not offered at all rather than quoted and
+    refused.
+11. **The approved figure bounds the run, not each step.** Before a step is
+    queued, what the run has already reserved is added to that step's quote; over
+    the approval it pauses and says so. This matters when the work grows after
+    approval — contacts added to the list mid-run — where a per-step check
+    would let the total exceed what was approved.
+12. **ZoomInfo is not an Autopilot step.** It is bring-your-own (decision 8),
+    so there is no priced server-side action to walk. Lead Qualifier's `zi`
+    step does not come across; its CSV import is the path.
+
 ## Open items
 
 - **Legacy owner-only batch tables** (`enrichment_batches`, `wealthfeed_jobs`,
@@ -138,4 +158,4 @@ These are recorded so they are not reopened by accident.
 | C | WhitePages/Trestle phone check (`check_phone`) on the provider queue and budget | Done |
 | D | Claude web research (`web_research` job) and profile screenshots (read once, never stored) are done. SEC proxy ages and the employer-site reader were already covered (`lab-sources.mjs`, `native-research.mjs`). AI QC is superseded by the five evidence gates | Done |
 | F | Selling memberships (decision 8): **per-advisor plan allowances (done)**; **Stripe billing: Checkout, customer portal, signed webhook, lapsed subscriptions pause paid lookups (done)**; **hybrid pricing: plans with yearly prices, a one-time free trial, promotion codes and top-up packs, priced in PRICING.md (done)**; then per-firm compliance settings in place of the Equitable-specific ones, the daily 8 a.m. leads as a per-advisor queue job on built-in data, and Research Lab licensed search counted against the same allowance | In progress |
-| E | Email and `.ics` through the advisor's Outlook, and ZoomInfo CSV drop-to-import, are done (decisions 6 and 7). List sharing is implemented with owner/editor/viewer authorization and Postgres regression tests (see `SETUP-sharing.md`). Autopilot remains; then redirect leads.financialplannersofamerica.com and retire Lead Qualifier | In progress |
+| E | Email and `.ics` through the advisor's Outlook, and ZoomInfo CSV drop-to-import, are done (decisions 6 and 7). List sharing is implemented with owner/editor/viewer authorization and Postgres regression tests (see `SETUP-sharing.md`). **Autopilot is done** (`prospect-autopilot.mjs`, migration 031): the ladder runs on the provider queue rather than in a page, ordered by configured price so free steps rule people out before paid ones, under one approved maximum that bounds the whole run. What remains: redirect leads.financialplannersofamerica.com and retire Lead Qualifier | In progress |
