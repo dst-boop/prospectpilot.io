@@ -753,8 +753,13 @@ async function allLeadRows(db) {
   return many(db, "SELECT id,owner_user_id,owner_email,payload,created_at,updated_at FROM discovery_leads WHERE team=? ORDER BY updated_at DESC", TEAM);
 }
 
+// Email is display/contact metadata, never proof of ownership.
+function ownsLead(row, user) {
+  return typeof user?.user_id === "string" && user.user_id.trim().length > 0 && row?.owner_user_id === user.user_id;
+}
+
 function canReadLead(row, lead, user) {
-  return user.role === "admin" || row.owner_user_id === user.user_id || lower(row.owner_email) === lower(user.email) || array(lead.shared_with).map(lower).includes(lower(user.email));
+  return user.role === "admin" || ownsLead(row, user) || array(lead.shared_with).map(lower).includes(lower(user.email));
 }
 
 function leadFromRow(row) {
@@ -774,6 +779,8 @@ async function saveCandidates(db, user, candidates, campaignId = "") {
   const current = await allLeadRows(db);
   const byKey = new Map();
   current.forEach(row => {
+    // Imports may merge only records this user can own/edit, not shared or email-matched records.
+    if (user.role !== "admin" && !ownsLead(row, user)) return;
     const lead = leadFromRow(row);
     if (lead) for (const key of identityKeys(lead)) byKey.set(key, { row, lead });
   });
@@ -2243,8 +2250,8 @@ async function leadRoutes(request, db, user, path, url) {
     else items = items.filter(({ lead }) => lead.identity_status !== "excluded");
     if (zoomInfoStatus !== "not_submitted" || url.searchParams.has("zoominfo_status")) items = items.filter(({ lead }) => normalizeZoomInfoMatchStatus(lead.zoominfo_match_status) === zoomInfoStatus);
     if (minPriority) items = items.filter(({ lead }) => Number(lead.priority_score || 0) >= minPriority);
-    if (ownership === "mine") items = items.filter(({ row }) => row.owner_user_id === user.user_id || lower(row.owner_email) === lower(user.email));
-    if (ownership === "shared") items = items.filter(({ row, lead }) => row.owner_user_id !== user.user_id && lower(row.owner_email) !== lower(user.email) && array(lead.shared_with).map(lower).includes(lower(user.email)));
+    if (ownership === "mine") items = items.filter(({ row }) => ownsLead(row, user));
+    if (ownership === "shared") items = items.filter(({ row, lead }) => !ownsLead(row, user) && array(lead.shared_with).map(lower).includes(lower(user.email)));
     if (priorityBand === "high") {
       const highPriorityIds = highPriorityLeadIds(items.map(item => item.lead));
       items = items.filter(({ lead }) => highPriorityIds.has(lead.id));
@@ -2267,7 +2274,7 @@ async function leadRoutes(request, db, user, path, url) {
   if (request.method !== "PATCH") throw new HttpError(405, "Method not allowed.");
   const patch = await requestJSON(request);
   const workflowOnly = new Set(["follow_up_status", "follow_up_date", "notes"]);
-  if (user.role !== "admin" && row.owner_user_id !== user.user_id && lower(row.owner_email) !== lower(user.email)) {
+  if (user.role !== "admin" && !ownsLead(row, user)) {
     if (Object.keys(patch).some(key => !workflowOnly.has(key))) throw new HttpError(403, "Shared advisors can update only follow-up status, date, and notes.");
   }
   const allowed = new Set(["first_name", "last_name", "current_title", "company", "location", "email", "linkedin_url", "identity_status", "follow_up_status", "follow_up_date", "notes"]);
@@ -2299,7 +2306,7 @@ async function bulkRoute(request, db, user) {
       if (!row || !lead || !canReadLead(row, lead, user)) throw new HttpError(404, "Lead not found.");
       let ownerUserId = row.owner_user_id, ownerEmail = row.owner_email;
       if (action === "delete") {
-        if (user.role !== "admin" && row.owner_user_id !== user.user_id) throw new HttpError(403, "Only the owner or an admin can delete this lead.");
+        if (user.role !== "admin" && !ownsLead(row, user)) throw new HttpError(403, "Only the owner or an admin can delete this lead.");
         await execute(db, "DELETE FROM discovery_leads WHERE id=? AND team=?", id, TEAM);
       } else if (action === "update") {
         if (body.follow_up_status) {

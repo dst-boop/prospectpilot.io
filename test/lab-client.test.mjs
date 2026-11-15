@@ -159,6 +159,45 @@ test('the scoreboard omits a target it does not have rather than inventing one',
   assert.doesNotMatch(tiles[3],/0%/);
 });
 
+const pipelineFixture=(label='Client recorded')=>({since:'2026-08-13T15:00:00Z',as_of:'2026-09-12T15:00:00Z',records:3,
+ scope:'Only outcomes you logged; not filtered by worklist search.',basis:'Independent milestones, not a conversion forecast.',
+ stages:[{id:'client',label,count:0,not_recorded:3,latest_first_recorded_at:null,basis:'A client log does not imply assets.'},
+ {id:'conversation',label:'Conversation recorded',count:2,not_recorded:1,latest_first_recorded_at:'2026-09-01T23:30:00-07:00',basis:'Includes inbound conversations.'}]});
+test('pipeline shows counts, missing logs, UTC first-log dates and the cohort scope without a forecast',()=>{
+ const c=client();c.run('renderPipeline('+JSON.stringify(pipelineFixture())+')');
+ const html=c.element('pipeline').innerHTML;
+ assert.match(html,/Progress of the same records/);assert.match(html,/3 records/);
+ assert.match(html,/Added 2026-08-13 15:00:00.000 UTC through 2026-09-12 15:00:00.000 UTC/);
+ assert.match(html,/Client recorded<\/h4><strong>0<\/strong>/);
+ assert.match(html,/3 without this milestone logged/);assert.match(html,/No date recorded/);
+ assert.match(html,/Latest first record: 2026-09-02 UTC/);
+ assert.match(html,/not filtered by worklist search/);assert.match(html,/not a conversion forecast/);
+ assert.match(html,/What counts/);assert.doesNotMatch(html,/%|target|\$/);
+ const injected=pipelineFixture('<img src=x onerror=alert(1)>');injected.scope='<script>bad</script>';
+ injected.stages[0].basis='<b>unsafe</b>';c.run('renderPipeline('+JSON.stringify(injected)+')');
+ assert.doesNotMatch(c.element('pipeline').innerHTML,/<img|<script|<b>unsafe/);
+ assert.match(c.element('pipeline').innerHTML,/&lt;img/);
+});
+test('pipeline states empty and unavailable cohorts explicitly',()=>{
+ const c=client(),empty=pipelineFixture();empty.records=0;empty.stages=[];
+ c.run('renderPipeline('+JSON.stringify(empty)+')');
+ assert.match(c.element('pipeline').innerHTML,/No accessible research records were added/);
+ assert.match(c.element('pipeline').innerHTML,/Older records can still contribute/);
+ c.run('renderPipeline(null)');assert.match(c.element('pipeline').innerHTML,/unavailable/);
+ assert.doesNotMatch(c.element('pipeline').innerHTML,/0 records/);
+});
+test('pipeline data shares scoreboard refresh and stale-response protection',async()=>{
+ const c=client();c.element('pipeline').innerHTML='Old milestone totals';
+ const old=c.run('loadScoreboard()'),fresh=c.run('loadScoreboard()');
+ assert.equal(c.element('pipeline').innerHTML,'');
+ c.pending[1].respond({pipeline:pipelineFixture('Fresh client count'),measured:[],untouched:0,meetings:{note:''},basis:'Fresh'});await fresh;
+ const shown=c.element('pipeline').innerHTML;assert.match(shown,/Fresh client count/);
+ c.pending[0].respond({pipeline:pipelineFixture('Stale client count'),measured:[],untouched:0,meetings:{note:''},basis:'Old'});await old;
+ assert.equal(c.element('pipeline').innerHTML,shown);
+ const failing=c.run('loadScoreboard()');assert.equal(c.element('pipeline').innerHTML,'');
+ c.pending[2].respond({detail:'No access'},403);await failing;
+ assert.equal(c.element('pipeline').innerHTML,'');
+});
 test('funnel failure clears old figures and retries without reloading the worklist',async()=>{
   const c=client();c.element('scoreboard').innerHTML='Old totals';c.element('scoreboardBasis').textContent='Old basis';
   const failed=c.run('loadScoreboard()');
@@ -456,6 +495,17 @@ test('funnel requests are deferred until opened and refresh with visible worklis
  assert.equal(c.pending[2].url,'/api/lab/scoreboard?days=30');
  c.pending[2].respond({measured:[],meetings:{note:''},basis:'Updated'});await settle();
  assert.equal(c.element('scoreboardBasis').textContent,'Updated');
+});
+
+test('a failed worklist refresh cannot leave previously loaded funnel counts visible',async()=>{
+ const c=client();c.element('workView').value='today';c.element('funnelPanel').open=true;
+ c.element('pipeline').innerHTML='Old pipeline';c.element('scoreboard').innerHTML='Old scoreboard';
+ const loading=c.run('loadWorklist()');
+ assert.equal(c.pending[1].url,'/api/lab/scoreboard?days=30');
+ assert.equal(c.element('pipeline').innerHTML,'');assert.doesNotMatch(c.element('scoreboard').innerHTML,/Old scoreboard/);
+ c.pending[0].respond({detail:'Unavailable'},503);await assert.rejects(loading,/Unavailable/);
+ c.pending[1].respond({detail:'Unavailable'},503);await settle();
+ assert.equal(c.element('pipeline').innerHTML,'');assert.match(c.element('scoreboard').innerHTML,/Retry funnel summary/);
 });
 
 test('work cards show one open action and disclose separate scores on demand',async()=>{

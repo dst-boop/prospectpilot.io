@@ -77,6 +77,13 @@ footer{border-top:1px solid var(--line);margin-top:24px;padding-top:16px}
 .contact-link{border-color:#d5dde8;color:var(--text);font-weight:500;border-radius:8px;padding:9px 16px;font-size:14px;box-shadow:0 1px 2px rgba(15,23,42,.04)}
 .contact-link:hover{background:var(--soft)}
 .scoreboard-panel>summary{font-size:14px;font-weight:600}
+.pipeline-stages{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:12px;list-style:none;padding:0;margin:16px 0}
+.pipeline-stages li{min-width:0;padding:16px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}
+.pipeline-stages h4{font-size:14px;margin:0 0 6px;line-height:1.4;color:var(--ink)}
+.pipeline-stages strong{display:block;font-size:30px;line-height:1.3;color:var(--ink)}
+.pipeline-stages small{display:block;margin-top:6px;color:var(--muted);font-size:12px;line-height:1.5}
+.pipeline-stages details{margin-top:10px;font-size:12px}.pipeline-stages summary{cursor:pointer}
+.pipeline-stages summary:focus-visible{outline:3px solid var(--ring);outline-offset:3px}
 .research-tools>summary{font-size:16px;font-weight:600}
 
 a{color:var(--blue)}
@@ -110,3 +117,7 @@ header{flex-wrap:wrap}header nav{flex-wrap:wrap;align-items:center}.workspace-me
 [data-queue][aria-pressed="true"]{background:#173b70;color:white;border-color:#173b70}.brief-summary{border-bottom:1px solid #dbe3ee;padding-bottom:1rem;margin-bottom:1rem}.contact-review-route{padding:.75rem;border:1px solid #dbe3ee;border-radius:.5rem;margin:.5rem 0}#prepareDetails,#outcomeDetails,#evidenceDetails{margin-top:1rem}#draftBody{min-height:9rem}
 
 .daily-due-summary{font-weight:600;border-top:1px solid var(--line);padding-top:12px}.daily-start #dailyScope{font-size:13px;max-width:72ch}.work-readiness{margin:10px 0;font-size:13px}.work-readiness summary{font-weight:600;cursor:pointer}.work-readiness p{margin:6px 0;overflow-wrap:anywhere}
+
+.brief-evidence{overflow-wrap:anywhere}.brief-evidence h4{margin:1rem 0 .35rem}.brief-evidence ul{padding-left:1.25rem}.brief-evidence li{margin:.65rem 0}.brief-evidence details{margin:.75rem 0}.brief-evidence summary{cursor:pointer;font-weight:600}.brief-citation{display:block;color:#52657b;margin:.3rem 0;line-height:1.5}
+
+.conversation-guide{margin:1rem 0;padding:1rem;border:1px solid var(--line);border-radius:10px;background:var(--soft);overflow-wrap:anywhere}.conversation-guide summary{font-weight:600;cursor:pointer}.conversation-guide summary:focus-visible{outline:3px solid var(--ring);outline-offset:3px}.conversation-guide h4{margin:1rem 0 .35rem}.conversation-guide li{margin:.5rem 0}.conversation-guide .coaching-example{border-left:3px solid var(--blue);padding-left:.8rem}

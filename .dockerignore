@@ -78,6 +78,8 @@
 !billing.mjs
 !prospect-preparation.mjs
 !advisor-workflow.mjs
+!advisor-pipeline.mjs
+!advisor-conversation-guidance.mjs
 !outreach-cadence.mjs
 
 !home.html
@@ -85,6 +87,7 @@
 !brand.svg
 
 !prospect-brief.mjs
+!prospect-brief-evidence.mjs
 
 # Supervisor preview is fail-closed until authoritative adapters are configured.
 !team-lead-hub.mjs
@@ -108,3 +111,15 @@
 !networking.html
 !networking-client.js
 !networking.css
+
+# Read by staging safety tests in the build stage only.
+!.github/
+!.github/workflows/
+!.github/workflows/tests.yml
+
+# Isolated execution contract is available only to build-stage tests.
+!advisor-reassignment-execution.mjs
+
+!release-readiness.mjs
+# Isolated legacy-recovery aggregate inspector is build-stage test input only.
+!legacy-owner-recovery.mjs

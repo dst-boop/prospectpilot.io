@@ -78,3 +78,14 @@ Networking source commit `4dcbf45bd49a7b3238ea372885f5afdf1e0597bd` is now integ
 - The native unsaved-navigation warning, mobile networking layout and real Firebase/staging journeys were not newly tested in this increment. Earlier worklist/hub mobile evidence remains historical, not a networking mobile claim.
 - Production team preview remains disabled/fail-closed, metadata snapshots remain incomplete, and there is still no authorized transfer or production activation. No provider call, outreach, deployment or live migration occurred.
 - The next gate is exact-head GitHub CI on draft PR #97 using disposable PostgreSQL 16, Docker and runtime trust-store checks. Local skips are not claimed as PostgreSQL passes. The PR must remain draft and unmerged.
+
+## Discovery reliability integration (November 15, 2026)
+
+Merged reviewed source `bc229f22bf9d465d6f1cd0cdfa330132309bee0a` onto networking integration `ad8aa0d657919ea9bc648bbe680f8a143d385afe` without conflicts. Main remains `8ac1176be3c76037af659b395c5b62153babafd4`. The only implementation change is the reviewed `lab-sources.mjs` file; its blob matches the source branch exactly. Source branches remain unchanged.
+
+- Individual public requests now time out after seven seconds, with the company-site stage bounded to 45 seconds within the existing 70-second source deadline, preserving time for an independent news fallback.
+- Invalid JSON responses are validated before caching. Failed pages remain explicit coverage gaps even when later pages succeed; only 404/410 on guessed paths count as expected absences.
+- Existing public URL, robots, redirect, identity, evidence provenance and cost rules remain unchanged. No new dependency, schema, UI or credential is introduced.
+- Final integrated local suite: 829 tests, 826 passed, zero failures, three explicit PostgreSQL skips; 173.4 seconds. Production asset build, 168 JavaScript/module syntax checks, six Python tests, four shell checks and Git whitespace checks passed.
+- Log: `.tmp/integration-discovery-full-tests.log`. New recovery tests use only mocked synthetic sources. They do not establish real-world source availability, lead yield or accuracy.
+- Exact-head CI on draft PR #97 is the next gate. No provider calls, production data, live migration or deployment occurred.

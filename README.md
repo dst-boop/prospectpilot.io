@@ -14,6 +14,8 @@ Select directory contacts and choose **Add to advisor worklist** to reuse their 
 
 Conversation and meeting counters reflect manually logged outcomes over seven rolling days, not sent messages or calendar attendance. Meeting counts deduplicate people. A worklist scan is capped at 2,000 candidates; larger directories show a scope notice and can be narrowed by name/company search.
 
+**Your funnel** shows recorded milestones for the same cohort of research records created in the last 30 days: added, approached, conversation recorded, meeting booked, meeting held, and client recorded. It uses only your logged outcomes on records you can currently access, independently of worklist search or pagination. First-log dates and missing logs are explicit; a client does not imply an unlogged meeting, assets or revenue. See [pipeline measurement details](ADVISOR-PIPELINE-NOTES.md).
+
 See [the advisor workflow release](ADVISOR-WORKFLOW-RELEASE.md) for the short usage flow and deployment status.
 
 **Campaigns by place.** Under the research tools, enter a ZIP code or town, a radius and business types (for example *11747, 25 miles, electrical contractors*), and optionally the titles to keep (*Owner, President, VP*). The worker first finds companies in OpenStreetMap's free business directory and saves them with the run, then researches each company's own pages and SEC filings for people. Only people whose title matches are stored; the others are counted, not kept. Run details list every company found and why any were passed over (the run's company limit, or researched in the last seven days, so a daily campaign moves through the area). Leave the place blank to research named employers or the plan catalog as before. Each discovery run's details open with **Where candidates went**: companies found, researched, pages read, people found, matched the titles, saved, promising and fully confirmed, with the reasons the rest stopped at each stage (for example *site blocks automated reading*, *daily budget reached*, *other titles, not kept*). The counts are what the run recorded, not estimates. When a company's own links lead to nobody, research tries the usual team addresses (`/leadership`, `/our-team`, `/about` and similar) once, and if still nobody is found, up to three recent articles from the free GDELT news index that name the company. Every page, guessed or linked, is checked against the publisher's robots.txt. A person in a news article is credited to the company only when the sentence itself ties their role to it (for example *Robin Hale is the president of Harbor Electrical* or *Harbor Electrical president Robin Hale*), and the article's site is never recorded as the company's website. Findings from news are labelled *News article*.
@@ -255,6 +257,14 @@ live since before pacing shipped and only the opaque release identifier moved.
 Financial criteria require participant disclosure or an authorized financial document, with research consent recorded. Employer plan assets, job titles, graduation years, property values and WARN notices do not establish an individual's wealth or retirement holdings. The 0–100 score measures evidence completeness, not a probability of wealth, transfer eligibility, or investment suitability.
 
 Traditional/contributory, rollover, and Roth IRAs support reviewed trustee-to-trustee transfers to matching tax-type destinations. Employer plans retain the existing distribution routes and in-service permission check. Unknown, stale, conflicting or suppressed records do not qualify. Age evidence uses whole attained years and accounts conservatively for possible birthdays; a 73-year-old needs current-day evidence to remain confirmed.
+
+## Isolated signed-in staging smoke
+
+Run `pnpm staging:smoke` for the in-memory smoke suite, or follow
+[STAGING-SMOKE.md](STAGING-SMOKE.md) to run the same journey against disposable
+PostgreSQL 16. This exercises the actual HTTP/auth handlers with fake identities,
+fictional contacts and zero-cost provider adapters. It is not a real Firebase or
+deployed-staging validation. Nothing is deployed.
 
 ## Try the application locally
 

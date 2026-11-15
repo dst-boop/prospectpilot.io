@@ -25,6 +25,50 @@ test('directory DNC restrictions remain effective after handoff and after a late
 const now=new Date('2026-09-12T15:00:00Z');
 const lead={id:'fixture',first_name:'Jamie',last_name:'Rivera',company:'Example Manufacturing',email:'jamie@example.com',estimated_age_range:'62',country:'US'};
 const csv='First Name,Last Name,Company,Title,Email,Estimated Age Range,Country\nJamie,Rivera,Example Manufacturing,Director,jamie@example.com,62,US';
+test('pipeline measures first logged milestones for one visible cohort without inferring stages or colleague credit',async()=>{
+ const {db,lab,user,id}=await fixture();try{
+  await db.query('UPDATE discovery_leads SET created_at=$2 WHERE id=$1',[id,'2026-08-20T10:00:00Z']);
+  const add=async(key,{owner=user.uid,email=user.email,created='2026-09-01T10:00:00Z',team='wealth-management',payload={}}={})=>db.query(
+   'INSERT INTO discovery_leads(id,team,owner_user_id,owner_email,payload,created_at) VALUES($1,$2,$3,$4,$5,$6)',[key,team,owner,email,JSON.stringify(payload),created]);
+  for(const key of ['inbound','status-only','no-show-only','future-log','peer'])await add(key,{payload:{follow_up_status:'Client',movable_assets:9000000}});
+  await add('old',{created:'2026-08-01T00:00:00Z'});
+  await add('future-record',{created:'2026-09-13T00:00:00Z'});
+  await add('hidden',{owner:'other',email:'other@example.com'});
+  await add('other-team',{team:'different-team'});
+  let serial=0;
+  const log=async(key,outcome,at,actor=user.uid,direction=null,next=null)=>{
+   const n='pipeline-'+(++serial);
+   await db.query('INSERT INTO advisor_activities(id,lead_id,user_id,idempotency_key,outcome,created_at,direction,next_at) VALUES($1,$2,$3,$1,$4,$5,$6,$7)',[n,key,actor,outcome,at,direction,next]);
+  };
+  await log(id,'no_answer','2026-08-20T11:00:00Z');
+  await log(id,'connected','2026-08-21T11:00:00Z');
+  await log(id,'meeting_booked','2026-08-22T11:00:00Z',user.uid,null,'2026-08-23T11:00:00Z');
+  await log(id,'meeting_held','2026-08-24T11:00:00Z');
+  await log(id,'became_client','2026-08-26T11:00:00Z');
+  await log(id,'reopen','2026-09-01T11:00:00Z');
+  await log(id,'became_client','2026-09-02T11:00:00Z');
+  await log('inbound','connected','2026-09-02T12:00:00Z',user.uid,'inbound');
+  await log('no-show-only','no_show','2026-09-03T12:00:00Z',user.uid,null,'2026-09-04T12:00:00Z');
+  for(const outcome of ['connected','became_client'])await log('future-log',outcome,'2026-09-13T00:00:00Z');
+  for(const outcome of ['meeting_booked','meeting_held','became_client'])await log('peer',outcome,'2026-09-03T00:00:00Z','colleague');
+  for(const key of ['old','hidden','other-team','future-record'])await log(key,'became_client','2026-09-04T00:00:00Z');
+  const board=await lab.route(new Request('https://example.com/api/lab/scoreboard?days=30&user_id=colleague&role=admin&search=missing'),user);
+  const pipeline=board.pipeline;
+  assert.deepEqual(pipeline.stages.map(stage=>stage.count),[6,1,2,1,1,1]);
+  assert.equal(pipeline.stages.find(stage=>stage.id==='client').latest_first_recorded_at,'2026-08-26T11:00:00.000Z','a repeated client log never moves the first milestone');
+  assert.equal(pipeline.stages.find(stage=>stage.id==='held').latest_first_recorded_at,'2026-08-24T11:00:00.000Z','the recorded log date, not the scheduled meeting date');
+  assert.equal(pipeline.stages.find(stage=>stage.id==='conversation').not_recorded,4);
+  assert.equal(pipeline.as_of,now.toISOString());
+  assert.equal((await lab.advisor.scoreboard({uid:'stranger',email:'stranger@example.com'})).pipeline.records,0);
+  await db.query("INSERT INTO discovery_users(user_id,email,full_name,role) VALUES('admin','admin@example.com','Synthetic administrator','admin')");
+  const admin=(await lab.advisor.scoreboard({uid:'admin',email:'admin@example.com'})).pipeline;
+  assert.deepEqual(admin.stages.map(stage=>stage.count),[7,0,0,0,0,0],'existing admin visibility does not turn colleague logs into personal performance');
+  await db.query('UPDATE discovery_leads SET owner_user_id=$2,owner_email=$3 WHERE id=$1',[id,'other','other@example.com']);
+  const revoked=(await lab.advisor.scoreboard(user)).pipeline;
+  assert.deepEqual(revoked.stages.map(stage=>stage.count),[5,0,1,0,0,0],'removed access removes counts and dates on the next read');
+  assert.equal(revoked.stages.find(stage=>stage.id==='client').latest_first_recorded_at,null);
+ }finally{await db.close();}
+});
 async function fixture(){const db=new PGlite();for(const file of ['generated/schema.sql','migrations/006-research-lab.sql','migrations/007-quality-v2.sql','migrations/008-prospect-workspace.sql','migrations/012-plan-catalog-summary.sql','migrations/013-advisor-workflow.sql','migrations/014-outreach-cadence.sql', 'migrations/015-dial-budget.sql', 'migrations/016-inbound-contact.sql','migrations/017-forget.sql','migrations/022-identity-reviews.sql','migrations/030-personal-events.sql'])await db.exec(readFileSync(new URL('../'+file,import.meta.url),'utf8'));const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};const user={uid:'owner',email:'owner@example.com'},lab=createResearchLab({pool,now:()=>now,sources:{readiness:{}}});await lab.importCSV(user,{csv});const id=(await lab.list(user)).leads[0].lead.id;return {db,lab,user,id};}
 async function reviewBasics(lab,user,id){const d=await lab.detail(user,id);for(const [field,value] of Object.entries({age:{min:62,max:62},residence:{country:'US',scope:'residence'},contact:{channel:'email',address:'jamie@example.com',identity_confirmed:true}}))await lab.review(user,id,{field,value,verdict:'confirmed',source:'Synthetic authorized fixture',note:'Synthetic evidence only.',observed_at:now.toISOString(),identity_signature:d.quality.identity_signature});}
 test('next actions never equate contact details or financial estimates with verified qualification',()=>{const q=assessLead(lead,[],{now});assert.equal(nextAction(lead,q,now).bucket,'review');assert.equal(nextAction(lead,q,now).contact,null);const noContact={...lead,email:''};assert.equal(nextAction(noContact,assessLead(noContact,[],{now}),now).bucket,'enrich');const dnc={...lead,suppressed:true,follow_up_date:'2026-09-01T12:00:00Z'};assert.equal(nextAction(dnc,assessLead(dnc,[],{now}),now).bucket,'closed');assert.equal(nextAction({...lead,follow_up_status:'Not a Fit'},q,now).bucket,'closed');});
@@ -408,4 +452,39 @@ test('normal future cadence steps are scheduled rather than held',()=>{
  assert.equal(cadence.step.due,false);assert.equal(cadence.step.ready,false);
  const action=nextAction(scheduledLead,quality,now,cadence);assert.equal(action.bucket,'scheduled');
  assert.equal(worklistReadiness(action,quality).state,'scheduled');
+});
+test('advisor detail carries cited evidence without changing ownership, action or suppression gates',async()=>{
+ const {db,lab,user,id}=await fixture();try{
+  await reviewBasics(lab,user,id);
+  const current=await lab.detail(user,id);
+  await lab.review(user,id,{field:'personal_event',verdict:'confirmed',source:'Synthetic company announcement',url:'https://example.com/announcements/jamie',note:'Fictional role change, not a financial disclosure.',observed_at:'2026-09-10',identity_signature:current.quality.identity_signature,value:{type:'job_change',event_date:'2026-09-01',identity_confirmed:true,identity_basis:'Synthetic employer, title and professional profile match.'}});
+  const detail=await lab.advisor.detail(user,id),summary=detail.brief.evidence_summary;
+  assert.equal(detail.action.bucket,'ready');
+  assert.equal(detail.action.contact.address,'jamie@example.com');
+  assert.equal(summary.reviewed.find(r=>r.field==='personal_event').citation.url,'https://example.com/announcements/jamie');
+  assert.equal(summary.reviewed.find(r=>r.field==='personal_event').citation.source_date,null);
+  assert.equal(summary.reviewed.find(r=>r.field==='contact').statement,'Reviewed email ownership: jamie@example.com.');
+  assert.ok(summary.unknowns.some(r=>r.field==='retirement'));
+  assert.match(detail.brief.qualification,/not confirmed/);
+  await assert.rejects(lab.advisor.detail({uid:'stranger',email:'stranger@example.com'},id),{status:404});
+  await lab.advisor.save(user,id,{outcome:'do_not_contact',signature:detail.action.signature,idempotency_key:'brief-dnc'});
+  const blocked=await lab.advisor.detail(user,id);
+  assert.equal(blocked.action.contact,null);assert.equal(blocked.action.bucket,'closed');
+  assert.equal(blocked.brief.evidence_summary.reviewed.length,0);
+  assert.equal(blocked.brief.evidence_summary.unknowns[0].state,'blocked');
+ }finally{await db.close();}
+});
+
+test('conversation coaching is additive to authorized detail and disappears after suppression',async()=>{
+ const {db,lab,user,id}=await fixture();try{
+  let detail=await lab.advisor.detail(user,id);
+  assert.equal(detail.conversation_guidance.status,'hold');assert.equal(detail.conversation_guidance.opening,undefined);
+  await reviewBasics(lab,user,id);
+  detail=await lab.advisor.detail(user,id);
+  assert.equal(detail.conversation_guidance.status,'prepare');assert.match(detail.conversation_guidance.opening,/\[your name\]/);
+  assert.equal(detail.activities.length,0,'opening guidance does not log a conversation');
+  await assert.rejects(lab.advisor.detail({uid:'not-owner',email:'not-owner@example.com'},id),{status:404});
+  await db.query("UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{suppressed}','true')::text WHERE id=$1",[id]);
+  detail=await lab.advisor.detail(user,id);assert.equal(detail.conversation_guidance,null);assert.equal(detail.action.contact,null);
+ }finally{await db.close();}
 });
