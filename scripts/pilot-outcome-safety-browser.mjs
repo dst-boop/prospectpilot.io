@@ -36,8 +36,9 @@ try {
   if(await page.locator('#activityNote').inputValue()!=='Synthetic prospect requested follow-up tomorrow.')throw Error('Unsaved note was lost');
  }
 
- await page.screenshot({path:'/tmp/pilot-desktop-detail.png',fullPage:true});
- await page.setViewportSize({width:390,height:844});await page.screenshot({path:'/tmp/pilot-mobile-detail.png',fullPage:true});
+ await page.locator('#activityNote').scrollIntoViewIfNeeded();
+ await page.screenshot({path:'/tmp/pilot-desktop-detail.png'});
+ await page.setViewportSize({width:390,height:844});await page.locator('#activityNote').scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/pilot-mobile-detail.png'});
  await page.locator('#saveActivity').click();
  await page.waitForTimeout(500);
  const saved=await (await staging.request('/api/lab/leads/'+leadId,{cookie})).json();
