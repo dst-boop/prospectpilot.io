@@ -3,7 +3,7 @@ import {QUALITY_VERSION} from './lead-quality.mjs';
 import {CADENCE_VERSION} from './outreach-cadence.mjs';
 import {randomUUID} from 'node:crypto';
 const responseJSON=(detail,status)=>Response.json({detail},{status,headers:{'Cache-Control':'no-store'}});
-export function createHandler({auth,db,worker,loginHtml,loginScript,homeHtml,siteStyle,brandMark,ownerEmail,origins,providerKey='',linkedin,nativeResearch,warn,warnPage,warnScript,researchJobs,lab,labPage,labScript,labStyle,prospect,prospectPage,prospectScript,prospectJobsScript,prospectStyle,billing=null,releaseId=''}) {
+export function createHandler({auth,db,worker,loginHtml,loginScript,homeHtml,siteStyle,brandMark,ownerEmail,origins,providerKey='',linkedin,nativeResearch,warn,warnPage,warnScript,researchJobs,lab,labPage,labScript,labStyle,prospect,prospectPage,prospectScript,prospectJobsScript,prospectStyle,networkingPage,networkingScript,networkingStyle,billing=null,releaseId=''}) {
   const allowed=new Set(origins);
   const authorized=claims=>typeof claims.uid==='string'&&claims.uid.length>0&&claims.email_verified===true&&typeof claims.email==='string'&&claims.email.includes('@')&&['google.com','password'].includes(claims.firebase?.sign_in_provider);
   return async request=>{
@@ -49,6 +49,10 @@ export function createHandler({auth,db,worker,loginHtml,loginScript,homeHtml,sit
     if(url.pathname==='/'&&request.method==='GET'&&homeHtml&&(!claims||!authorized(claims)))return publicPage(homeHtml);
     if(!claims||!authorized(claims))return url.pathname.startsWith('/api/')?responseJSON('Sign in to ProspectPilot.',401):new Response(null,{status:303,headers:{Location:'/login?next='+encodeURIComponent(loginDestination(url.pathname+url.search)),'Cache-Control':'no-store'}});
     if((prospect&&url.pathname==='/api/prospect/me'||lab&&url.pathname==='/api/lab/me')&&request.method==='GET')return Response.json({uid:claims.uid,email:claims.email,name:claims.name||'',...(url.pathname==='/api/lab/me'?{capabilities:{legacy_tools:!!ownerEmail&&claims.email.toLowerCase()===ownerEmail.toLowerCase()}}:{})},{headers:{'Cache-Control':'private, no-store'}});
+    if(prospect && networkingPage && ['/networking','/networking-client.js','/networking.css'].includes(url.pathname) && request.method==='GET') {
+      const script=url.pathname==='/networking-client.js',style=url.pathname==='/networking.css';
+      return new Response(script?networkingScript:style?networkingStyle:networkingPage,{headers:{'Content-Type':script?'text/javascript; charset=utf-8':style?'text/css; charset=utf-8':'text/html; charset=utf-8','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"}});
+    }
     if(prospect && url.pathname==='/prospect-jobs-client.js' && request.method==='GET')return new Response(prospectJobsScript,{headers:{'Content-Type':'text/javascript; charset=utf-8','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
     if(prospect && (['/prospect','/prospect-client.js','/prospect.css'].includes(url.pathname)||(!lab&&url.pathname==='/')) && request.method==='GET') {
       const script=url.pathname==='/prospect-client.js',style=url.pathname==='/prospect.css';

@@ -1,4 +1,5 @@
 import {randomUUID} from 'node:crypto';
+import {normalizeNetworkingCapture} from './networking-capture.mjs';
 import {createDomainChecker} from './prospect-domain-check.mjs';
 import {buildPreparation,preparationRevision} from './prospect-preparation.mjs';
 import {nameKey,hash,csvCell,publicURL} from './lead-quality.mjs';
@@ -127,7 +128,22 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
   if(input.compact==='true')for(const contact of contacts){delete contact.source_history;delete contact.field_sources;}
   return {contacts,total,offset,limit,filters};
  }
- async function importCSV(user,input,{preview=false}={}){
+ async function captureNetworking(user,input){
+  if(!user?.uid)throw fail(401,'Sign in.');
+  if(scope)throw fail(403,'Capture networking in your own workspace.');
+  const networking=normalizeNetworkingCapture(input);
+  return importCSV(user,{csv:networking.csv,source:networking.source,source_observed_at:networking.entry.occurred_on||''},{networking});
+ }
+ async function networkingHistory(user){
+  if(!user?.uid)throw fail(401,'Sign in.');
+  if(scope)throw fail(403,'Networking notes are private to their owner.');
+  const rows=(await pool.query(`SELECT n.id,n.contact_id,n.payload,n.created_at,
+    c.payload->>'first_name' AS first_name,c.payload->>'last_name' AS last_name,c.payload->>'company' AS company
+    FROM prospect_networking_captures n JOIN prospect_contacts c ON c.id=n.contact_id AND c.user_id=n.user_id
+    WHERE n.user_id=$1 ORDER BY n.created_at DESC,n.id DESC LIMIT 21`,[user.uid])).rows;
+  return {captures:rows.slice(0,20),has_more:rows.length>20,limit:20};
+ }
+ async function importCSV(user,input,{preview=false,networking=null}={}){
   if(!input||typeof input!=='object'||Array.isArray(input))throw fail(422,'Provide a CSV import object.');
   const format=input.format||'generic';if(!['generic','zoominfo'].includes(format))throw fail(422,'Choose a supported CSV format.');
   const parsed=parseContactCSV(input.csv),{headers,records}=parsed;
@@ -136,11 +152,18 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
   if(input.source_url&&(!sourceURL||sourceURL.length>1000))throw fail(422,'Provide a public HTTP or HTTPS source URL without credentials.');
   const observed=input.source_observed_at||'';
   if(observed&&(!/^\d{4}-\d{2}-\d{2}$/.test(observed)||!Number.isFinite(Date.parse(observed))||new Date(observed).toISOString().slice(0,10)!==observed||observed>new Date().toISOString().slice(0,10)))throw fail(422,'Use a valid source date, no later than today.');
-  const fingerprint=hash((scope?'contact-list-import-v1\0'+scope.actor+'\0':'contact-import-v2\0')+input.csv+'\0'+source+'\0'+text(input.list_id)+(format==='zoominfo'?'\0zoominfo':'')+(sourceURL||observed?'\0'+sourceURL+'\0'+observed:''));
+  const fingerprint=hash((scope?'contact-list-import-v1\0'+scope.actor+'\0':'contact-import-v2\0')+input.csv+'\0'+source+'\0'+text(input.list_id)+(format==='zoominfo'?'\0zoominfo':'')+(sourceURL||observed?'\0'+sourceURL+'\0'+observed:'')+(networking?'\0networking\0'+JSON.stringify(networking):''));
   return tx(pool,async c=>{
    if(input.list_id)await listAccess(c,user,input.list_id,'owner','UPDATE');
    await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`prospect:${user.uid}`]);
-   const previous=(await c.query('SELECT result FROM prospect_imports WHERE user_id=$1 AND fingerprint=$2',[user.uid,fingerprint])).rows[0];if(previous)return {...previous.result,replayed:true,preview};
+   if(networking){
+    const prior=(await c.query('SELECT fingerprint,result FROM prospect_networking_captures WHERE user_id=$1 AND request_key=$2',[user.uid,networking.request_key])).rows[0];
+    if(prior){if(prior.fingerprint!==fingerprint)throw fail(409,'This capture was already saved with different details. Start a new capture for another interaction.');return {...prior.result,replayed:true};}
+   }
+   // Networking replays require the live private ledger above. A generic import
+   // result can outlive its deleted contact and must not claim it is still saved.
+   const previous=(await c.query('SELECT result FROM prospect_imports WHERE user_id=$1 AND fingerprint=$2',[user.uid,fingerprint])).rows[0];
+   if(previous){if(networking&&previous.result.capture)throw fail(409,'This connection is no longer saved. Refresh recent captures before starting a new capture.');return {...previous.result,replayed:true,preview};}
    const result={id:randomUUID(),added:0,duplicates:0,conflicts:0,field_reviews:0,rejected:0,errors:[],rows:[],preview,replayed:false,total:records.length,mapped_columns:parsed.mapped_columns,ignored_columns:parsed.ignored_columns};
    const prepared=records.map(({cells,row})=>{
     try{
@@ -164,11 +187,13 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
    }
    const existing=allKeys.length?(await c.query(`SELECT id,payload,identity_keys FROM prospect_contacts WHERE user_id=$1 AND identity_keys ?| $2::text[] ${scope?'AND id IN (SELECT contact_id FROM prospect_list_members WHERE list_id=$3)':''} FOR UPDATE`,[user.uid,allKeys,...(scope?[scope.id]:[])])).rows:[];
    const byId=new Map(existing.map(row=>[row.id,row])),byKey=new Map();
-   const changed=new Map();
+   const changed=new Map();let networkingContactId=null;
    const indexRow=row=>{byId.set(row.id,row);for(const key of row.identity_keys){if(!byKey.has(key))byKey.set(key,new Set());byKey.get(key).add(row.id);}};
    existing.forEach(indexRow);
    const report=(row,status,message,contact,review={})=>{
-    result.rows.push({row,status,message,...review,name:contact?`${contact.first_name} ${contact.last_name}`:'',issues:contact?contactQuality(contact).issues:[]});
+    // Networking's private ledger owns person details and cascades on deletion.
+    // Keep its general import/retry cache free of names or contact diagnostics.
+    result.rows.push({row,status,message,...review,...networking?{}:{name:contact?`${contact.first_name} ${contact.last_name}`:'',issues:contact?contactQuality(contact).issues:[]}});
     if(['rejected','conflict'].includes(status)&&result.errors.length<50)result.errors.push({row,message});
    };
    const now=new Date().toISOString(),usage=[];
@@ -191,6 +216,10 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
      const strong=keys.some(key=>(key.startsWith('email:')||key.startsWith('linkedin:')||key.startsWith('zoominfo:'))&&identities(old).includes(key));
      const newIdentity=['email','linkedin_url','phone','mobile_phone'].some(key=>contact[key]&&contact[key]!==old[key])||!!contact.zoominfo?.contact_id&&contact.zoominfo.contact_id!==old.zoominfo?.contact_id;
      if(!strong&&newIdentity){result.conflicts++;report(record.row,'conflict','Name and company match only; a new contact identifier needs review to avoid merging namesakes.',contact);continue;}
+     // Networking observations are private even when the matching contact is
+     // already shared. Preserve all contact fields and provenance; supplied
+     // details belong only to the owner's capture, never the shared contact.
+     if(networking){networkingContactId=id;result.duplicates++;result.contact_unchanged=true;report(record.row,'duplicate','Private interaction recorded; existing contact fields and source history are unchanged.',old);continue;}
      const merged={...old};for(const [k,v] of Object.entries(contact))if(!merged[k]&&v&&k!=='source_kind')merged[k]=v;
      merged.zoominfo={...contact.zoominfo,...old.zoominfo};
      // Each delivery keeps its own reason and review, under the list it came in:
@@ -228,6 +257,11 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
      ON CONFLICT(id) DO UPDATE SET payload=EXCLUDED.payload,identity_keys=EXCLUDED.identity_keys,updated_at=now()
      WHERE prospect_contacts.user_id=$1`,[user.uid,JSON.stringify(writes.slice(start,start+100))]);
     if(input.list_id&&writes.length)await c.query('INSERT INTO prospect_list_members(list_id,contact_id) SELECT $1,unnest($2::text[]) ON CONFLICT DO NOTHING',[input.list_id,writes.map(row=>row.id)]);
+    if(networking&&(networkingContactId||writes.length===1)&&!result.conflicts&&!result.rejected){
+     const capture_id=randomUUID(),contact_id=networkingContactId||writes[0].id;
+     result.capture={id:capture_id,contact_id};
+     await c.query('INSERT INTO prospect_networking_captures(id,user_id,contact_id,request_key,fingerprint,payload,result) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb)',[capture_id,user.uid,contact_id,networking.request_key,fingerprint,JSON.stringify({...networking.entry,person:networking.person,recorded_by:user.uid}),JSON.stringify(result)]);
+    }
    }
    if(usage.length){
     result.zoominfo_credits=usage.reduce((n,u)=>n+u.units,0);
@@ -387,6 +421,8 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
   return {summary,sources,coverage,imports,limits:{sources:50,imports:20}};
  }
  async function route(request,user){if(!user?.uid)throw fail(401,'Sign in.');const url=new URL(request.url),path=url.pathname,method=request.method;const body=async()=>{try{return await request.json();}catch{throw fail(422,'Invalid JSON.');}};
+  if(path==='/api/prospect/networking'&&method==='POST')return captureNetworking(user,await body());
+  if(path==='/api/prospect/networking'&&method==='GET')return networkingHistory(user);
   const shared=path.match(/^\/api\/prospect\/lists\/([^/]+)\/shares(?:\/([^/]+))?$/);
   if(shared&&((!shared[2]&&['GET','POST'].includes(method))||(shared[2]&&method==='DELETE')))return shares(user,shared[1],method,method==='POST'?await body():null,shared[2]);
   const scoped=path.match(/^\/api\/prospect\/lists\/([^/]+)\/(contacts(?:\/[^/]+(?:\/prepare)?)?|import(?:\/preview)?|export|members)$/);
@@ -453,5 +489,5 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
   }
   throw fail(404,'Prospect endpoint not found.');
  }
- return {route,search,lists,createList,membership,importCSV,exportCSV,qualitySummary};
+ return {route,search,lists,createList,membership,importCSV,exportCSV,qualitySummary,captureNetworking,networkingHistory};
 }
