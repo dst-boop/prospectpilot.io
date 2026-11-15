@@ -18,7 +18,7 @@ jobs:
       - run: npm install --global pnpm@11.19.0
       - run: pnpm install --frozen-lockfile
       - run: node build.mjs
-      - run: npm install --prefix /tmp/pp-browser playwright@1.58.2
+      - run: npm install --prefix /tmp/pp-browser playwright@1.62.1
       - run: /tmp/pp-browser/node_modules/.bin/playwright install --with-deps chromium
       - run: node scripts/pilot-outcome-safety-browser.mjs
       - uses: actions/upload-artifact@v6
