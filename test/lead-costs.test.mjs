@@ -31,6 +31,7 @@ async function fixture(fn,{files=MIGRATIONS,providers:extra={}}={}){
  const db=new PGlite();
  try{
   for(const file of files)await db.exec(readFileSync(new URL('../'+file,import.meta.url),'utf8'));
+  await db.exec("CREATE TABLE prospectpilot_migrations (id TEXT PRIMARY KEY); INSERT INTO prospectpilot_migrations(id) VALUES ('029')");
   const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
   const providers={readiness:{search:true,enrichment:true},
    search:async filters=>({contacts:[1,2].map(n=>({first_name:'Found'+n,last_name:'Person',company:'Example Co',title:'Director',email:`found${n}@example.com`,provider_id:'p'+n})),retrieved:2,total:2}),

@@ -18,6 +18,7 @@ const unclear=header+'Pat,Lee,Other Synthetic Company,Treasurer,pat@example.test
 async function fixture(){
  const db=await createOwnershipTestDatabase();
  for(const file of migrations)await db.exec(readFileSync(new URL('../'+file,import.meta.url),'utf8'));
+ await db.exec("CREATE TABLE prospectpilot_migrations(id TEXT PRIMARY KEY); INSERT INTO prospectpilot_migrations VALUES('029')");
  const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
  const lab=createResearchLab({pool,now:()=>now,sources:{readiness:{},quote:()=>0}}),ws=createProspectWorkspace({pool});
  const call=(app,user,method,path,body)=>app.route(new Request('https://example.test'+path,{method,headers:{'content-type':'application/json'},body:body&&JSON.stringify(body)}),user);
