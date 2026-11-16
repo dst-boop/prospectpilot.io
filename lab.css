@@ -121,3 +121,5 @@ header{flex-wrap:wrap}header nav{flex-wrap:wrap;align-items:center}.workspace-me
 .brief-evidence{overflow-wrap:anywhere}.brief-evidence h4{margin:1rem 0 .35rem}.brief-evidence ul{padding-left:1.25rem}.brief-evidence li{margin:.65rem 0}.brief-evidence details{margin:.75rem 0}.brief-evidence summary{cursor:pointer;font-weight:600}.brief-citation{display:block;color:#52657b;margin:.3rem 0;line-height:1.5}
 
 .conversation-guide{margin:1rem 0;padding:1rem;border:1px solid var(--line);border-radius:10px;background:var(--soft);overflow-wrap:anywhere}.conversation-guide summary{font-weight:600;cursor:pointer}.conversation-guide summary:focus-visible{outline:3px solid var(--ring);outline-offset:3px}.conversation-guide h4{margin:1rem 0 .35rem}.conversation-guide li{margin:.5rem 0}.conversation-guide .coaching-example{border-left:3px solid var(--blue);padding-left:.8rem}
+
+.activity-entry-fields{border:0;padding:0;margin:0;min-width:0}

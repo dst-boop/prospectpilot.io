@@ -95,6 +95,8 @@ $('funnelPanel').addEventListener('toggle',()=>{
 // Form 5500 benefit codes 2J and 2L mark a 401(k) feature and a 403(b) arrangement.
 const planType=p=>{const c=p.benefit_codes||[],t=[c.includes('2J')&&'401(k)',c.includes('2L')&&'403(b)'].filter(Boolean);return t.length?' · '+t.join(' / '):'';};
 async function openLead(id){
+  if(!canLeaveActivity())return;
+  activityDraftBaseline=null;
   const version=++leadDetailVersion;current=null;$('evidenceDetails').open=false;$('relatedPeople').replaceChildren();$('exploreRelated').disabled=true;clearConversation();$('saveReview').disabled=true;$('activityForm').hidden=true;$('conversationBrief').textContent='Loading the conversation brief…';$('contactActions').replaceChildren();$('activityHistory').replaceChildren();
   $('personName').textContent='Loading evidence…';$('personRole').textContent='';
   for(const name of ['personAge','personGates','personSources','personPlans','reviewError','forgetError'])$(name).textContent='';
@@ -117,7 +119,7 @@ function renderAge(a){
   if(!a){$('personAge').replaceChildren();return;}
   const rows=a.status==='unknown'?[['Age','No age clue on this record yet. Add a graduation year, career start or a reported age to estimate one.'],['Career stage',a.career_stage+' (from title)']]:
     [['Age',a.label],['Confidence',a.confidence?`${Math.round(a.confidence*100)}% (${a.status==='reported'?'reported by a source':a.status==='estimated'?'several clues agree':'a single clue'})`:'None: sources disagree, review them'],['Band',a.band_label],['Rollover stage',a.rollover_stage],['Class',a.class_year?`${a.class_year} (${a.class_basis})`:'Unknown'],['Alumni 1977–1990',{yes:'Yes',likely:'Likely',possible:'Possible',no:'No',unknown:'Unknown'}[a.alumni_window]],...(a.reunion?[['Reunion',a.reunion.label]]:[]),['Career stage',a.career_stage+' (from title)'],['Based on',a.basis.join('; ')]];
-  $('personAge').innerHTML=`<h3>Age and career stage${a.inferred?' <span class="pill">Estimate</span>':''}</h3><dl class="age-facts">${rows.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl><small>For sorting your list only. It does not confirm the age criterion, and age never belongs in outreach.</small>`;
+  $('personAge').innerHTML=`<h3>Age and career stage${a.inferred?' <span class="pill">Estimate</span>':''}</h3><dl class="age-facts">${rows.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl><small>Background context only. Age does not qualify a lead or set priority under the advice-decision rule, and age never belongs in outreach.</small>`;
 }
 const scoreNames={qualification:'Qualification',opportunity:'Opportunity',confidence:'Data confidence',contactability:'Contactability'};
 // Each score with the factors that earned it, so the number can be checked.
@@ -165,9 +167,12 @@ $('forgetLead').onclick=async()=>{const button=$('forgetLead');if(!current||butt
   if(!button.dataset.armed){button.dataset.armed='1';button.textContent='Click again to delete permanently';return;}
   button.disabled=true;$('forgetError').textContent='';try{await request('/api/lab/leads/'+encodeURIComponent(id),{method:'DELETE'});selected.delete(id);if(version===leadDetailVersion)$('detail').close();notice('Deleted. Nothing about this person remains except a do-not-call block, if one existed.');await refresh(false);}
   catch(err){if(version===leadDetailVersion)$('forgetError').textContent=err.message;else notice(err.message,true);}finally{button.disabled=false;}};
-$('detail').addEventListener('close',()=>{leadDetailVersion++;current=null;clearConversation();$('saveReview').disabled=true;});
+$('detail').addEventListener('close',()=>{activityDraftBaseline=null;leadDetailVersion++;current=null;clearConversation();$('saveReview').disabled=true;});
 $('runDialog').addEventListener('close',()=>{runDetailVersion++;});
-document.querySelectorAll('[data-close]').forEach(e=>e.onclick=()=>$(e.dataset.close).close());
+document.querySelectorAll('[data-close]').forEach(e=>e.onclick=()=>{if(e.dataset.close==='detail'&&!canLeaveActivity())return;$(e.dataset.close).close();});
+$('detail').addEventListener('cancel',event=>{if(!canLeaveActivity())event.preventDefault();});
+// Browser navigation warnings are best effort. No prospect notes are put in browser storage.
+globalThis.addEventListener?.('beforeunload',event=>{if(activitySaving||hasActivityDraft()){event.preventDefault();event.returnValue='';}});
 document.addEventListener('visibilitychange',()=>{if(document.hidden){clearTimeout(pollTimer);}else if(workspaceReady)refresh(false);else init();});
 // The daily dial limit rolls over in the advisor's own day, and the browser is
 // the only thing here that knows which day that is. Reconciled on every load so
@@ -219,10 +224,10 @@ async function loadActivity(id,version,reset=true){
     $('retryActivity').onclick=()=>{if(version===leadDetailVersion)return loadActivity(id,version,reset);};
   }
 }
-let workLoading=false,workOffset=0,workTotal=0,workRequest=0,currentWorkflow=null,activityKey='',activitySaving=false;
+let workLoading=false,workOffset=0,workTotal=0,workRequest=0,currentWorkflow=null,activityKey='',activitySaving=false,activityDraftBaseline=null;
 const workSelected=new Set();
 const when=value=>value?new Date(value).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'';
-const emptyMessages={research:['No research tasks in this view.','Import contacts or find new prospects to build your queue.'],followups:['No follow-ups yet.','Save an outcome and an agreed next step after a conversation.'],resting:['Nobody is resting right now.','A prospect rests after six touches in 45 days, or after a sequence ends without a reply. They return automatically when the rest period is over.'],today:['Your next actions will appear here.','Import an existing provider CSV or discover people at named employers. Each prospect will have a specific evidence task.'],due:['You’re caught up on due follow-ups.','Scheduled follow-ups return here when their saved time arrives.'],ready:['No prospects are ready for an initial conversation yet.','Review age, US residence, and contact ownership first. Missing retirement and financial evidence remains a conversation topic, not a verified claim.'],review:['No evidence reviews in this view.','Try another worklist or import research candidates.'],enrich:['No missing-contact records in this view.','Contact details that are present but unverified appear under Evidence to review.'],scheduled:['No follow-ups scheduled.','Open a prospect, record the outcome, and choose a next follow-up time.'],meetings:['No meetings saved yet.','Choose Meeting booked on a prospect and record the agreed time.'],clients:['No clients recorded yet.','Choose Became a client on a prospect you have spoken with. They leave the worklist and are counted on the scoreboard.'],closed:['No closed or excluded records.','Contact restrictions and reviewed disqualifications remove records from active work. Clients are listed separately.'],all:['No prospects found.','Import a CSV or change your search.']};
+const emptyMessages={research:['No research tasks in this view.','Import contacts or find new prospects to build your queue.'],followups:['No follow-ups yet.','Save an outcome and an agreed next step after a conversation.'],resting:['Nobody is resting right now.','A prospect rests after six touches in 45 days, or after a sequence ends without a reply. They return automatically when the rest period is over.'],today:['Your next actions will appear here.','Import an existing provider CSV or discover people at named employers. Each prospect will have a specific evidence task.'],due:['You’re caught up on due follow-ups.','Scheduled follow-ups return here when their saved time arrives.'],ready:['No prospects are ready for an initial conversation yet.','Confirm the person’s planning decision, US residence, and a direct route cleared for the intended contact. Review transfer eligibility separately when relevant.'],review:['No evidence reviews in this view.','Try another worklist or import research candidates.'],enrich:['No missing-contact records in this view.','Contact details that are present but unverified appear under Evidence to review.'],scheduled:['No follow-ups scheduled.','Open a prospect, record the outcome, and choose a next follow-up time.'],meetings:['No meetings saved yet.','Choose Meeting booked on a prospect and record the agreed time.'],clients:['No clients recorded yet.','Choose Became a client on a prospect you have spoken with. They leave the worklist and are counted on the scoreboard.'],closed:['No closed or excluded records.','Contact restrictions and reviewed disqualifications remove records from active work. Clients are listed separately.'],all:['No prospects found.','Import a CSV or change your search.']};
 function selectionLabel(){$('workSelection').textContent=`${workSelected.size} selected`;$('enrichExport').disabled=workLoading||!workSelected.size;}
 function loadingWorklist(){
   workLoading=true;
@@ -474,6 +479,17 @@ function activityFields(){const outcome=$('activityOutcome').value,closed=['not_
   const inbound=['connected','follow_up','meeting_booked'].includes(outcome);
   $('inboundField').hidden=!inbound;if(!inbound)$('activityInbound').checked=false;
   $('inviteField').hidden=outcome!=='meeting_booked';$('inviteNote').textContent='Uses the time above. Outlook opens with the invite filled in, and it is sent only when you press Send there.';}
+// Track the loaded form, not every keystroke as a stored draft. Unconfirmed
+// conversations must never become activity records merely by navigating away.
+function activityDraftSnapshot(){return JSON.stringify([
+  $('activityOutcome').value,$('activityChannel').value,$('activityNext').value,
+  $('activityNote').value,Boolean($('activityInbound').checked)
+]);}
+function hasActivityDraft(){return activityDraftBaseline!==null&&activityDraftSnapshot()!==activityDraftBaseline;}
+function canLeaveActivity(){
+  if(activitySaving){$('activityError').textContent='Wait for the save result before leaving this prospect.';return false;}
+  return !hasActivityDraft()||globalThis.confirm('Discard unsaved outcome and follow-up changes?');
+}
 function prepareActivity(){$('prepareDetails').open=['ready','due','meetings'].includes(currentWorkflow.action.bucket);$('outcomeDetails').open=false;renderConversation();$('activityForm').reset();$('activityError').textContent='';activityKey=crypto.randomUUID();
   // The sequence already knows which channel this touch uses and when the next
   // one falls due, so neither is the advisor's to work out.
@@ -484,14 +500,14 @@ function prepareActivity(){$('prepareDetails').open=['ready','due','meetings'].i
   // them look due rather than resting.
   if(planned){const next=new Date(planned);$('activityNext').value=new Date(next.getTime()-next.getTimezoneOffset()*60000).toISOString().slice(0,16);}
   else $('activityNext').value='';
-  activityFields();}
+  activityFields();activityDraftBaseline=activityDraftSnapshot();}
 $('activityOutcome').onchange=activityFields;
 $('activityChannel').onchange=activityFields;
 function activityConflict(id,version,message='This prospect changed. Your note and selected outcome are kept. Refresh the prospect, review the latest activity, then save again.'){
  $('activityError').innerHTML=`${esc(message)} <button type="button" class="secondary" id="reloadActivity">Refresh prospect and keep note</button>`;
  $('reloadActivity').onclick=async()=>{
   if(version!==leadDetailVersion||activitySaving)return;
-  activitySaving=true;$('saveActivity').disabled=true;$('reloadActivity').disabled=true;
+  activitySaving=true;$('activityEntryFields').disabled=true;$('saveActivity').disabled=true;$('reloadActivity').disabled=true;
   try{
    const data=await request('/api/lab/leads/'+encodeURIComponent(id));
    if(version!==leadDetailVersion)return;
@@ -499,13 +515,13 @@ function activityConflict(id,version,message='This prospect changed. Your note a
    $('activityError').textContent='Your note and selected outcome were kept. Review the latest activity before saving.';
    await loadActivity(id,version,false);
   }catch(error){if(version===leadDetailVersion)activityConflict(id,version,'Could not refresh this prospect. Your note is still here. '+error.message);}
-  finally{activitySaving=false;if(version===leadDetailVersion)$('saveActivity').disabled=false;}
+  finally{activitySaving=false;$('activityEntryFields').disabled=false;if(version===leadDetailVersion)$('saveActivity').disabled=false;}
  };
 }
-$('activityForm').onsubmit=async e=>{e.preventDefault();if(!current||!currentWorkflow||activitySaving)return;const version=leadDetailVersion,id=current.lead.id,outcome=$('activityOutcome').value;activitySaving=true;$('saveActivity').disabled=true;$('activityError').textContent='';try{
+$('activityForm').onsubmit=async e=>{e.preventDefault();if(!current||!currentWorkflow||activitySaving)return;const version=leadDetailVersion,id=current.lead.id,outcome=$('activityOutcome').value;activitySaving=true;$('activityEntryFields').disabled=true;$('saveActivity').disabled=true;$('activityError').textContent='';try{
   const result=await request('/api/lab/leads/'+encodeURIComponent(current.lead.id)+'/activity',{method:'POST',body:JSON.stringify({outcome:$('activityOutcome').value,channel:$('activityChannel').disabled?null:$('activityChannel').value,note:$('activityNote').value,next_at:$('activityNext').disabled||!$('activityNext').value?null:new Date($('activityNext').value).toISOString(),direction:$('activityInbound').checked&&!$('inboundField').hidden?'inbound':'outbound',signature:currentWorkflow.action.signature,idempotency_key:activityKey})});
-  if(result.saved){const continueNext=version===leadDetailVersion&&$('continueNext').checked;if(['not_interested','do_not_contact','became_client'].includes(outcome)){workSelected.delete(id);selectionLabel();}if(version===leadDetailVersion)$('detail').close();notice('Outcome saved. Your follow-up and worklist are updated.');await refresh(false);if(continueNext&&!$('detail').open){const next=[...document.querySelectorAll('[data-work-open]')].find(b=>b.dataset.workOpen!==id);if(next)next.click();}}
-}catch(err){if(version===leadDetailVersion){if(err.status===409)activityConflict(current.lead.id,version);else $('activityError').textContent=err.message;}else notice(err.message,true);}finally{activitySaving=false;$('saveActivity').disabled=false;}};
+  if(result.saved){const continueNext=version===leadDetailVersion&&$('continueNext').checked;if(['not_interested','do_not_contact','became_client'].includes(outcome)){workSelected.delete(id);selectionLabel();}if(version===leadDetailVersion){activityDraftBaseline=null;$('detail').close();}activitySaving=false;notice('Outcome saved. Your follow-up and worklist are updated.');await refresh(false);if(continueNext&&!$('detail').open){const next=[...document.querySelectorAll('[data-work-open]')].find(b=>b.dataset.workOpen!==id);if(next)next.click();}}
+}catch(err){if(version===leadDetailVersion){if(err.status===409)activityConflict(current.lead.id,version);else $('activityError').textContent=err.message;}else notice(err.message,true);}finally{activitySaving=false;$('activityEntryFields').disabled=false;$('saveActivity').disabled=false;}};
 $('quickImport').onclick=()=>location.assign('/prospect?import=1');
 // Find new prospects starts from a rollover playbook: pick who, say where, go.
 // The full discovery form stays one click away for a custom search.
