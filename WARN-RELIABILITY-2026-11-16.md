@@ -60,6 +60,14 @@ The candidate fix:
 - Caches transient coverage failures for at most one minute and marks them
   retryable. The existing bounded research worker retry policy still applies.
 - Shows an explicit unavailable-mirror warning in the dashboard.
+- Labels a mirror publication as a mirror refresh, never the underlying state's
+  observation date. Research results explicitly mark that observation date
+  unknown even when the mirror publication is fresh. Official dataset update
+  dates remain independently labeled and assessed, including stale Texas data.
+- Counts unknown notice and effective dates separately. Raw unparsed date text
+  remains visible but explicitly labeled unknown; mirror/retrieval timestamps
+  never fill these fields. Manifest gaps are labeled as absent from the mirror,
+  not an assertion that the state has no notices.
 
 Zero matching records still means only zero matches in the loaded feeds.
 Research remains `partial` when no employer match is found and never asserts

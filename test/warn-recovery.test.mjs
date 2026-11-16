@@ -117,3 +117,27 @@ test('mirror freshness cannot replace an official source date, and absent metada
 test('request deadlines cannot be missing or consume the full WARN source budget',()=>{
   for(const requestTimeoutMs of [0,-1,NaN,Infinity,45000])assert.throws(()=>createWarnService({get:()=>{},requestTimeoutMs}),/deadline/);
 });
+
+
+test('fresh mirror publication does not imply state observation freshness or fill unknown notice dates',async()=>{
+  const service=createWarnService({now:()=>at,get:async url=>{
+    if(url===base+'warn_feeds.json')return result([feed('NY')]);
+    if(url===base+'updated_at.txt')return result(new Date(at).toISOString());
+    if(url===base+'ny.csv')return result('Company,Notice Date,Effective Date\nExample Manufacturing,,2026-12-01\nExample Manufacturing,11/1/26,Winter 2026');
+    if(url.startsWith('https://data.texas.gov/api/views/'))return result({rowsUpdatedAt:Date.UTC(2026,6,7,18,15,59)/1000});
+    return official(url);
+  }});
+  const data=await service.query();
+  assert.equal(data.publication_basis,'mirror');assert.equal(data.publication_stale,false);
+  const ny=data.coverage.find(c=>c.state==='NY'),tx=data.coverage.find(c=>c.state==='TX');
+  assert.equal(ny.publication_basis,'mirror');assert.equal(ny.unknown_notice_dates,2);assert.equal(ny.unknown_effective_dates,1);
+  assert.equal(ny.latest_notice_date,null);assert.equal(tx.publication_basis,'official_dataset');assert.equal(tx.publication_stale,true);
+  assert.deepEqual(data.coverage.find(c=>c.state==='CA'),{state:'CA',status:'not_published',rows:null});
+  const research=await service.research({company:'Example Manufacturing'});
+  assert.equal(research.publication_basis,'mirror');
+  assert.match(research.limitations.join(' '),/NY: underlying state-source observation date is unknown; mirror publication does not establish source freshness/);
+  assert.match(research.limitations.join(' '),/TX: official dataset update is over 48 hours old/);
+  assert.match(research.limitations.join(' '),/NY: 2 unknown notice dates; 1 unknown effective dates/);
+  assert.match(research.limitations.join(' '),/CA: not published in the mirror manifest/);
+  assert.equal(research.records.filter(r=>r.event.state==='NY').every(r=>r.source_date===null&&r.event.notice_date===null),true);
+});
