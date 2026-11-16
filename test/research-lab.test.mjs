@@ -50,7 +50,13 @@ test('review requires current identity; first verification is counted once and d
     await lab.importCSV(user,{csv});const id=(await db.query('SELECT id FROM discovery_leads')).rows[0].id;
     let detail=await lab.detail(user,id);const values={planning_decision:{origin:'inbound_request',topic:'retirement_income',prospect_confirmed:true,identity_confirmed:true},residence:{country:'US',scope:'residence'},contact:{channel:'email',address:'jamie@example.com',identity_confirmed:true,outreach_basis:'person_requested'}};
     for(const [field,value] of Object.entries(values))await lab.review(user,id,{field,value,verdict:'confirmed',source:'Participant evidence',note:'Documented confirmation for this individual.',observed_at:new Date().toISOString(),identity_signature:detail.quality.identity_signature});
-    assert.equal((await lab.detail(user,id)).quality.status,'verified');assert.equal((await lab.metrics(user)).totals.newly_verified,1);
+    const qualified=(await lab.detail(user,id)).quality;
+    assert.equal(qualified.status,'verified');
+    assert.deepEqual(qualified.required_fields,['planning_decision','residence','contact']);
+    const summary=await lab.route(new Request('https://synthetic.example.test/api/lab/summary'),user);
+    assert.equal(summary.totals.newly_verified,1);
+    assert.equal(summary.notes[0],"Newly verified counts each currently qualified person once under the current advice-decision rule: reviewed planning decision, residence and contact. Expired, corrected and deleted records are excluded.");
+    assert.doesNotMatch(summary.notes.join(' '),/five-criterion/);
     const cohort=(await lab.metrics(user)).sources.find(s=>s.acquired===1);
     assert.equal(cohort.qualified,1);assert.equal(cohort.qualification_rate,1);
     await lab.importCSV(user,{csv:csv+'\n',source:'Repeated import'});
