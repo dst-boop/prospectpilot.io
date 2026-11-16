@@ -68,6 +68,22 @@ test('synthetic staging exercises signed-in HTTP networking and lead pipeline wi
     assert.equal((await json('/api/lab/worklist?view=all',{cookie:other})).total,0);
     assert.equal((await request('/api/lab/leads/'+leadId,{cookie:other})).status,404);
 
+    // Complete the advisor loop through real HTTP handlers, with synthetic identity/data only.
+    const activityPath='/api/lab/leads/'+leadId+'/activity';
+    const activityDetail=await json(activityPath,{cookie});
+    const nextAt=new Date(Date.now()+86400000).toISOString();
+    const followUp={outcome:'follow_up',note:'Synthetic prospect asked for a discussion tomorrow.',next_at:nextAt,signature:activityDetail.action.signature,idempotency_key:'pilot-followup-1'};
+    await json(activityPath,{method:'POST',cookie,body:followUp});
+    assert.equal((await json(activityPath,{method:'POST',cookie,body:followUp})).replayed,true);
+    const afterFollowUp=await json(activityPath,{cookie});
+    const savedLead=(await json('/api/lab/leads/'+leadId,{cookie})).lead;
+    assert.equal(savedLead.follow_up_status,'Follow-up');
+    assert.equal(savedLead.follow_up_date,nextAt);
+    assert.equal(afterFollowUp.action.bucket,'scheduled');
+    assert.equal(afterFollowUp.activities.length,1);
+    assert.equal((await request(activityPath,{method:'POST',cookie:other,body:followUp})).status,404);
+    assert.equal((await request(activityPath,{method:'POST',cookie,body:{...followUp,idempotency_key:'pilot-stale'}})).status,409);
+
     // Same durable jobs, task state machine, lists and export; adapters and cost are synthetic.
     const list=await json('/api/prospect/lists',{method:'POST',cookie,body:{name:'Synthetic provider journey'}});
     const search={action:'search',filters:{company:'Synthetic Manufacturing'},size:1,list_id:list.id,idempotency_key:'synthetic-search-0001',max_cost_micros:0};

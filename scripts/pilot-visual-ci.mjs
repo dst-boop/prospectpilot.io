@@ -1,0 +1,43 @@
+import {createRequire} from 'node:module';
+const require=createRequire(import.meta.url);const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'/tmp/pp-browser/node_modules/playwright');
+import {createSyntheticStaging} from '../test/helpers/staging-app.mjs';
+const browser=await chromium.launch({headless:true});
+const staging=await createSyntheticStaging();
+try {
+ const login=await staging.request('/auth/session',{method:'POST',body:{idToken:'synthetic-id-advisor'}});
+ const cookie=login.headers.get('set-cookie').split(';')[0];
+ const json=async(path,body)=>{const r=await staging.request(path,{cookie,method:'POST',body});if(r.status!==200)throw Error(await r.text());return r.json();};
+ const captured=await json('/api/prospect/networking',{request_key:'visual-fixture-0001',kind:'in_person',person:{first_name:'Jordan',last_name:'Fixture',company:'Synthetic Manufacturing',email:'jordan@example.com'},context:'Fictional event',occurred_on:new Date().toISOString().slice(0,10),note:'Synthetic QA only'});
+ const handoff=await json('/api/lab/contact-import',{ids:[captured.capture.contact_id]});
+ const leadId=handoff.lead_ids[0];const detail=await (await staging.request('/api/lab/leads/'+leadId,{cookie})).json();
+ for(const [field,value] of Object.entries({residence:{country:'US',scope:'residence',state:'NY'},planning_decision:{origin:'accepted_introduction',topic:'retirement_income',identity_confirmed:true,prospect_confirmed:true},contact:{channel:'email',address:'jordan@example.com',identity_confirmed:true,outreach_basis:'person_requested'}})) await json('/api/lab/leads/'+leadId+'/review',{field,value,verdict:'confirmed',source:'Synthetic fixture',note:'Fictional evidence',observed_at:new Date().toISOString(),identity_signature:detail.quality.identity_signature});
+ const context=await browser.newContext({viewport:{width:1440,height:1000}});
+ await context.route('**/*',async route=>{
+  const req=route.request(),url=new URL(req.url());
+  if(url.origin!=='https://pilot.test')return route.abort();
+  const response=await staging.request(url.pathname+url.search,{cookie,method:req.method(),...(req.postData()?{body:JSON.parse(req.postData())}:{})});
+  await route.fulfill({status:response.status,headers:Object.fromEntries(response.headers),body:Buffer.from(await response.arrayBuffer())});
+ });
+ const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(String(e)));
+ await page.goto('https://pilot.test/lab');await page.waitForTimeout(1500);
+ await page.locator('#startNext').click();await page.locator('#detail[open]').waitFor();
+ await page.locator('[data-close=detail]').click();await page.locator('#startNext').click();
+ await page.locator('#outcomeDetails > summary').click();
+ await page.locator('#activityOutcome').selectOption('follow_up');
+ await page.locator('#activityNote').fill('Synthetic prospect requested follow-up tomorrow.');
+ await page.locator('#activityNext').fill(new Date(Date.now()+86400000).toISOString().slice(0,16));
+ await page.locator('#continueNext').uncheck();
+ await page.screenshot({path:'/tmp/pilot-desktop-detail.png',fullPage:true});
+ await page.setViewportSize({width:390,height:844});await page.screenshot({path:'/tmp/pilot-mobile-detail.png',fullPage:true});
+ await page.locator('#saveActivity').click();
+ await page.waitForTimeout(500);
+ const saved=await (await staging.request('/api/lab/leads/'+leadId,{cookie})).json();
+ if(saved.lead.follow_up_status!=='Follow-up')throw Error('UI follow-up save failed: '+await page.locator('#activityError').innerText());
+ await page.locator('#detail').waitFor({state:'hidden'});
+ await page.setViewportSize({width:1440,height:1000});
+ console.log('TITLE',await page.title());console.log((await page.locator('body').innerText()).slice(0,7000));
+ await page.screenshot({path:'/tmp/pilot-desktop.png',fullPage:true});
+ await page.setViewportSize({width:390,height:844});await page.screenshot({path:'/tmp/pilot-mobile.png',fullPage:true});
+ if(errors.length)throw Error(errors.join('\n'));console.log('ERRORS',errors);console.log('OVERFLOW',await page.evaluate(()=>({viewport:innerWidth,scroll:document.documentElement.scrollWidth})));
+ await browser.close();
+}finally{await staging.close();}
