@@ -200,6 +200,8 @@ export function createProspectWorkspace({pool,jobs,checkDomain=createDomainCheck
      merged.import_warnings=[...new Set([...(old.import_warnings||[]),...(contact.import_warnings||[])])];
      merged.phone_restrictions={};for(const route of ['direct','mobile'])merged.phone_restrictions[route]=old.phone_restrictions?.[route]===true||contact.phone_restrictions?.[route]===true?true:old.phone_restrictions?.[route]??contact.phone_restrictions?.[route]??null;
      if(!old.phone&&merged.phone)merged.phone_origin=contact.phone_origin;
+     // A later explicit direct claim for the retained number is no longer merely a mobile fallback.
+     if(contact.phone_origin==='direct'&&contact.phone===merged.phone)merged.phone_origin='direct';
      // Never overwrite verification or clear a suppression through a CSV import.
      merged.suppressed=old.suppressed||contact.suppressed;
      if(!old.email&&merged.email)merged.email_status='unverified';if(!old.phone&&merged.phone)merged.phone_status='unverified';
