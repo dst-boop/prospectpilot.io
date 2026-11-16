@@ -1,7 +1,7 @@
 // This is a read-only explanation of existing evidence, never a qualification gate.
 const FIELD_LABELS = {
   company: 'Employer', current_title: 'Role', city: 'Reported city', state: 'Reported state',
-  age: 'Age', residence: 'US residence', contact: 'Contact ownership',
+  age: 'Age', residence: 'US residence', contact: 'Contact ownership', planning_decision: 'Confirmed planning decision',
   retirement: 'Retirement assets and transfer eligibility', movable_assets: 'Retained assets eligible to move',
   net_worth: 'Disclosed net worth',
 };
@@ -49,12 +49,12 @@ export function briefEvidence(lead, quality, signal, event, now = new Date()) {
       statement: `${signal.type.replaceAll('_', ' ')} documented for ${signal.date}.`,
       event_date: signal.date, identity_basis: signal.identity_basis, citation: citation(event, now)});
     if (signal.rank !== 2) unknowns.push({field: 'personal_event', state: 'stale',
-      reason: 'The event or its observation is over 180 days old. Recheck the source before treating it as current context.'});
-  } else unknowns.push({field: 'personal_event', state: 'unknown',
+      reason: 'The event is outside the current worklist rules. Review the source and the person’s latest decision.'});
+  } else if (signal.kind !== 'planning_decision') unknowns.push({field: 'personal_event', state: 'unknown',
     reason: 'No current reviewed personal event is recorded. An employer announcement does not establish that this person was affected.'});
 
   const required = quality.required_fields || Object.keys(quality.gates || {});
-  for (const field of required) {
+  for (const field of new Set([...required, 'retirement'])) {
     const gate = quality.gates?.[field];
     if (!gate) continue;
     const evidence = gate.evidence;
@@ -90,7 +90,8 @@ export function briefEvidence(lead, quality, signal, event, now = new Date()) {
   if (quality.status === 'excluded') unknowns.unshift({field: 'restriction', state: 'blocked',
     reason: 'This record is excluded or restricted. Research evidence does not remove the hold.'});
   return {as_of: now.toISOString(), reviewed, reported, unknowns,
-    interpretation: signal.kind === 'personal_event'
+    interpretation: signal.kind === 'planning_decision' ? 'The person confirmed a planning topic. Use their stated timing and review suitability through your firm.'
+      : signal.kind === 'personal_event'
       ? 'A documented professional event may provide conversation context. It does not establish a financial need, account balance, transfer eligibility, or interest in advice.'
       : 'Employer and role information can guide further research. It does not establish a personal event, financial need, retirement assets, or interest in advice.',
     limits: 'Selection is a research priority, not a recommendation to transfer assets or permission to contact. Follow the saved next action and any contact or pacing restrictions. Nothing has been sent.'};

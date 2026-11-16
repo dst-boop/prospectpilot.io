@@ -1,10 +1,11 @@
 import {prospectBrief,workflowViewMatches,contextualDraft} from './prospect-brief.mjs';
 import {randomUUID} from 'node:crypto';
 import {assessLead, leadIdentity, hash, csvCell, leadScores} from './lead-quality.mjs';
-import {cadenceState, admitTouch, restPeriod, nextFollowUp, composeTouch, firstTouchSLA, dialBudget, TOUCH_OUTCOMES, INBOUND_OUTCOMES} from './outreach-cadence.mjs';
+import {cadenceState, admitTouch, restPeriod, nextFollowUp, composeTouch, firstTouchSLA, dialBudget, addBusinessDays, TOUCH_OUTCOMES, INBOUND_OUTCOMES} from './outreach-cadence.mjs';
 import {phoneReadiness} from './prospect-data-quality.mjs';
 import {advisorPipeline} from './advisor-pipeline.mjs';
 import {conversationGuidance} from './advisor-conversation-guidance.mjs';
+import {ADVICE_TARGET, DAY_MS, DECISION_REVIEW_DAYS} from './opportunity-policy.mjs';
 
 export function withDirectoryRestrictions(lead,contacts=[]) {
  const imported_dnc=new Set(lead.imported_dnc||[]);
@@ -21,7 +22,7 @@ const parse=v=>typeof v==='string'?JSON.parse(v):v;
 // is identical, so both are named here rather than checked one at a time.
 const TERMINAL_BUCKETS=new Set(['closed','clients']);
 const fail=(status,message)=>Object.assign(Error(message),{status});
-const fields={age:'Confirm current age',residence:'Confirm US residence',contact:'Verify contact ownership',retirement:'Ask about retained retirement assets and transfer eligibility',net_worth:'Obtain an authorized financial disclosure',movable_assets:'Confirm at least $100,000 in retained assets eligible to move'};
+const fields={planning_decision:'Confirm the planning decision and its timing',age:'Confirm current age',residence:'Confirm US residence',contact:'Verify route ownership and permission',retirement:'Ask about retained retirement assets and transfer eligibility',net_worth:'Obtain an authorized financial disclosure',movable_assets:'Confirm at least $100,000 in retained assets eligible to move'};
 const outcomes={no_answer:'Contacted',connected:'Contacted',follow_up:'Follow-up',meeting_booked:'Meeting Set',
   // A booked meeting is an intention. Whether it happened is a separate fact,
   // and without it a show rate cannot be reported at all.
@@ -33,6 +34,40 @@ const outcomes={no_answer:'Contacted',connected:'Contacted',follow_up:'Follow-up
   became_client:'Client',
   not_interested:'Not a Fit',do_not_contact:'Not a Fit',reopen:'Researching'};
 export const workflowSignature=lead=>hash(JSON.stringify([leadIdentity(lead),lead.follow_up_status,lead.follow_up_date,lead.notes,lead.suppressed,lead.advisor_activity_id]));
+
+function adviceAction(lead, quality, base, cadence) {
+  const signal = quality.priority_signal;
+  const held = cadence?.status === 'hold';
+  if (signal?.kind === 'planning_decision') {
+    const rank = signal.origin === 'inbound_request' ? 2 : signal.origin === 'accepted_introduction' ? 4
+      : signal.days_to_decision !== null && signal.days_to_decision <= 30 ? 6 : 10;
+    const decision_by = signal.decision_by || null;
+    if (quality.status !== 'verified') {
+      const field = quality.gaps[0];
+      return {...base, cadence, contact:null, decision_by, bucket:'review', rank, field,
+        label:fields[field], reason:quality.gates[field].reason};
+    }
+    if (signal.origin === 'confirmed_conversation' && signal.days_to_decision > 90) {
+      return {...base, cadence, contact:null, decision_by, bucket:'scheduled', rank:70,
+        label:'Planning decision ahead', reason:'Revisit as the stated date approaches or record a time the person requested.'};
+    }
+    const label = signal.origin === 'inbound_request' ? 'Respond to the advice request'
+      : signal.origin === 'accepted_introduction' ? 'Follow up on the accepted introduction' : 'Prepare for the planning decision';
+    return {...base, cadence, decision_by, bucket:'ready', rank:held?26:rank, held, contact:held?null:base.contact, label,
+      reason:held?cadence.reason:`${signal.topic_label}.${decision_by?' Stated decision date '+decision_by+'.':''}`};
+  }
+  if (signal?.kind === 'personal_event' && quality.gates.residence.state === 'confirmed') {
+    if (base.contact?.outreach_basis === 'firm_cleared') {
+      return {...base, cadence, bucket:'ready', rank:held?28:22, held, contact:held?null:base.contact,
+        label:'Consider a relevant introduction', reason:held?cadence.reason:'A reviewed professional event provides context. Ask whether a conversation would be useful.'};
+    }
+    const anchor = lead.first_name && lead.last_name && (lead.linkedin_url || (lead.company && lead.current_title));
+    if (anchor && quality.gates.contact.state === 'unknown') return {...base, cadence, bucket:'enrich', rank:27, field:'contact',
+      label:'Find a direct contact route', reason:'A current personal event and reviewed residence support a targeted lookup.'};
+  }
+  const field = signal?.kind === 'personal_event' ? quality.gaps.find(f=>f!=='planning_decision')||'planning_decision' : 'planning_decision';
+  return {...base, cadence, contact:null, bucket:'review', rank:33, field, label:fields[field], reason:quality.gates[field].reason};
+}
 
 export function nextAction(lead,quality,now=new Date(),cadence=null) {
   const due=lead.follow_up_date?new Date(lead.follow_up_date):null;
@@ -59,7 +94,7 @@ export function nextAction(lead,quality,now=new Date(),cadence=null) {
   if(blocked)return {...base,bucket:'closed',rank:90,label:'Excluded from this campaign',reason:quality.warnings[0]||Object.values(quality.gates).find(g=>g.state==='failed')?.reason||'Identity excluded.',contact:null};
   if(quality.status==='identity_review')return {...base,bucket:'review',rank:55,label:'Resolve identity',reason:'Conflicting identifiers must be resolved before contact.',contact:null};
   if(lead.follow_up_status==='Not a Fit')return {...base,bucket:'closed',rank:90,label:'No further follow-up',reason:'Marked not interested or not a fit.',contact:null};
-  if(lead.follow_up_status==='Meeting Set')return {...base,bucket:'meetings',rank:0,label:'Prepare for the meeting',reason:validDue&&due<now?'Meeting time has passed. Record the outcome or next follow-up.':'Review the evidence gaps before your conversation.'};
+  if(lead.follow_up_status==='Meeting Set')return {...base,bucket:'meetings',rank:0,label:'Prepare for the meeting',held:quality.target===ADVICE_TARGET&&cadence?.status==='hold',reason:validDue&&due<now?'Meeting time has passed. Record the outcome or next follow-up.':'Review the evidence gaps before your conversation.'};
   // Pacing outranks both readiness and any saved follow-up date: a person who
   // may not be contacted is not "due", whatever time is stored against them.
   if(cadence&&['resting','capped'].includes(cadence.status)&&!['Meeting Set','Not a Fit'].includes(lead.follow_up_status))
@@ -68,11 +103,16 @@ export function nextAction(lead,quality,now=new Date(),cadence=null) {
   // shut, or the day's dials are spent -- is still due, but it does not head a
   // list of things that can actually be done. Without this the saved date wins
   // and the worklist keeps offering the call after the budget is gone.
-  if(validDue&&due<=now&&cadence?.step&&!cadence.step.ready&&cadence.step.due)
+  if(validDue&&due<=now&&(cadence?.status==='hold'&&quality.target===ADVICE_TARGET||cadence?.step&&!cadence.step.ready&&cadence.step.due))
     return {...base,cadence,bucket:'due',rank:45,held:true,label:'Follow-up due, on hold',
-      reason:cadence.step.hold||cadence.reason};
-  if(validDue&&due<=now)return {...base,cadence,bucket:'due',rank:0,label:'Follow-up due',reason:contact?'Review the last conversation and use the agreed contact route.':'A follow-up is due; verify a contact route before using it.'};
-  if(validDue)return {...base,cadence,bucket:'scheduled',rank:70,label:'Follow-up scheduled',reason:'This person returns to your due list at the saved time.'};
+      ...(quality.target===ADVICE_TARGET?{contact:null}:{}),reason:cadence.step?.hold||cadence.reason};
+  if(validDue&&due<=now){
+    const promised=['Follow-up','Met'].includes(lead.follow_up_status);
+    const rank=quality.target!==ADVICE_TARGET?0:!contact?18:promised?0:14;
+    return {...base,cadence,bucket:'due',rank,label:'Follow-up due',reason:contact?'Review the last interaction and the recorded contact basis.':'A follow-up is due; verify a contact route before using it.'};
+  }
+  if(validDue)return {...base,cadence,...(quality.target===ADVICE_TARGET?{contact:null}:{}),bucket:'scheduled',rank:70,label:'Follow-up scheduled',reason:'This person returns to your due list at the saved time.'};
+  if(quality.target===ADVICE_TARGET)return adviceAction(lead,quality,base,cadence);
   if(contact&&(quality.target==='rollover_100k'||quality.gates.age.state==='confirmed')&&quality.gates.residence.state==='confirmed')return {...base,cadence,bucket:'ready',rank:quality.status==='verified'?10:20,field:quality.gaps[0],label:quality.status==='verified'?'Prepare an introductory conversation':'Confirm the remaining fit criteria',reason:quality.status==='verified'?'All required criteria have current reviewed evidence.':quality.gaps.map(g=>fields[g]).join('; ')+'.'};
   const gap=quality.gaps.includes('contact')?'contact':quality.gaps.find(g=>['age','residence'].includes(g))||quality.gaps[0];
   return {...base,cadence,bucket:gap==='contact'&&quality.gates.contact.state==='unknown'?'enrich':'review',rank:30+(100-quality.score)/10,label:fields[gap]||'Review this prospect',reason:quality.gates[gap]?.reason||'Review the saved evidence.',field:gap};
@@ -106,6 +146,24 @@ export function dailyWorklistSummary(items,at=new Date()) {
   const reviewed=due.filter(item=>item.readiness.state!=='paused'&&item.readiness.contact_reviewed);
   return {as_of:at.toISOString(),due:due.length,with_reviewed_route:reviewed.length,
     needs_contact_review:due.length-held.length-reviewed.length,on_hold:held.length};
+}
+
+function adviceDraft(action, signal, advisor) {
+  if (!action.contact || action.held || !['ready','due','meetings'].includes(action.bucket)) return null;
+  const {channel} = action.contact;
+  const name = advisor.name || '[your name]';
+  const firm = advisor.firm || '[your firm]';
+  const opening = signal?.origin === 'inbound_request' ? 'Thank you for reaching out.'
+    : signal?.origin === 'accepted_introduction' ? 'Thank you for accepting the introduction.' : '';
+  const question = 'What would make a conversation useful to you, and what timing works for you?';
+  const from = `${name} with ${firm}`;
+  const body = channel === 'phone' ? [`Hi, this is ${from}.`, opening, question].filter(Boolean).join(' ')
+    : [['Hello,', `This is ${from}.`, opening].filter(Boolean).join(' '), question, name].join('\n\n');
+  const needs = [];
+  if (!advisor.name) needs.push('your name in the advisor profile');
+  if (!advisor.firm) needs.push('your firm in the advisor profile');
+  return {step:'manual_review',channel,subject:channel==='email'?'A time to talk':null,body,needs,complete:needs.length===0,
+    disclosure:'Review the draft and use the channel within the recorded contact scope.'};
 }
 
 export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visibleSQL,now=()=>new Date(),targetFor=async()=> 'legacy'}) {
@@ -203,10 +261,13 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const quality=assessLead(lead,rows.map(r=>parse(r.payload)),{now:now(),target:await targetFor(user)});
     const cadence=await cadenceFor(user,id,lead,quality,pool,await dialsToday(user));
     const action=nextAction(lead,quality,now(),cadence),brief=prospectBrief(lead,quality,rows.map(r=>parse(r.payload)),now());
+    const advice=quality.target===ADVICE_TARGET;
+    const terminal=TERMINAL_BUCKETS.has(action.bucket);
+    const draft=terminal?null:advice?(action.contact?adviceDraft(action,quality.priority_signal,await profile(user)):null)
+      :cadence.step?contextualDraft(composeTouch(cadence.step,{lead,advisor:await profile(user),now:now(),sent:cadence.progress.done}),brief):null;
     return {action,cadence,brief,conversation_guidance:conversationGuidance(action,quality,cadence),
       // The words for the next touch, not a description of them.
-      draft:TERMINAL_BUCKETS.has(action.bucket)||!cadence.step?null:contextualDraft(composeTouch(cadence.step,{lead,advisor:await profile(user),now:now(),sent:cadence.progress.done}),brief),
-      schedules:TERMINAL_BUCKETS.has(action.bucket)?null:nextFollowUp(cadence,{now:now()}),
+      draft,schedules:terminal||advice?null:nextFollowUp(cadence,{now:now()}),
       // This list has always carried every advisor's entries and never said so,
       // which reads as your own history and makes a shared cap inexplicable.
       // `by` is the colleague who logged it, and null when it was you.
@@ -220,10 +281,21 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     offset=Number(offset);limit=Number(limit);
     if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(limit)||limit<1||limit>100)throw fail(422,'Invalid worklist page.');
     const term=String(search).trim().slice(0,100).replace(/[%_\\]/g,'');
+    const target=await targetFor(user),assessedAt=now();
+    const recentDecision=new Date(assessedAt.getTime()-DECISION_REVIEW_DAYS*DAY_MS).toISOString();
     const rows=(await pool.query(`SELECT d.id,d.payload,(SELECT jsonb_agg(pc.payload) FROM advisor_contact_links acl JOIN prospect_contacts pc ON pc.id=acl.contact_id AND pc.user_id=acl.user_id WHERE acl.lead_id=d.id AND acl.user_id=d.owner_user_id) AS linked_contacts,count(*) OVER()::int AS scope_total FROM discovery_leads d
       LEFT JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2
+      LEFT JOIN lab_observations decision ON decision.lead_id=d.id AND decision.user_id=$2 AND decision.field='planning_decision'
       WHERE ${visibleSQL} AND ($3='' OR concat_ws(' ',d.payload::jsonb->>'first_name',d.payload::jsonb->>'last_name',d.payload::jsonb->>'company') ILIKE $3)
-      ORDER BY d.payload::jsonb->>'follow_up_date' ASC NULLS LAST,q.score DESC NULLS LAST,d.id LIMIT 2000`,['wealth-management',user.uid,term?`%${term}%`:''])).rows;
+      ORDER BY CASE WHEN $4 THEN CASE
+        WHEN d.payload::jsonb->>'follow_up_status'='Client' OR d.payload::jsonb->>'follow_up_status'='Not a Fit' THEN 5
+        WHEN d.payload::jsonb->>'follow_up_status' IN ('Follow-up','Met','Meeting Set')
+          AND d.payload::jsonb->>'follow_up_date' <= $5 THEN 0
+        WHEN decision.payload->>'observed_at' >= $6 AND decision.payload->>'verdict'='confirmed'
+          AND COALESCE(decision.payload->'value'->>'decision_by', left($5,10)) >= left($5,10) THEN 1
+        ELSE 2 END ELSE 0 END,
+        d.payload::jsonb->>'follow_up_date' ASC NULLS LAST,q.score DESC NULLS LAST,d.id LIMIT 2000`,
+      ['wealth-management',user.uid,term?`%${term}%`:'',target===ADVICE_TARGET,assessedAt.toISOString(),recentDecision])).rows;
     const ids=rows.map(r=>r.id);
     const records=rows.length?(await pool.query('SELECT lead_id,payload FROM lab_observations WHERE user_id=$1 AND lead_id=ANY($2::text[])',[user.uid,ids])).rows:[];
     const observations=new Map();for(const r of records){if(!observations.has(r.lead_id))observations.set(r.lead_id,[]);observations.get(r.lead_id).push(parse(r.payload));}
@@ -243,8 +315,6 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const weights=(await pool.query('SELECT configuration FROM lab_settings WHERE user_id=$1',[user.uid])).rows[0]?.configuration?.score_weights;
     // Directory restrictions are applied before anything is assessed or paced,
     // so a phone that became do-not-call in the directory is refused here too.
-    const target=await targetFor(user);
-    const assessedAt=now();
     const all=rows.map(r=>{const lead=withDirectoryRestrictions({...parse(r.payload),id:r.id},r.linked_contacts),quality=assessLead(lead,observations.get(r.id)||[],{now:assessedAt,target});
       const cadence=cadenceState({activities:history.get(r.id)||[],lead,quality,rest:resting.get(r.id)||null,now:assessedAt,dials});
       const s=leadScores(lead,quality,{now:assessedAt,weights});
@@ -253,10 +323,16 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
       return {lead:{id:lead.id,first_name:lead.first_name,last_name:lead.last_name,company:lead.company,current_title:lead.current_title,location:lead.location||[lead.city,lead.state].filter(Boolean).join(', '),notes:lead.notes||''},quality,scores,signal:prospectBrief(lead,quality,observations.get(r.id)||[],assessedAt).signal,action,readiness:worklistReadiness(action,quality)};});
     // Review and enrich share one group; the advisor's priority orders it.
     const group=action=>action.rank>=30&&action.rank<=40?30:action.rank;
-    all.sort((a,b)=>group(a.action)-group(b.action)||(a.action.due_at||'').localeCompare(b.action.due_at||'')||b.signal.rank-a.signal.rank||(a.signal.rank===2?b.signal.date.localeCompare(a.signal.date):0)||b.scores.priority.score-a.scores.priority.score||b.quality.score-a.quality.score||a.lead.id.localeCompare(b.lead.id));
+    const signalDateOrder=(a,b)=>a.kind==='planning_decision'&&b.kind==='planning_decision'
+      ? a.date.localeCompare(b.date) : (b.date||'').localeCompare(a.date||'');
+    all.sort((a,b)=>group(a.action)-group(b.action)||(a.action.due_at||a.action.decision_by||'9999').localeCompare(b.action.due_at||b.action.decision_by||'9999')
+      ||b.signal.rank-a.signal.rank||signalDateOrder(a.signal,b.signal)||b.scores.priority.score-a.scores.priority.score
+      ||b.quality.score-a.quality.score||a.lead.id.localeCompare(b.lead.id));
     const counts={today:0,ready:0,due:0,review:0,enrich:0,scheduled:0,meetings:0,resting:0,clients:0,closed:0,all:all.length};
-    for(const r of all){counts[r.action.bucket]++;if(['due','ready','review','enrich'].includes(r.action.bucket))counts.today++;}
-    const filtered=all.filter(r=>workflowViewMatches(view,r.action.bucket));
+    const inToday=item=>workflowViewMatches('today',item.action.bucket)||(target===ADVICE_TARGET
+      &&item.action.bucket==='meetings'&&item.action.due_at&&Date.parse(item.action.due_at)<=assessedAt.getTime()+DAY_MS);
+    for(const r of all){counts[r.action.bucket]++;if(inToday(r))counts.today++;}
+    const filtered=all.filter(r=>view==='today'?inToday(r):workflowViewMatches(view,r.action.bucket));
     const activity=(await pool.query(`SELECT count(*) FILTER(WHERE a.direction IS DISTINCT FROM 'inbound')::int AS attempts,
       count(*) FILTER(WHERE a.outcome IN ('connected','follow_up','meeting_booked','meeting_held'))::int AS conversations,
       count(DISTINCT a.lead_id) FILTER(WHERE a.outcome='meeting_booked')::int AS meetings FROM advisor_activities a
@@ -351,9 +427,12 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
         const verdict=admitTouch(before,{channel,now:at,direction:inbound?'inbound':'outbound'});
         if(!verdict.ok)throw fail(verdict.status,verdict.reason);
         step=verdict.step;
-        // The schedule is the application's to keep. An unanswered touch does
-        // not ask the advisor for a date; the sequence already knows the next one.
-        if(!next&&input.outcome==='no_answer')next=nextFollowUp(before,{now:at})?.at||null;
+        // Space a possible retry on a reviewed route. A phone or email that
+        // went unanswered keeps Contacted status rather than a commitment.
+        if(!next&&input.outcome==='no_answer') {
+          if(quality.target!==ADVICE_TARGET) next=nextFollowUp(before,{now:at})?.at||null;
+          else if(quality.gates.contact.state==='confirmed'&&quality.priority_signal) next=addBusinessDays(at,1).toISOString();
+        }
       }
 
       if(input.signature!==workflowSignature(lead))throw fail(409,'This prospect changed. Close and reopen the record before saving. Your note has not been discarded.');
@@ -386,14 +465,16 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
   }
   async function exportEnrichment(user,input) {
     if(!Array.isArray(input.ids)||!input.ids.length||input.ids.length>1000)throw fail(422,'Select 1–1,000 prospects.');
+    const target=await targetFor(user);
     const rows=[];for(const id of [...new Set(input.ids)]){
       // Nobody pays a provider to enrich a record they have already closed, and
       // a client's details are the firm's to hold by then, not a research gap.
       // Resolve identity first: conflicting identifiers cannot form a provider request.
       const {lead}=await accessible(user,id),{action}=await detail(user,id);if(TERMINAL_BUCKETS.has(action.bucket)||lead.identity_status==='review')continue;
+      if(target===ADVICE_TARGET && action.bucket!=='enrich')continue;
       rows.push([lead.first_name,lead.last_name,lead.company,lead.current_title,lead.city,lead.state,lead.linkedin_url,action.label,'Reported identifiers only; verify ownership.']);
     }
-    if(!rows.length)throw fail(422,'No selected prospects are eligible for enrichment export. Resolve pending identity reviews or select an active prospect; closed, excluded and client records are omitted.');
+    if(!rows.length)throw fail(422,'No selected prospects are eligible for enrichment export. Resolve pending identity reviews and select a current public event with reviewed residence and a missing contact route.');
     const csv='\uFEFF'+[['First Name','Last Name','Company Name','Job Title','City','State','LinkedIn URL','Research Task','Data Status'],...rows].map(r=>r.map(csvCell).join(',')).join('\r\n');
     return new Response(csv,{headers:{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="prospectpilot-enrichment.csv"'}});
   }

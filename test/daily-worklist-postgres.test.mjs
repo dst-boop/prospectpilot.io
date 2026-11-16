@@ -16,7 +16,7 @@ async function verifyDaily(pool) {
   const own=(await lab.list(user)).leads.map(item=>item.lead),privateId=(await lab.list(other)).leads[0].lead.id;
   const jamie=own.find(lead=>lead.first_name==='Jamie'),future=own.find(lead=>lead.first_name==='Robin');
   const detail=await lab.detail(user,jamie.id);
-  await lab.review(user,jamie.id,{field:'contact',value:{channel:'email',address:jamie.email,identity_confirmed:true},verdict:'confirmed',source:'Synthetic CI fixture',note:'Fictional reviewed ownership, no real contact.',observed_at:at.toISOString(),identity_signature:detail.quality.identity_signature});
+  await lab.review(user,jamie.id,{field:'contact',value:{channel:'email',address:jamie.email,identity_confirmed:true,outreach_basis:'firm_cleared'},verdict:'confirmed',source:'Synthetic CI fixture',note:'Fictional reviewed ownership, no real contact.',observed_at:at.toISOString(),identity_signature:detail.quality.identity_signature});
   await pool.query(`UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{follow_up_date}',to_jsonb($2::text))::text WHERE id=ANY($1::text[])`,[[...own.map(lead=>lead.id),privateId],'2026-09-10T10:00:00Z']);
   await pool.query(`UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{follow_up_date}',to_jsonb($2::text))::text WHERE id=$1`,[future.id,'2026-09-13T10:00:00Z']);
   const snapshot=async()=>({leads:(await pool.query('SELECT id,payload FROM discovery_leads ORDER BY id')).rows,observations:(await pool.query('SELECT lead_id,user_id,field,payload FROM lab_observations ORDER BY lead_id,user_id,field')).rows,activities:(await pool.query('SELECT * FROM advisor_activities ORDER BY id')).rows});

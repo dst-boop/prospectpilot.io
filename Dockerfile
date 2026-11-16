@@ -17,6 +17,7 @@ COPY --from=build /app/node_modules ./node_modules
 COPY package.json ./
 COPY contact-benchmark.mjs ./
 COPY advisor-pipeline.mjs advisor-conversation-guidance.mjs ./
+COPY opportunity-policy.mjs ./
 COPY --from=build /app/generated ./generated
 COPY scripts ./scripts
 COPY prospect-brief.mjs prospect-brief-evidence.mjs advisor-workflow.mjs outreach-cadence.mjs forget.mjs lead-costs.mjs web-research.mjs lab.html lab.css lab-client.js lead-quality.mjs age-band.mjs source-catalog.mjs plan-catalog.mjs rollover-playbooks.mjs lab-sources.mjs robots-policy.mjs research-lab.mjs ./
@@ -26,6 +27,6 @@ COPY prospect-preparation.mjs ./
 COPY team-lead-hub.mjs advisor-reassignment-preview.mjs team-hub.html team-hub-client.js team-hub.css ./
 COPY networking-capture.mjs networking.html networking-client.js networking.css ./
 COPY migrations ./migrations
-COPY release-readiness.mjs server.mjs http-server.mjs handler.mjs login-destination.mjs database.mjs migrate.mjs home.html site.css brand.svg login.html research-jobs.mjs research-worker.mjs warn.mjs warn.html warn-client.js native-research.mjs linkedin.mjs linkedin.html linkedin-client.js ./
+COPY readonly-fallback.mjs release-readiness.mjs server.mjs http-server.mjs handler.mjs login-destination.mjs database.mjs migrate.mjs home.html site.css brand.svg login.html research-jobs.mjs research-worker.mjs warn.mjs warn.html warn-client.js native-research.mjs linkedin.mjs linkedin.html linkedin-client.js ./
 USER node
 CMD ["node","server.mjs"]

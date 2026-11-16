@@ -34,7 +34,7 @@ test('PostgreSQL serializes a new review behind an in-flight assessment',{
   await lab.importCSV(user,{csv:'First Name,Last Name,Company,Estimated Age Range,Country\nJamie,Rivera,Example Manufacturing,62,US'});
   const row=(await pool.query('SELECT id,payload FROM discovery_leads')).rows[0],lead={...JSON.parse(row.payload),id:row.id};
   assessment=lab.detail(user,row.id);await started;
-  review=lab.review(user,row.id,{field:'age',verdict:'rejected',source:'Synthetic test',note:'Fictional review used only for lock validation.',observed_at:new Date().toISOString(),identity_signature:leadIdentity(lead)});
+  review=lab.review(user,row.id,{field:'residence',verdict:'rejected',source:'Synthetic test',note:'Fictional review used only for lock validation.',observed_at:new Date().toISOString(),identity_signature:leadIdentity(lead)});
   let blocked=false;
   for(let i=0;i<100&&!blocked;i++){
    if(reviewPid)blocked=(await admin.query('SELECT cardinality(pg_blocking_pids($1))>0 AS blocked',[reviewPid])).rows[0].blocked;
