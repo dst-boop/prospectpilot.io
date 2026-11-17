@@ -24,6 +24,7 @@ COPY prospect-brief.mjs prospect-brief-evidence.mjs advisor-workflow.mjs outreac
 COPY prospect.html prospect.css prospect-client.js prospect-workspace.mjs prospect-providers.mjs prospect-data-quality.mjs prospect-domain-check.mjs ./
 COPY prospect-jobs.mjs prospect-autopilot.mjs prospect-jobs-client.js billing.mjs ./
 COPY prospect-preparation.mjs ./
+COPY audience.html audience.css audience-client.js audience-catalog.mjs ./
 COPY team-lead-hub.mjs advisor-reassignment-preview.mjs team-hub.html team-hub-client.js team-hub.css ./
 COPY networking-capture.mjs networking.html networking-client.js networking.css ./
 COPY migrations ./migrations
