@@ -49,10 +49,16 @@ try{
  await page.locator('#setupForm button[type=submit]').click();
  await page.screenshot({path:'/tmp/audience-mobile-plan.png',fullPage:true});
  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'plan mobile overflow');
+ assert.equal(await page.locator('#eventTools').getAttribute('open'),null);
+ assert.equal(await page.locator('#exclusionTools').getAttribute('open'),null);
+ await page.locator('#eventTools > summary').focus();await page.keyboard.press('Enter');
+ await page.locator('#eventDescription').waitFor({state:'visible'});
  await page.locator('#eventDescription').fill('a synthetic professional update');await page.locator('#eventDate').fill('2026-11-16');await page.locator('#eventSource').fill('https://example.test/event');await page.locator('#eventReviewed').check();await page.locator('#eventForm button').click();
  assert.match(await page.locator('#eventOutput').innerText(),/Optional draft/);
  await page.locator('#eventDescription').fill('a different synthetic update');
  assert.equal(await page.locator('#eventReviewed').isChecked(),false);assert.equal(await page.locator('#eventOutput').textContent(),'');
+ await page.locator('#eventTools > summary').focus();await page.keyboard.press('Enter');
+ assert.equal(await page.locator('#eventDescription').isVisible(),false);
  assert.equal(await page.locator('#uploadLink').getAttribute('href'),'/prospect?import=1');
  assert.deepEqual(errors,[]);assert.ok(requests.every(r=>r.origin==='https://guide.test'&&r.method==='GET'&&(files[r.path]||r.path==='/favicon.ico')),'only synthetic asset requests permitted');
  console.log('PASS: synthetic audience browser, four recipes, edit/refine, delayed-copy dismissal, fallback, event reset, mobile overflow; no external/provider requests. Native clipboard and actual ZoomInfo behavior untested.');
