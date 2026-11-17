@@ -187,9 +187,11 @@ export const sourceFreshnessCutoff = (now = new Date()) => new Date(Number(now) 
 
 export function phoneReadiness(c){
  const direct=c.phone_restrictions?.direct??null,mobile=c.phone_restrictions?.mobile??null;
- // Old records may have a mobile copied into the primary phone field.
- const fallback=c.phone_origin==='mobile',sameDirectMobile=!fallback&&!!c.mobile_phone&&c.phone===c.mobile_phone;
- return {primary_blocked:c.suppressed===true||(fallback?mobile===true:direct===true||sameDirectMobile&&mobile===true),mobile_blocked:c.suppressed===true||mobile===true||sameDirectMobile&&direct===true,direct_do_not_call:direct,mobile_do_not_call:mobile};
+ const fallback=c.phone_origin==='mobile',same=!!c.phone&&c.phone===c.mobile_phone;
+ // A cumulative direct restriction is not reliably bound to the latest raw field.
+ // Bounded history cannot prove a fallback number was never the restricted direct route.
+ const restriction_review=fallback&&direct===true;
+ return {primary_blocked:c.suppressed===true||direct===true||(fallback?mobile===true:same&&mobile===true),mobile_blocked:c.suppressed===true||mobile===true||same&&direct===true,direct_do_not_call:direct,mobile_do_not_call:mobile,restriction_review};
 }
 
 export function preparationStep(c){
@@ -204,6 +206,7 @@ export function preparationStep(c){
 
 export function contactQuality(contact, now = new Date()) {
   const issues = [];
+  if(phoneReadiness(contact).restriction_review)issues.push({code:'phone_restriction_review',message:'An explicit direct-phone restriction has uncertain number linkage. The mobile fallback is held until the restricted route can be distinguished.'});
   for(const [route,phone] of Object.entries(contact.phone_import||{}))if(phone.status==='needs_review')issues.push({code:'phone_review',message:`Imported ${route} phone needs review; original value retained and excluded from active phone fields.`});
   for(const message of contact.import_warnings||[])issues.push({code:'provider_metadata_review',message});
   for(const route of ['direct','mobile'])if(contact.phone_restrictions?.[route]===true)issues.push({code:'do_not_call',message:`${route==='direct'?'Direct':'Mobile'} phone has a do-not-call flag. It is omitted from contact exports.`});

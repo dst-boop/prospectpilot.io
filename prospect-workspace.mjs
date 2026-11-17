@@ -229,6 +229,8 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
      merged.import_warnings=[...new Set([...(old.import_warnings||[]),...(contact.import_warnings||[])])];
      merged.phone_restrictions={};for(const route of ['direct','mobile'])merged.phone_restrictions[route]=old.phone_restrictions?.[route]===true||contact.phone_restrictions?.[route]===true?true:old.phone_restrictions?.[route]??contact.phone_restrictions?.[route]??null;
      if(!old.phone&&merged.phone)merged.phone_origin=contact.phone_origin;
+     // A later explicit direct claim for the retained number is no longer merely a mobile fallback.
+     if(contact.phone_origin==='direct'&&contact.phone===merged.phone)merged.phone_origin='direct';
      // Never overwrite verification or clear a suppression through a CSV import.
      merged.suppressed=old.suppressed||contact.suppressed;
      if(!old.email&&merged.email)merged.email_status='unverified';if(!old.phone&&merged.phone)merged.phone_status='unverified';
@@ -317,7 +319,7 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
  // counts once it is kept and has both a mobile and an email.
  const DAILY_GOAL=50,PASS_REASONS=['not_a_fit','wrong_person','already_client','no_rollover_likely','other'];
  const reviewItem=(row,listId)=>{const p=row.payload,delivery=p.deliveries?.[listId]||{},review=delivery.review||null;return {id:row.id,revision:hash(JSON.stringify(p)),first_name:p.first_name,last_name:p.last_name,title:p.title||'',company:p.company||'',
-  location:[p.city,p.state].filter(Boolean).join(', '),email:p.email||'',mobile_phone:p.mobile_phone||'',linkedin_url:p.linkedin_url||'',mobile_do_not_call:p.phone_restrictions?.mobile===true,
+  location:[p.city,p.state].filter(Boolean).join(', '),email:p.email||'',mobile_phone:p.mobile_phone||'',linkedin_url:p.linkedin_url||'',mobile_do_not_call:p.phone_restrictions?.mobile===true,mobile_blocked:phoneReadiness(p).mobile_blocked,
   suppressed:p.suppressed===true,zoominfo_id:p.zoominfo?.contact_id||'',signal:delivery.signal||null,review,quality:review?.status==='kept'&&!!p.email&&!!p.mobile_phone&&p.suppressed!==true};};
  async function dailyReview(user,input={}){
   if(scope)throw fail(403,'Daily review is available on your own lists.');

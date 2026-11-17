@@ -35,9 +35,9 @@ test('same phone in both channels cannot bypass a direct restriction',()=>{
  const c={phone:'+12125550123',mobile_phone:'+12125550123',phone_restrictions:{direct:true,mobile:false}};assert.equal(phoneReadiness(c).primary_blocked,true);assert.equal(phoneReadiness(c).mobile_blocked,true);
  assert.equal(preparationStep({...c,suppressed:true}).code,'suppressed');assert.equal(preparationStep({zoominfo:{previous_company:'Former'}}).code,'job_change');
 });
-test('an unsupported restricted direct number does not block a distinct unrestricted mobile fallback',()=>{
+test('a restricted direct claim conservatively holds a mobile fallback even when raw appears distinct',()=>{
  const c=normalizeContact({'First Name':'Avery','Last Name':'Example','Company':'Example Co','Direct Phone Number':'2125550100 ext 3','Mobile Phone':'2125550199','Direct Phone Do Not Call':'true','Mobile Phone Do Not Call':'false'},'fixture',{importing:true});
- assert.equal(c.phone_origin,'mobile');assert.equal(phoneReadiness(c).primary_blocked,false);assert.equal(phoneReadiness(c).mobile_blocked,false);
+ assert.equal(c.phone_origin,'mobile');assert.equal(phoneReadiness(c).primary_blocked,true);assert.equal(phoneReadiness(c).mobile_blocked,true);assert.equal(phoneReadiness(c).restriction_review,true);
 });
 test('first provider ID association cannot silently merge a weak namesake match',()=>fixture(async app=>{
  const csv='First Name,Last Name,Company\nAvery,Example,Example Co';await app.importCSV(user,{csv});
