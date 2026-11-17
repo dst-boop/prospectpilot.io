@@ -53,6 +53,7 @@
 !lab.css
 !lab-client.js
 !lead-quality.mjs
+!opportunity-policy.mjs
 !age-band.mjs
 !prospect-core.mjs
 !identity-resolution.mjs
@@ -123,3 +124,10 @@
 !release-readiness.mjs
 # Isolated legacy-recovery aggregate inspector is build-stage test input only.
 !legacy-owner-recovery.mjs
+
+!readonly-fallback.mjs
+
+!audience.html
+!audience.css
+!audience-client.js
+!audience-catalog.mjs

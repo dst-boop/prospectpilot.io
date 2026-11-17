@@ -94,3 +94,5 @@ test('isolated firm-boundary test inputs reach only the build context', t => {
   assert.doesNotMatch(runtime,/COPY\s+(?:schema-drafts|\.\s)/, 'isolated draft directory is not copied wholesale into runtime');
   if (!ignore) t.diagnostic('.dockerignore absent; test fixtures still confirmed readable in the build context.');
 });
+
+test('guided audience page and browser modules reach runtime image',()=>{const dockerfile=read('Dockerfile').split(/FROM[^\n]+ AS runtime/)[1],ignore=readOptional('.dockerignore');for(const f of ['audience.html','audience.css','audience-client.js','audience-catalog.mjs']){assert.ok(dockerfile.split('\n').some(l=>l.startsWith('COPY ')&&l.split(/\s+/).includes(f)),f);if(ignore)assert.equal(dockerignored(f,ignore),false,f);assert.ok(read(f));}});

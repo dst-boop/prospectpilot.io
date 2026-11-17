@@ -47,6 +47,13 @@ class CatalogTests(unittest.TestCase):
             row['SPONS_DFE_PN']=value
             self.assertIsNone(catalog.normalize(row))
 
+    def test_separated_counts_preserve_unknown_zero_and_positive(self):
+        for raw, expected in [('', None), ('0', 0), ('12', 12)]:
+            row=self.row();row['RTD_SEP_PARTCP_FUT_CNT']=raw
+            self.assertEqual(catalog.normalize(row)['separated_future_benefits'], expected)
+        row={'ACK_ID':'short','SF_TYPE_PENSION_BNFT_CODE':'2J','SF_SPONS_EIN':'123456789','SF_PLAN_NUM':'1','SF_PLAN_YEAR_BEGIN_DATE':'2025-01-01','SF_SPONSOR_NAME':'Example','SF_TOT_PARTCP_BOY_CNT':'99','SF_TOT_PARTCP_EOY_CNT':'80','SF_PARTCP_ACCOUNT_BAL_CNT':'70','RTD_SEP_PARTCP_FUT_CNT':'12'}
+        self.assertIsNone(catalog.normalize(row,short=True)['separated_future_benefits'], 'Short form must not infer a count from totals or use an unrelated long-form field')
+
     def test_blank_short_form_fields_stay_unknown(self):
         row={'ACK_ID':'short','SF_TYPE_PENSION_BNFT_CODE':'2J','SF_SPONS_EIN':'123456789','SF_PLAN_NUM':'1','SF_PLAN_YEAR_BEGIN_DATE':'2025-01-01','SF_SPONSOR_NAME':'Example','SF_IN_SERVICE_DISTRIB_IND':''}
         self.assertIsNone(catalog.normalize(row,short=True)['in_service_distributions_reported'])

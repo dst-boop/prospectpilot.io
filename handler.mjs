@@ -1,3 +1,4 @@
+import {createReadOnlyFallback} from './readonly-fallback.mjs';
 import {candidateOrigin,READINESS_PATH,RELEASE_SCHEMA_VERSION} from './release-readiness.mjs';
 import {isTeamLeadHubPath} from './team-lead-hub.mjs';
 import {loginDestination} from './login-destination.mjs';
@@ -5,8 +6,9 @@ import {QUALITY_VERSION} from './lead-quality.mjs';
 import {CADENCE_VERSION} from './outreach-cadence.mjs';
 import {randomUUID} from 'node:crypto';
 const responseJSON=(detail,status)=>Response.json({detail},{status,headers:{'Cache-Control':'no-store'}});
-export function createHandler({auth,db,worker,loginHtml,loginScript,homeHtml,siteStyle,brandMark,ownerEmail,origins,providerKey='',linkedin,nativeResearch,warn,warnPage,warnScript,researchJobs,lab,labPage,labScript,labStyle,prospect,prospectPage,prospectScript,prospectJobsScript,prospectStyle,networkingPage,networkingScript,networkingStyle,billing=null,teamHub=null,releaseId='',releaseCheckOrigin='',releaseReadiness=null}) {
+export function createHandler({auth,db,worker,loginHtml,loginScript,homeHtml,siteStyle,brandMark,ownerEmail,origins,providerKey='',linkedin,nativeResearch,warn,warnPage,warnScript,researchJobs,lab,labPage,labScript,labStyle,prospect,prospectPage,prospectScript,prospectJobsScript,prospectStyle,networkingPage,networkingScript,networkingStyle,billing=null,teamHub=null,audienceAssets=null,releaseId='',releaseCheckOrigin='',releaseReadiness=null,readOnly=false}) {
   const allowed=new Set(origins);
+  const fallback=readOnly?createReadOnlyFallback({lab}):null;
   const authorized=claims=>typeof claims.uid==='string'&&claims.uid.length>0&&claims.email_verified===true&&typeof claims.email==='string'&&claims.email.includes('@')&&['google.com','password'].includes(claims.firebase?.sign_in_provider);
   return async request=>{
     const url=new URL(request.url);
@@ -14,9 +16,10 @@ export function createHandler({auth,db,worker,loginHtml,loginScript,homeHtml,sit
     const readiness=url.pathname===READINESS_PATH;
     if(readiness&&request.method!=='GET')return responseJSON('Release readiness unavailable.',405);
     if(!allowed.has(url.origin)&&!(readiness&&candidateOrigin(releaseCheckOrigin)===url.origin))return responseJSON('Use the ProspectPilot website address.',403);
-    if(url.pathname==='/version'&&request.method==='GET')return Response.json({application:'ProspectPilot',feature_set:lab?'research-lab-v1':'legacy',quality_version:lab?QUALITY_VERSION:null,advisor_workspace_version:lab?'advisor-workflow-1':null,cadence_version:lab?CADENCE_VERSION:null,contact_workspace_version:prospect?'professional-contacts-1':null,release_id:releaseId},{headers:{'Cache-Control':'no-store'}});
+    if(url.pathname==='/version'&&request.method==='GET')return Response.json({application:'ProspectPilot',read_only:readOnly,feature_set:lab?'research-lab-v1':'legacy',quality_version:lab?QUALITY_VERSION:null,advisor_workspace_version:lab?'advisor-workflow-1':null,cadence_version:lab?CADENCE_VERSION:null,contact_workspace_version:prospect?'professional-contacts-1':null,release_id:releaseId},{headers:{'Cache-Control':'no-store'}});
     // Stripe calls this server to server, so it has no Origin and no session;
     // the signature on the raw body is what authenticates it.
+    if(readOnly&&url.pathname==='/api/stripe/webhook')return responseJSON('Read-only mode: webhook delivery must be retried.',503);
     if(billing&&url.pathname==='/api/stripe/webhook'&&request.method==='POST'){
       try{const response=await billing.webhook(await request.text(),request.headers.get('stripe-signature'));response.headers.set('Cache-Control','no-store');return response;}
       catch(error){console.error(JSON.stringify({event:'stripe_webhook_failed',status:error.stripeStatus||error.status||500}));return responseJSON('Webhook could not be applied.',500);}
@@ -58,8 +61,13 @@ export function createHandler({auth,db,worker,loginHtml,loginScript,homeHtml,sit
       catch{return responseJSON('Release readiness unavailable.',503);}
       return Response.json({ready:true,release_id:releaseId,schema_version:RELEASE_SCHEMA_VERSION},{headers:{'Cache-Control':'no-store'}});
     }
+    if(fallback)return fallback(request,claims);
     if(isTeamLeadHubPath(url.pathname))return teamHub ? teamHub.route(request,claims) : responseJSON('Team preview is not configured. No records have been read.',503);
     if((prospect&&url.pathname==='/api/prospect/me'||lab&&url.pathname==='/api/lab/me')&&request.method==='GET')return Response.json({uid:claims.uid,email:claims.email,name:claims.name||'',...(url.pathname==='/api/lab/me'?{capabilities:{legacy_tools:!!ownerEmail&&claims.email.toLowerCase()===ownerEmail.toLowerCase()}}:{})},{headers:{'Cache-Control':'private, no-store'}});
+    if(prospect && audienceAssets && Object.hasOwn(audienceAssets,url.pathname) && request.method==='GET') {
+      const type=url.pathname.endsWith('.css')?'text/css':url.pathname.endsWith('.js')||url.pathname.endsWith('.mjs')?'text/javascript':'text/html';
+      return new Response(audienceAssets[url.pathname],{headers:{'Content-Type':type+'; charset=utf-8','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"}});
+    }
     if(prospect && networkingPage && ['/networking','/networking-client.js','/networking.css'].includes(url.pathname) && request.method==='GET') {
       const script=url.pathname==='/networking-client.js',style=url.pathname==='/networking.css';
       return new Response(script?networkingScript:style?networkingStyle:networkingPage,{headers:{'Content-Type':script?'text/javascript; charset=utf-8':style?'text/css; charset=utf-8':'text/html; charset=utf-8','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"}});

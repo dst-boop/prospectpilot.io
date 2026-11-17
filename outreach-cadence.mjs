@@ -1,3 +1,5 @@
+import {ADVICE_TARGET} from './opportunity-policy.mjs';
+
 // How often a person may be contacted, and what the next touch is.
 //
 // The rest of this application decides whether someone qualifies. Nothing in it
@@ -14,7 +16,7 @@
 // withhold a touch; none can authorize one that the qualification gates, a
 // suppression or a do-not-call entry already refused.
 
-export const CADENCE_VERSION = 'outreach-cadence-1';
+export const CADENCE_VERSION = 'outreach-cadence-2';
 
 export const MAX_TOUCHES = 6;
 export const WINDOW_DAYS = 45;
@@ -261,6 +263,15 @@ export function cadenceState({activities = [], lead = {}, quality = null, rest =
   // reply does buy is a fresh budget, counted from the reply itself.
   if (window.count >= MAX_TOUCHES) return {...base, status: 'capped', allowed: false, resume_at: window.frees_at,
     reason: `${window.count} touches in ${WINDOW_DAYS} days reaches the limit of ${MAX_TOUCHES}. Rest this person for ${REST_DAYS} days, then re-qualify.`};
+
+  const route = quality?.target === ADVICE_TARGET && quality.gates.contact.state === 'confirmed' ? quality.gates.contact.evidence?.value : null;
+  if (route) {
+    const reviewedState = quality.gates.residence.evidence?.value?.state || state;
+    const call = route.channel === 'phone' ? callWindow(reviewedState, now) : null;
+    const hold = call && (dials?.spent ? dials.reason : !call.open ? call.reason : null);
+    return {...base, call_window:call, status:hold?'hold':'engaged', allowed:true,
+      reason:hold||'Use the reviewed route for the next agreed or approved contact.'};
+  }
 
   if (answered) return {...base, status: 'engaged', allowed: true,
     reason: `This person responded. Stop the sequence and book the conversation. ${window.remaining} of ${MAX_TOUCHES} touches remain in this window.`};

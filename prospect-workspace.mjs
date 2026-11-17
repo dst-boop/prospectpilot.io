@@ -208,7 +208,8 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
     if(matches.length>1){result.conflicts++;report(record.row,'conflict','Identifiers match more than one existing contact. Review the identity before importing.',contact);continue;}
     let id=matches[0]?.id||randomUUID();
     if(signal?.credits>0)usage.at(-1).contact_id=id;
-    const evidence={...(scope?{actor_uid:scope.actor}:{}),source,kind:contact.source_kind,import_id:result.id,row:record.row,imported_at:now,observed_at:observed||null,url:sourceURL||null,zoominfo:contact.zoominfo,phone_import:contact.phone_import,phone_restrictions:contact.phone_restrictions,import_warnings:contact.import_warnings};
+    if(contact.imported_notes)contact.imported_notes=contact.imported_notes.map(note=>({...note,source,import_id:result.id,row:record.row,imported_at:now,observed_at:observed||null,url:sourceURL||null}));
+    const evidence={...(scope?{actor_uid:scope.actor}:{}),source,kind:contact.source_kind,import_id:result.id,row:record.row,imported_at:now,observed_at:observed||null,url:sourceURL||null,zoominfo:contact.zoominfo,phone_import:contact.phone_import,phone_restrictions:contact.phone_restrictions,import_warnings:contact.import_warnings,...contact.imported_notes?.length?{imported_notes:contact.imported_notes}:{}};
     contact.source_observed_at=observed||null;contact.last_seen_at=now;
     if(matches.length){const old=matches[0].payload;
      if(old.zoominfo?.contact_id&&contact.zoominfo?.contact_id&&old.zoominfo.contact_id!==contact.zoominfo.contact_id){result.conflicts++;report(record.row,'conflict','Different ZoomInfo contact IDs matched an existing identifier. Review identity; existing record preserved.',contact);continue;}
@@ -222,6 +223,7 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
      if(networking){networkingContactId=id;result.duplicates++;result.contact_unchanged=true;report(record.row,'duplicate','Private interaction recorded; existing contact fields and source history are unchanged.',old);continue;}
      const merged={...old};for(const [k,v] of Object.entries(contact))if(!merged[k]&&v&&k!=='source_kind')merged[k]=v;
      merged.zoominfo={...contact.zoominfo,...old.zoominfo};
+     if(contact.imported_notes?.length)merged.imported_notes=[...(old.imported_notes||[]),...contact.imported_notes.filter(note=>!old.imported_notes?.some(prior=>prior.kind===note.kind))];
      // Each delivery keeps its own reason and review, under the list it came in:
      // a later delivery never rewrites or clears an earlier one.
      if(signal&&input.list_id)merged.deliveries={...(old.deliveries||{}),[input.list_id]:{...(old.deliveries?.[input.list_id]||{}),signal}};
@@ -229,6 +231,8 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
      merged.import_warnings=[...new Set([...(old.import_warnings||[]),...(contact.import_warnings||[])])];
      merged.phone_restrictions={};for(const route of ['direct','mobile'])merged.phone_restrictions[route]=old.phone_restrictions?.[route]===true||contact.phone_restrictions?.[route]===true?true:old.phone_restrictions?.[route]??contact.phone_restrictions?.[route]??null;
      if(!old.phone&&merged.phone)merged.phone_origin=contact.phone_origin;
+     // A later explicit direct claim for the retained number is no longer merely a mobile fallback.
+     if(contact.phone_origin==='direct'&&contact.phone===merged.phone)merged.phone_origin='direct';
      // Never overwrite verification or clear a suppression through a CSV import.
      merged.suppressed=old.suppressed||contact.suppressed;
      if(!old.email&&merged.email)merged.email_status='unverified';if(!old.phone&&merged.phone)merged.phone_status='unverified';
@@ -317,7 +321,7 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
  // counts once it is kept and has both a mobile and an email.
  const DAILY_GOAL=50,PASS_REASONS=['not_a_fit','wrong_person','already_client','no_rollover_likely','other'];
  const reviewItem=(row,listId)=>{const p=row.payload,delivery=p.deliveries?.[listId]||{},review=delivery.review||null;return {id:row.id,revision:hash(JSON.stringify(p)),first_name:p.first_name,last_name:p.last_name,title:p.title||'',company:p.company||'',
-  location:[p.city,p.state].filter(Boolean).join(', '),email:p.email||'',mobile_phone:p.mobile_phone||'',linkedin_url:p.linkedin_url||'',mobile_do_not_call:p.phone_restrictions?.mobile===true,
+  location:[p.city,p.state].filter(Boolean).join(', '),email:p.email||'',mobile_phone:p.mobile_phone||'',linkedin_url:p.linkedin_url||'',mobile_do_not_call:p.phone_restrictions?.mobile===true,mobile_blocked:phoneReadiness(p).mobile_blocked,
   suppressed:p.suppressed===true,zoominfo_id:p.zoominfo?.contact_id||'',signal:delivery.signal||null,review,quality:review?.status==='kept'&&!!p.email&&!!p.mobile_phone&&p.suppressed!==true};};
  async function dailyReview(user,input={}){
   if(scope)throw fail(403,'Daily review is available on your own lists.');

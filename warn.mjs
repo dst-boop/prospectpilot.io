@@ -53,35 +53,51 @@ export function parseWarn(text,state,now=Date.now()){
  }
  return {events,excluded_non_warn,malformed_rows,schema_notes,mapped_fields:Object.keys(mapped).filter(k=>mapped[k]>=0),missing_fields:Object.keys(mapped).filter(k=>mapped[k]<0)};
 }
-export function createWarnService({get,ttl=3600000,officialTexas=true}){
+export function createWarnService({get,ttl=3600000,officialTexas=true,now=Date.now,requestTimeoutMs=7000}){
+ if(!Number.isSafeInteger(requestTimeoutMs)||requestTimeoutMs<1||requestTimeoutMs>=45000)throw Error('Invalid WARN request deadline');
  let cache=null,pending=null;
  async function load(){
-  if(cache&&Date.now()-cache.at<ttl)return cache.data;
+  if(cache&&now()<cache.until)return cache.data;
   if(pending)return pending;
   pending=(async()=>{
    const signal=AbortSignal.timeout(45000);
-   const manifest=JSON.parse((await get(BASE+'warn_feeds.json',{signal,maxBytes:100000})).text);
-   if(!Array.isArray(manifest)||!manifest.length||manifest.length>60)throw Error('WARN feed manifest unavailable');
-   const feeds=manifest.map(f=>{if(!ALL.includes(f.state)||f.url!==BASE+f.state.toLowerCase()+'.csv'||f.format!=='csv')throw Error('Unrecognized WARN feed');return {state:f.state,url:f.url,format:f.format};});
-   if(new Set(feeds.map(f=>f.state)).size!==feeds.length)throw Error('Duplicate WARN jurisdictions in manifest');
+   const read=(url,maxBytes)=>get(url,{maxBytes,signal:AbortSignal.any([signal,AbortSignal.timeout(requestTimeoutMs)])});
+   let feeds=[],manifest_available=true;
+   try{
+    const manifest=JSON.parse((await read(BASE+'warn_feeds.json',100000)).text);
+    if(!Array.isArray(manifest)||!manifest.length||manifest.length>60)throw Error('WARN feed manifest unavailable');
+    const validated=manifest.map(f=>{if(!f||!ALL.includes(f.state)||f.url!==BASE+f.state.toLowerCase()+'.csv'||f.format!=='csv')throw Error('Unrecognized WARN feed');return {state:f.state,url:f.url,format:f.format};});
+    if(new Set(validated.map(f=>f.state)).size!==validated.length)throw Error('Duplicate WARN jurisdictions in manifest');
+    feeds=validated;
+   }catch(error){
+    if(!officialTexas)throw error;
+    // A missing or invalid mirror manifest cannot disable an independent,
+    // explicitly configured official source. None of its untrusted URLs run.
+    manifest_available=false;
+   }
    if(officialTexas&&!feeds.some(f=>f.state==='TX'))feeds.push(TEXAS);
-   let published_at=null;try{const value=(await get(BASE+'updated_at.txt',{signal,maxBytes:100})).text.trim();if(/^\d{4}-\d{2}-\d{2}T/.test(value)&&Number.isFinite(Date.parse(value))&&Date.parse(value)<=Date.now()+300000)published_at=value;}catch{}
+   // Independent sources run first, before a series of failed mirror requests
+   // can exhaust the overall collection deadline.
+   feeds.sort((a,b)=>Number(Boolean(b.metadata_url))-Number(Boolean(a.metadata_url)));
+   let published_at=null;if(manifest_available)try{const value=(await read(BASE+'updated_at.txt',100)).text.trim();if(/^\d{4}-\d{2}-\d{2}T/.test(value)&&Number.isFinite(Date.parse(value))&&Date.parse(value)<=now()+300000)published_at=value;}catch{}
    const events=[],coverage=[];
    for(let i=0;i<feeds.length;i+=4)await Promise.all(feeds.slice(i,i+4).map(async f=>{
     try{
-     const file=await get(f.url,{signal,maxBytes:6000000});const parsed=parseWarn(file.text,f.state);let sourceDate=published_at;
+     const file=await read(f.url,6000000);const parsed=parseWarn(file.text,f.state,now());let sourceDate=published_at;
      if(f.metadata_url){
       if(parsed.events.length>=50000)throw Error('Official WARN source exceeds the configured row limit');
-      sourceDate=null;try{const metadata=JSON.parse((await get(f.metadata_url,{signal,maxBytes:500000})).text);const milliseconds=Number(metadata.rowsUpdatedAt)*1000;if(Number.isFinite(milliseconds)&&milliseconds>0&&milliseconds<=Date.now()+300000)sourceDate=new Date(milliseconds).toISOString();}catch{}
+      sourceDate=null;try{const metadata=JSON.parse((await read(f.metadata_url,500000)).text);const milliseconds=Number(metadata.rowsUpdatedAt)*1000;if(Number.isFinite(milliseconds)&&milliseconds>0&&milliseconds<=now()+300000)sourceDate=new Date(milliseconds).toISOString();}catch{}
       for(const event of parsed.events){event.feed_url=f.url;event.source_url=f.source_url;}
      }
-     events.push(...parsed.events);coverage.push({state:f.state,status:'loaded',rows:parsed.events.length,source_url:f.source_url||f.url,publication_basis:f.metadata_url?'official_dataset':'mirror',published_at:sourceDate,publication_stale:sourceDate?Date.now()-Date.parse(sourceDate)>48*3600000:null,excluded_non_warn:parsed.excluded_non_warn,malformed_rows:parsed.malformed_rows,schema_notes:parsed.schema_notes,date_anomalies:parsed.events.filter(e=>e.quality_flags.length).length,missing_fields:parsed.missing_fields,sha256:createHash('sha256').update(file.text).digest('hex'),unknown_notice_dates:parsed.events.filter(e=>!e.notice_date).length,latest_notice_date:parsed.events.reduce((last,e)=>e.notice_date&&e.notice_date>last?e.notice_date:last,'')||null});
+     events.push(...parsed.events);coverage.push({state:f.state,status:'loaded',rows:parsed.events.length,source_url:f.source_url||f.url,publication_basis:f.metadata_url?'official_dataset':'mirror',published_at:sourceDate,publication_stale:sourceDate?now()-Date.parse(sourceDate)>48*3600000:null,excluded_non_warn:parsed.excluded_non_warn,malformed_rows:parsed.malformed_rows,schema_notes:parsed.schema_notes,date_anomalies:parsed.events.filter(e=>e.quality_flags.length).length,missing_fields:parsed.missing_fields,sha256:createHash('sha256').update(file.text).digest('hex'),unknown_notice_dates:parsed.events.filter(e=>!e.notice_date).length,unknown_effective_dates:parsed.events.filter(e=>!e.effective_date).length,latest_notice_date:parsed.events.reduce((last,e)=>e.notice_date&&e.notice_date>last?e.notice_date:last,'')||null});
     }
-    catch{coverage.push({state:f.state,status:'unavailable',rows:0});}
+    catch{coverage.push({state:f.state,status:'unavailable',rows:null});}
    }));
-   for(const state of ALL)if(!feeds.some(f=>f.state===state))coverage.push({state,status:'not_published',rows:0});
-   const data={published_at,publication_stale:published_at?Date.now()-Date.parse(published_at)>48*3600000:null,events:[...new Map(events.map(e=>[e.id,e])).values()],coverage:coverage.sort((a,b)=>a.state.localeCompare(b.state)),fetched_at:new Date().toISOString(),manifest_url:BASE+'warn_feeds.json'};
-   cache={at:Date.now(),data};return data;
+   for(const state of ALL)if(!feeds.some(f=>f.state===state))coverage.push({state,status:manifest_available?'not_published':'unavailable',rows:null});
+   const retryable=!manifest_available||coverage.some(c=>c.status==='unavailable');
+   const data={manifest_available,retryable,publication_basis:'mirror',published_at,publication_stale:published_at?now()-Date.parse(published_at)>48*3600000:null,events:[...new Map(events.map(e=>[e.id,e])).values()],coverage:coverage.sort((a,b)=>a.state.localeCompare(b.state)),fetched_at:new Date(now()).toISOString(),manifest_url:BASE+'warn_feeds.json'};
+   // Transient outages must not become an hour-long negative cache.
+   cache={until:now()+Math.min(ttl,retryable?60000:ttl),data};return data;
   })().finally(()=>pending=null);return pending;
  }
  async function query(filters={}){
@@ -98,7 +114,16 @@ export function createWarnService({get,ttl=3600000,officialTexas=true}){
    const data=await load(),key=companyKey(lead.company);const matches=key.length>=3?data.events.filter(e=>e.employer_keys.includes(key)):[];
    const sorted=matches.sort((a,b)=>(b.notice_date||b.effective_date||'').localeCompare(a.notice_date||a.effective_date||''));
    const count=data.coverage.filter(c=>c.status==='loaded').length;
-   return {source:'warn',feed_version:3,retryable:false,status:matches.length?'matched':'partial',checked_at:new Date().toISOString(),published_at:data.published_at,publication_stale:data.publication_stale,coverage:count+' of 51 US jurisdictions loaded from the published WARN feeds.',limitations:['Employer match only; this does not establish that the person or their workplace was affected.',...(!data.published_at?['Feed publication date is unknown.']:data.publication_stale?['Feed publication is over 48 hours old; recent notices may be missing.']:[]),...data.coverage.filter(c=>c.status==='loaded'&&(!c.published_at||c.publication_stale)).map(c=>c.state+': '+(c.published_at?'source publication is over 48 hours old; recent notices may be missing.':'source publication date is unknown.')),...data.coverage.filter(c=>c.status!=='loaded').map(c=>c.state+': '+c.status)],total_matches:matches.length,records:sorted.slice(0,20).map(e=>({source:'warn',scope:'company',url:e.source_url,excerpt:e.employer+' — '+[e.city||e.address,e.state,e.workers!==null?e.workers+' workers':null].filter(Boolean).join(', '),source_date:e.notice_date,checked_at:new Date().toISOString(),status:'machine_matched',method:'Published WARN feed',event:e,note:'Exact normalized employer match. Notice and effective dates are separate; unknown dates remain unknown. No individual layoff inference.'}))};
+   const limitations=[
+    'Employer match only; this does not establish that the person or their workplace was affected.',
+    ...(!data.manifest_available?['WARN mirror manifest unavailable. Its jurisdiction coverage is unknown; independent official sources are reported separately.']:[]),
+    ...(!data.published_at?['Mirror publication date is unknown.']:data.publication_stale?['Mirror publication is over 48 hours old; recent notices may be missing.']:[]),
+    ...data.coverage.filter(c=>c.status==='loaded'&&c.publication_basis==='mirror').map(c=>c.state+': underlying state-source observation date is unknown; mirror publication does not establish source freshness.'),
+    ...data.coverage.filter(c=>c.status==='loaded'&&(!c.published_at||c.publication_stale)).map(c=>c.state+': '+(c.publication_basis==='official_dataset'?'official dataset update':'mirror publication')+(c.published_at?' is over 48 hours old; recent notices may be missing.':' date is unknown.')),
+    ...data.coverage.filter(c=>c.status==='loaded'&&(c.unknown_notice_dates||c.unknown_effective_dates)).map(c=>c.state+': '+c.unknown_notice_dates+' unknown notice dates; '+c.unknown_effective_dates+' unknown effective dates. Publication and retrieval dates do not fill these gaps.'),
+    ...data.coverage.filter(c=>c.status!=='loaded').map(c=>c.state+': '+(c.status==='not_published'?'not published in the mirror manifest':c.status))
+   ];
+   return {source:'warn',feed_version:3,retryable:data.retryable,status:matches.length?'matched':'partial',checked_at:new Date(now()).toISOString(),publication_basis:'mirror',published_at:data.published_at,publication_stale:data.publication_stale,coverage:count+' of 51 US jurisdictions loaded from the published WARN feeds.',limitations,total_matches:matches.length,records:sorted.slice(0,20).map(e=>({source:'warn',scope:'company',url:e.source_url,excerpt:e.employer+' — '+[e.city||e.address,e.state,e.workers!==null?e.workers+' workers':null].filter(Boolean).join(', '),source_date:e.notice_date,checked_at:new Date(now()).toISOString(),status:'machine_matched',method:'Published WARN feed',event:e,note:'Exact normalized employer match. Notice and effective dates are separate; unknown dates remain unknown. No individual layoff inference.'}))};
   }catch{return {source:'warn',retryable:true,status:'partial',records:[],checked_at:new Date().toISOString(),coverage:'Published WARN feeds',limitations:['WARN data could not be loaded. This is not a no-match result.']};}
  }
  return {load,query,research};

@@ -87,9 +87,11 @@ export async function selectEmployers(pool, {states = [], max_companies = 10, em
       WHERE r.user_id=$3 AND r.created_at>now()-interval '7 days' AND t.payload->>'company'=p.payload->>'sponsor'))
     ORDER BY sponsor_key, plan_year DESC, (payload->>'net_assets')::numeric DESC NULLS LAST)
     SELECT payload FROM latest ORDER BY
-    -- Former employees still holding accounts, times the average account:
-    -- the size of the left-behind pool, not any one person's balance.
-    CASE WHEN $8='former_employees' THEN COALESCE((payload->>'separated_future_benefits')::numeric,0)*COALESCE((payload->>'average_account_balance')::numeric,0) END DESC NULLS LAST,
+    -- Prefer reported former-participant counts; unknown is not a reported zero.
+    -- Legacy weighted sorting also keeps missing inputs unknown. These are
+    -- employer-level research signals, never an individual's balance.
+      CASE WHEN $8='former_employee_population' THEN (payload->>'separated_future_benefits')::numeric
+        WHEN $8='former_employees' THEN (payload->>'separated_future_benefits')::numeric*(payload->>'average_account_balance')::numeric END DESC NULLS LAST,
     (COALESCE((payload->>'separated_future_benefits')::bigint,0)>0) DESC,
     COALESCE((payload->>'in_service_distributions_reported')::boolean,false) DESC,
     (payload->>'participants_with_balances')::bigint DESC NULLS LAST,payload->>'sponsor' LIMIT $4`, [states, names, userId, max_companies, codes, Number(plan_filter.min_average) || 0, plan_filter.in_service === true, plan_filter.order || '']);

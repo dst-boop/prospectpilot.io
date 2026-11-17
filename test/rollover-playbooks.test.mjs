@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';import {PGlite} from '@electric-sql/pglite';
-import {PLAYBOOKS,applyPlaybook,findPlaybook,playbookChoices,belowAgeFloor} from '../rollover-playbooks.mjs';
+import {PLAYBOOKS,applyPlaybook,findPlaybook,playbookChoices} from '../rollover-playbooks.mjs';
 import {selectEmployers,planKinds} from '../plan-catalog.mjs';
 import {labConfiguration} from '../research-lab.mjs';
 
@@ -18,7 +18,7 @@ test('a playbook fills in the search; the advisor only says where',()=>{
   const former=applyPlaybook({playbook:'nonprofit_403b',states:['NY','NJ'],employers:['Acme'],websites:['https://acme.test'],location:'11747'});
   assert.deepEqual(former.states,['NY','NJ']);
   assert.deepEqual(former.employers,[]);assert.equal(former.location,'');
-  assert.deepEqual(former.plan_filter.kinds,['403b']);assert.equal(former.plan_filter.min_average,100000);
+  assert.deepEqual(former.plan_filter.kinds,['403b']);assert.equal(former.plan_filter.min_average,undefined);
   const owners=applyPlaybook({playbook:'business_owners',location:'Huntington, NY'});
   assert.equal(owners.location,'Huntington, NY');assert.ok(owners.industries.length&&owners.titles.includes('Owner'));
   assert.throws(()=>applyPlaybook({playbook:'business_owners',location:' '}),{status:422});
@@ -28,7 +28,7 @@ test('a playbook fills in the search; the advisor only says where',()=>{
   assert.throws(()=>labConfiguration({plan_filter:{kinds:['457']}}),{status:422});
 });
 
-test('plan filters choose employers by plan type, average and former-employee pool',async()=>{
+test('plan filters choose employers by plan type and former-participant count',async()=>{
   const db=new PGlite();try{
     await db.exec(readFileSync(new URL('../generated/schema.sql',import.meta.url),'utf8'));
     await db.exec(readFileSync(new URL('../migrations/006-research-lab.sql',import.meta.url),'utf8'));
@@ -43,13 +43,11 @@ test('plan filters choose employers by plan type, average and former-employee po
     ];
     for(const [id,sponsor,codes,average,separated,inService] of plans)await db.query('INSERT INTO employer_plan_catalog(id,sponsor_key,state,plan_year,payload) VALUES($1,$2,$3,$4,$5::jsonb)',[id,sponsor.toLowerCase(),'NY',year,JSON.stringify({id,sponsor,ein:id,plan_number:'001',plan_year:year,benefit_codes:codes,average_account_balance:average,participants_with_balances:1000,separated_future_benefits:separated,in_service_distributions_reported:inService,scope:'employer_plan'})]);
     const pick=async playbook=>(await selectEmployers(db,labConfiguration(applyPlaybook({playbook,states:['NY']})),'u')).map(p=>p.id);
-    // Largest left-behind pool first; the $40K-average plan never qualifies the list.
-    assert.deepEqual(await pick('former_employees'),['hospital','factory','university']);
+    // A large eligible research pool ranks first even when its plan-wide average is lower.
+    assert.deepEqual(await pick('former_employees'),['small','hospital','factory','university']);
     assert.deepEqual(await pick('nonprofit_403b'),['hospital','university']);
-    // Almost no filings report in-service distributions, so it ranks plans
-    // first rather than emptying the list.
     const inService=await pick('in_service_595');
-    assert.deepEqual(inService.slice(0,2).sort(),['factory','university']);assert.deepEqual(inService.slice(2),['hospital']);
+    assert.deepEqual(inService.sort(),['factory','small','university']);
     assert.deepEqual((await selectEmployers(db,{states:['NY'],plan_filter:{in_service:true}},'u')).map(p=>p.id).sort(),['factory','small','university']);
     // No filter keeps the earlier behaviour: every employer is a candidate.
     assert.equal((await selectEmployers(db,{states:['NY']},'u')).length,4);
@@ -58,10 +56,8 @@ test('plan filters choose employers by plan type, average and former-employee po
   }finally{await db.close();}
 });
 
-test('the 59½ age floor drops only people whose reported age is below it',()=>{
-  assert.equal(labConfiguration(applyPlaybook({playbook:'in_service_595'})).minimum_age,59);
-  assert.equal(labConfiguration(applyPlaybook({playbook:'former_employees'})).minimum_age,0);
-  for(const range of ['45-54','52','Age 58'])assert.equal(belowAgeFloor(range,59),true,range);
-  for(const range of ['55-64','62','60+','50 or older','',null,'unknown'])assert.equal(belowAgeFloor(range,59),false,String(range));
-  assert.equal(belowAgeFloor('45-54',0),false,'no floor drops no one');
+test('saved age and plan average floors do not enter active discovery',()=>{
+  const config=labConfiguration({minimum_age:59,plan_filter:{min_average:100000}});
+  assert.equal(config.minimum_age,undefined);
+  assert.equal(config.plan_filter.min_average,undefined);
 });
