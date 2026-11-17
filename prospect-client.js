@@ -313,7 +313,7 @@ function renderDaily(){
  $('dailyLinkedIn').href=profile;$('dailyLinkedIn').textContent=i.linkedin_url?'Review LinkedIn profile ↗':'Find on LinkedIn ↗';
  $('dailySource').hidden=!i.signal?.url;if(i.signal?.url)$('dailySource').href=i.signal.url;
  $('dailyMobile').value=i.mobile_phone;$('dailyEmail').value=i.email;$('dailySave').hidden=true;
- $('dailyDnc').hidden=!i.mobile_do_not_call;
+ $('dailyDnc').hidden=!(i.mobile_blocked===true||i.mobile_do_not_call===true);
  $('dailyKeep').disabled=dailyBusy||i.suppressed;$('dailyPass').disabled=dailyBusy;$('dailyUndo').hidden=!i.review;$('dailyReason').value=i.review?.reason||'';
  $('dailyPosition').textContent=`${dailyIndex+1} of ${visible.length}`;$('dailyPrev').disabled=dailyIndex===0;$('dailyNext').disabled=dailyIndex>=visible.length-1;
  $('dailyNext').textContent=i.review?'Next →':'Skip →';
