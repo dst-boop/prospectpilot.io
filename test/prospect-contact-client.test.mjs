@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
 
-function client(){
+function client(escape=String){
  const elements=new Map(),pending=[];
  const create=id=>{const value={textContent:'',innerHTML:'',disabled:false,open:false,value:'Reviewed source',dataset:{},
   insertAdjacentHTML(position,html){this.innerHTML+=html;},append(element){this.lastChild=element;},scrollIntoView(){this.scrolled=true;},focus(){this.focused=true;},querySelectorAll(){return [elements.get('firstField')];},querySelector(){return elements.get('firstField');},showModal(){this.open=true;},addEventListener(event,fn){this[event+'Handler']=fn;},close(){this.open=false;this.closeHandler?.();}};elements.set(id,value);return value;};
  for(const id of ['contactTitle','contactBody','contactError','toggleSuppression','deletePerson','closeContact','correctionForm','conflictReason0','contactHistory','contactHistoryBody','editContact','reviewContactConflicts','contactConflicts','correctionPanel','firstField','retryContact'])create(id);
  const conflict=create('conflict');conflict.dataset={conflict:'0',decision:'keep'};
- const context=vm.createContext({selected:new Set(),$:id=>elements.get(id),esc:String,notice(){},load:async()=>{},
+ const context=vm.createContext({selected:new Set(),$:id=>elements.get(id),esc:escape,notice(){},load:async()=>{},
   FormData:class{constructor(){return [['first_name','A'],['last_name','Example'],['reason','Reviewed source']];}},
   document:{body:{insertAdjacentHTML(){create('contactDialog');}},querySelectorAll:()=>[conflict]},
   api:(url,body,method)=>new Promise((resolve,reject)=>pending.push({url,body,method,resolve,reject}))});
@@ -136,4 +136,12 @@ test('trimmed conflict source decisions remain visible from the correction snaps
   assert.match(html,/Reviewed source: Original provider/);assert.match(html,/Source title: Operations Manager/);
   assert.ok(html.includes(decision==='accept'?'Accepted source values':'Kept current values'));
  }
+});
+
+test('unverified imported context is visible, source-attributed and escaped without granting permission',async()=>{
+ const escape=value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+ const c=client(escape),opened=c.open('A');
+ const data=record('A');data.contact.imported_notes=[{kind:'rollover_context',text:'<img src=x onerror=alert(1)>',status:'unverified',source:'Synthetic source'}];data.contact.source_history[0].imported_notes=data.contact.imported_notes;
+ c.pending[0].resolve(data);await opened;
+ const html=c.elements.get('contactHistoryBody').innerHTML;assert.match(html,/Retained unverified import context/);assert.match(html,/Unverified imported notes/);assert.match(html,/Synthetic source/);assert.match(html,/Not evidence of plan ownership/);assert.match(html,/&lt;img/);assert.doesNotMatch(html,/<img/);
 });
