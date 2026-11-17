@@ -126,3 +126,8 @@
 !legacy-owner-recovery.mjs
 
 !readonly-fallback.mjs
+
+!audience.html
+!audience.css
+!audience-client.js
+!audience-catalog.mjs
