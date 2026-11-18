@@ -97,12 +97,30 @@ try{
  assert.equal(downloadBytes.toString('utf8'),largeFictionalCSV);
  await page.locator('#csvFile').setInputFiles({name:download.suggestedFilename(),mimeType:'text/csv',buffer:downloadBytes});
  await page.waitForFunction(()=>document.querySelector('#importResult').textContent.includes('Preview — nothing saved.')&&document.querySelector('#importResult').textContent.includes('1000 new'));
+ assert.equal(await page.locator('#importPreview a[href="/lab#historicalReviews"]').count(),0,'ordinary preview must not send users to an unrelated review queue');
  await page.locator('#importForm button[type="submit"]').click();
  await page.waitForFunction(()=>document.querySelector('#continueImport').hidden===false);
  assert.equal(await page.evaluate(async()=> (await (await fetch('/api/prospect/contacts')).json()).total),largeFixtureRows);
  await page.locator('#importForm button[type="submit"]').click();
  await page.waitForFunction(()=>document.querySelector('#importResult').textContent.includes('already processed'));
  assert.equal(await page.evaluate(async()=> (await (await fetch('/api/prospect/contacts')).json()).total),largeFixtureRows);
+ // Navigation-only synthetic hold: execute the shipped notice renderer, not a
+ // fake backend decision. Real import/replay above stays unchanged.
+ assert.equal(await page.locator('#importPreview a[href="/lab#historicalReviews"]').count(),0);
+ const clientSource=readFileSync(new URL('../prospect-client.js',import.meta.url),'utf8');
+ const noticeSource=clientSource.slice(clientSource.indexOf('function historicalImportNotice('),clientSource.indexOf('function renderImportReport('));
+ const importState=()=>page.evaluate(()=>({url:location.href,open:document.querySelector('#importDialog').open,file:document.querySelector('#csvFile').files[0]?.name,size:document.querySelector('#csvFile').files[0]?.size,list:document.querySelector('#importList').value,source:document.querySelector('#source').value,result:document.querySelector('#importResult').textContent}));
+ const beforeReview=await importState();
+ await page.evaluate(noticeSource+"\ndocument.querySelector('#importPreview').insertAdjacentHTML('afterbegin',historicalImportNotice({rows:[{status:'identity_review',historical_review_id:'synthetic-navigation-only'}]}));");
+ const reviewOpened=context.waitForEvent('page');
+ await page.locator('#importPreview a[href="/lab#historicalReviews"]').click();
+ const reviewPage=await reviewOpened;reviewPage.on('pageerror',e=>errors.push(e.message));await reviewPage.waitForLoadState('domcontentloaded');
+ await reviewPage.locator('#historicalReviews').waitFor();
+ assert.equal(reviewPage.url(),origin+'/lab#historicalReviews');
+ assert.equal(await reviewPage.evaluate(()=>window.opener),null);
+ await reviewPage.close();await page.bringToFront();
+ assert.deepEqual(await importState(),beforeReview,'review tab must preserve original file, list, source, report and dialog');
+ await page.screenshot({path:output+'/import-review-return.png'});
  await page.locator('[data-close="importDialog"]').click();
  await page.locator('.workspace-menu > summary').click();
  await page.locator('a[href="/logout"]').click();await page.waitForURL(origin+'/logout');
