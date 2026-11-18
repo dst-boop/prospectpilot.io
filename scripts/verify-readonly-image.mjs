@@ -37,7 +37,7 @@ try{
  await migrate(new pg.Pool({...config,options}));
  normalPool=new pg.Pool({...config,options,max:2});
  readPool=new pg.Pool({...config,options:options+' -c default_transaction_read_only=on',max:2});
- assert.equal((await normalPool.query('SELECT max(id) AS version FROM prospectpilot_migrations')).rows[0].version,'033');
+ assert.equal((await normalPool.query('SELECT max(id) AS version FROM prospectpilot_migrations')).rows[0].version,'034');
  const lab=createLab(normalPool);
  await lab.importCSV(owner,{csv:'First Name,Last Name,Company,Email\nJordan,Image,Synthetic Manufacturing,jordan@example.test'});
  const id=(await lab.list(owner)).leads[0].lead.id;
@@ -70,7 +70,7 @@ try{
  for(const table of ['prospect_jobs','prospect_tasks','prospect_charges','lab_observations','prospectpilot_migrations'])assert.deepEqual(await rows(normalPool,table),before[table],table+' changed during recovery');
  assert.equal((await lab.advisor.detail(owner,id)).activities.length,2);
  assert.equal(externalCalls,0);
- console.log(JSON.stringify({verified:true,schema:'033',phases:['normal','readonly','recovered'],pending_and_leased_tasks_retained:true,reservations_retained:true,worker_executed:false,external_calls:0,auth:'injected synthetic, not Firebase',scope:'runtime-image handler modules, not production server bootstrap'}));
+ console.log(JSON.stringify({verified:true,schema:'034',phases:['normal','readonly','recovered'],pending_and_leased_tasks_retained:true,reservations_retained:true,worker_executed:false,external_calls:0,auth:'injected synthetic, not Firebase',scope:'runtime-image handler modules, not production server bootstrap'}));
 }finally{
  globalThis.fetch=originalFetch;
  await readPool?.end();await normalPool?.end();

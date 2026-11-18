@@ -33,3 +33,15 @@ test('both production legacy entry points use the shared guard, including queued
   const source=readFileSync(new URL('../'+path,import.meta.url),'utf8');assert.match(source,/fetchLegacySafely\(worker,/);assert.doesNotMatch(source,/await worker\.fetch\(/);
  }
 });
+
+test('rollback-image identities distinguish ordinary-user authorization from administrator mutation guard',async()=>{
+ let calls=0;
+ const h=createHandler({origins:['https://example.com'],ownerEmail:'admin@example.test',auth:{verifySessionCookie:async cookie=>({uid:cookie==='admin'?'synthetic-admin':'synthetic-advisor',email:cookie==='admin'?'admin@example.test':'image@example.test',email_verified:true,firebase:{sign_in_provider:'password'}})},worker:{fetch:async()=>{calls++;throw Error('No legacy execution permitted');}}});
+ for(const path of ['/api/v3/discovery/imports/csv','/api/enrichment/commit','/api/research/auto','/api/research/save','/api/wealthfeed/check','/api/beta/calls']){
+  assert.equal((await h(request(path))).status,403,path+' ordinary user');
+  const admin=request(path);admin.headers.set('cookie','__session=admin');
+  const result=await h(admin);assert.equal(result.status,409,path+' administrator');
+  assert.match((await result.json()).detail,/\/prospect.*\/lab/);
+ }
+ assert.equal(calls,0);
+});

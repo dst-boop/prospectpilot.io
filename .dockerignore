@@ -135,3 +135,8 @@
 !historical-identities.mjs
 !identity-keyring.mjs
 !legacy-identity-guard.mjs
+# Guarded rollback modules are tested in build; only the opt-in target copies them.
+!rollback-bootstrap.mjs
+!rollback-schema.mjs
+!rollback-server.mjs
+!rollback-worker.mjs
