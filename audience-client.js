@@ -17,3 +17,23 @@ $('eventForm').onsubmit=e=>{e.preventDefault();const draft=eventDraft({event:$('
 for(const id of ['eventDescription','eventDate','eventSource','eventReviewed'])$(id).oninput=()=>{$('eventOutput').textContent='';if(id!=='eventReviewed')$('eventReviewed').checked=false;};
 
 $('filterList').onclick=async e=>{const id=e.target.closest?.('button[data-copy-filter]')?.dataset.copyFilter;const snapshot=current;const filter=snapshot?.filters.find(f=>f.id===id);if(!filter)return;const attempt=++copyAttempt;try{await navigator.clipboard.writeText(filter.value);if(current!==snapshot||copyAttempt!==attempt)return;$('copyStatus').textContent='Proposed value copied for '+filter.label+'. Paste only if the matching field accepts text; otherwise select its matching option.';}catch{if(current!==snapshot||copyAttempt!==attempt)return;$('valueFallback').hidden=false;$('valueText').value=filter.value;$('valueText').focus();$('valueText').select();$('copyStatus').textContent='Copy unavailable. Select the proposed value below. No search was run.';}};
+
+// Explicit local download only: no persistence, provider access or contact export.
+$('download').onclick=()=>{
+ if(!current||$('plan').hidden)return;
+ copyAttempt++;
+ let url,link;
+ try{
+  url=URL.createObjectURL(new Blob([planText(current)],{type:'text/plain;charset=utf-8'}));
+  link=document.createElement('a');link.href=url;link.download='prospectpilot-search-plan.txt';
+  document.body.appendChild(link);link.click();
+  $('copyStatus').textContent='Download requested. Check your browser downloads; no contacts were exported or searches run.';
+ }catch{
+  $('planDetails').open=true;$('planText').focus();$('planText').select();
+  $('copyStatus').textContent='Download unavailable. Select and copy the plain-text plan below.';
+ }finally{
+  link?.remove();
+  // Let the browser consume the object URL before releasing it.
+  if(url)setTimeout(()=>URL.revokeObjectURL(url),1000);
+ }
+};
