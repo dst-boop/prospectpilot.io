@@ -85,7 +85,10 @@ test('delete this person takes a second click, then deletes and closes the dialo
  const remove=c.elements.get('deletePerson');
  await remove.onclick();
  assert.equal(c.pending.length,1,'the first click only arms the button');
- assert.match(c.elements.get('contactError').textContent,/do-not-call block keeps the number/);
+ assert.match(c.elements.get('contactError').textContent,/Existing do-not-call blocks/);
+ assert.match(c.elements.get('contactError').textContent,/Older import reports may retain details/);
+ assert.match(c.elements.get('contactError').textContent,/may not recognize older or changed identifiers/);
+ assert.doesNotMatch(c.elements.get('contactError').textContent,/will not be imported again|Nothing about this person remains/);
  const done=remove.onclick();
  assert.equal(c.pending[1].url,'contacts/A');assert.equal(c.pending[1].method,'DELETE');
  c.pending[1].resolve({deleted:true,contacts:1,leads:1});await done;
