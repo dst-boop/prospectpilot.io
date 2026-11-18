@@ -92,6 +92,10 @@ jobs:
           IMAGE_ID=$(docker image inspect prospectpilot-ci --format '{{.Id}}')
           echo "READONLY_REHEARSAL_IMAGE=$IMAGE_ID"
           docker run --rm --network host --read-only --tmpfs /tmp -e STAGING_DATABASE_URL=postgres://postgres:synthetic-ci-only@127.0.0.1:5432/prospectpilot_test --entrypoint node "$IMAGE_ID" scripts/verify-readonly-image.mjs --synthetic-image
+      - name: Isolated real-auth staging runtime image contracts (synthetic verifier only)
+        run: |
+          IMAGE_ID=$(docker image inspect prospectpilot-ci --format '{{.Id}}')
+          docker run --rm --network host --read-only --tmpfs /tmp -e STAGING_DATABASE_URL=postgres://postgres:synthetic-ci-only@127.0.0.1:5432/prospectpilot_test --entrypoint node "$IMAGE_ID" scripts/verify-authenticated-staging-image.mjs --synthetic-image
       - name: Verify Python HTTPS trust store in runtime
         run: docker run --rm --entrypoint python3 prospectpilot-ci -c "import ssl; assert ssl.create_default_context().cert_store_stats()['x509_ca'] > 0, 'System CA certificates are missing'"
       - name: Build explicit rollback runtime and rehearse full-function return
