@@ -96,3 +96,19 @@ test('isolated firm-boundary test inputs reach only the build context', t => {
 });
 
 test('guided audience page and browser modules reach runtime image',()=>{const dockerfile=read('Dockerfile').split(/FROM[^\n]+ AS runtime/)[1],ignore=readOptional('.dockerignore');for(const f of ['audience.html','audience.css','audience-client.js','audience-catalog.mjs']){assert.ok(dockerfile.split('\n').some(l=>l.startsWith('COPY ')&&l.split(/\s+/).includes(f)),f);if(ignore)assert.equal(dockerignored(f,ignore),false,f);assert.ok(read(f));}});
+
+test('guarded rollback entrypoints reach build context and only opt-in runtime target', () => {
+  const dockerfile = read('Dockerfile'), ignore = read('.dockerignore');
+  const normal = dockerfile.split('FROM node:24-bookworm-slim AS runtime')[1].split('FROM runtime AS rollback-runtime')[0];
+  const rollback = dockerfile.split('FROM runtime AS rollback-runtime')[1].split('FROM runtime AS production')[0];
+  for (const file of ['rollback-bootstrap.mjs','rollback-schema.mjs','rollback-server.mjs','rollback-worker.mjs']) {
+    assert.ok(read(file).length > 0, file + ' exists in the build context');
+    assert.equal(dockerignored(file, ignore), false, file + ' must reach build tests');
+    assert.ok(rollback.split('\n').some(line => line.startsWith('COPY ') && line.split(/\s+/).includes(file)), file + ' reaches explicit target');
+    assert.ok(!normal.includes(file), file + ' is not wired into normal runtime');
+  }
+  assert.equal(dockerignored('scripts/rollback-schema033.json', ignore), false);
+  assert.match(normal, /^COPY scripts \.\/scripts$/m);
+  assert.match(rollback, /CMD \["node","rollback-server.mjs"\]/);
+  assert.match(dockerfile, /FROM runtime AS production\s*$/);
+});
