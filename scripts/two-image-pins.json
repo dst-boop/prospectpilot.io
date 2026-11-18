@@ -1,0 +1,17 @@
+{
+  "floor": {
+    "commit": "9f840ac9e07a9051055bdd3eb97857f0d2645392",
+    "tree": "d447b8aa0d3065df29465eea678997807dbf724c"
+  },
+  "successor": {
+    "commit": "3fcefd41a0d3521ba3061bf6c4f3fa87c0693f95",
+    "tree": "56785b1159e059ceb8dfee700d792672429d018b"
+  },
+  "allowedChangedFiles": [
+    "PLAN-SPONSOR-IDENTITY.md",
+    "lab-client.js",
+    "plan-catalog.mjs",
+    "research-lab.mjs",
+    "test/plan-sponsor-identity.test.mjs"
+  ]
+}
