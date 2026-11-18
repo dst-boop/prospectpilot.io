@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {PGlite} from '@electric-sql/pglite';
+import {createOwnershipTestDatabase} from './ownership-test-database.mjs';
 import {readFileSync} from 'node:fs';
 import {createResearchLab} from '../research-lab.mjs';
 import {createProspectWorkspace} from '../prospect-workspace.mjs';
@@ -15,7 +15,7 @@ const csv='First Name,Last Name,Company,Title,Email,Phone,Country\nJamie,Rivera,
 const labCSV='First Name,Last Name,Company,Title,Email,Estimated Age Range,Country\nJamie,Rivera,Example Manufacturing,Director,jamie@example.com,62,US';
 
 async function fixture(){
-  const db=new PGlite();
+  const db=await createOwnershipTestDatabase();
   for(const file of MIGRATIONS)await db.exec(readFileSync(new URL('../'+file,import.meta.url),'utf8'));
   const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
   const lab=createResearchLab({pool,now:()=>now,sources:{readiness:{}}}),ws=createProspectWorkspace({pool});
@@ -180,4 +180,32 @@ test('with a server key tombstones are HMACs, and tombstones written before the 
     assert.ok(stored.includes(tombstone('other','email:jamie@example.com')),'new tombstones are keyed');
     assert.equal((await ws.importCSV(other,{csv,source:'Again'})).added,0);
   }finally{if(was===undefined)delete process.env.FORGET_TOMBSTONE_KEY;else process.env.FORGET_TOMBSTONE_KEY=was;await db.close();}
+});
+
+
+test('deletion scrubs import reports after routine provenance history is trimmed, without touching namesakes or other owners',async()=>{
+ const {db,ws,call}=await fixture();try{
+  const preview=await ws.importCSV(owner,{csv},{preview:true});
+  assert.equal(preview.rows[0].contact_id,undefined);
+  const first=await ws.importCSV(owner,{csv});
+  const id=(await ws.search(owner)).contacts[0].id;
+  const theirs=await ws.importCSV(other,{csv});
+  const namesake=await ws.importCSV(owner,{csv:csv.replace('jamie@example.com','different@example.com').replace('Example Manufacturing','Other Company')});
+  for(let n=0;n<22;n++)await ws.importCSV(owner,{csv,source:'Delivery '+n});
+  const detail=(await call(ws,owner,'GET','/api/prospect/contacts/'+id)).contact;
+  assert.equal(detail.source_history.length,20);
+  assert.equal(detail.source_history.some(e=>e.import_id===first.id),false);
+  await call(ws,owner,'DELETE','/api/prospect/contacts/'+id);
+  const report=async id=>(await db.query('SELECT result FROM prospect_imports WHERE id=$1',[id])).rows[0].result;
+  assert.equal((await report(first.id)).rows[0].name,undefined,'oldest import must not retain deleted name');
+  assert.equal((await report(first.id)).rows[0].issues,undefined);
+  assert.equal((await report(first.id)).rows[0].contact_id,undefined);
+  const ownReports=(await db.query('SELECT id,result FROM prospect_imports WHERE user_id=$1',[owner.uid])).rows;
+  for(const item of ownReports.filter(r=>r.id!==namesake.id))assert.ok(item.result.rows.every(r=>r.name===undefined&&r.contact_id===undefined));
+  assert.equal((await report(namesake.id)).rows[0].name,'Jamie Rivera');
+  assert.equal((await report(theirs.id)).rows[0].name,'Jamie Rivera');
+  const replay=await ws.importCSV(owner,{csv});
+  assert.equal(replay.replayed,true);
+  assert.equal(replay.rows[0].name,undefined,'idempotent replay cannot resurrect personal report details');
+ }finally{await db.close();}
 });
