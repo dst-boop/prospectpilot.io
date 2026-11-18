@@ -5,7 +5,8 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --ignore-scripts
 COPY . .
 # Tests gate the image; development dependencies stay out of the final stage.
-RUN node build.mjs && node --test test/*.test.mjs
+# Pinned-history rehearsal runs on the full-checkout CI runner, not this history-free context.
+RUN node build.mjs && ROLLBACK_HISTORY_FREE_IMAGE_BUILD=1 node --test test/*.test.mjs
 RUN pnpm prune --prod
 
 FROM node:24-bookworm-slim AS runtime
@@ -32,3 +33,10 @@ COPY migrations ./migrations
 COPY readonly-fallback.mjs release-readiness.mjs server.mjs http-server.mjs handler.mjs login-destination.mjs database.mjs migrate.mjs home.html site.css brand.svg login.html research-jobs.mjs research-worker.mjs warn.mjs warn.html warn-client.js native-research.mjs linkedin.mjs linkedin.html linkedin-client.js ./
 USER node
 CMD ["node","server.mjs"]
+
+# Explicit opt-in frozen rollback artifact. Default build below remains normal.
+FROM runtime AS rollback-runtime
+COPY rollback-bootstrap.mjs rollback-schema.mjs rollback-server.mjs rollback-worker.mjs ./
+CMD ["node","rollback-server.mjs"]
+
+FROM runtime AS production

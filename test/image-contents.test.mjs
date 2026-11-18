@@ -96,3 +96,39 @@ test('isolated firm-boundary test inputs reach only the build context', t => {
 });
 
 test('guided audience page and browser modules reach runtime image',()=>{const dockerfile=read('Dockerfile').split(/FROM[^\n]+ AS runtime/)[1],ignore=readOptional('.dockerignore');for(const f of ['audience.html','audience.css','audience-client.js','audience-catalog.mjs']){assert.ok(dockerfile.split('\n').some(l=>l.startsWith('COPY ')&&l.split(/\s+/).includes(f)),f);if(ignore)assert.equal(dockerignored(f,ignore),false,f);assert.ok(read(f));}});
+
+test('guarded rollback entrypoints reach build context and only opt-in runtime target', () => {
+  const dockerfile = read('Dockerfile'), ignore = read('.dockerignore');
+  const normal = dockerfile.split('FROM node:24-bookworm-slim AS runtime')[1].split('FROM runtime AS rollback-runtime')[0];
+  const rollback = dockerfile.split('FROM runtime AS rollback-runtime')[1].split('FROM runtime AS production')[0];
+  for (const file of ['rollback-bootstrap.mjs','rollback-schema.mjs','rollback-server.mjs','rollback-worker.mjs']) {
+    assert.ok(read(file).length > 0, file + ' exists in the build context');
+    assert.equal(dockerignored(file, ignore), false, file + ' must reach build tests');
+    assert.ok(rollback.split('\n').some(line => line.startsWith('COPY ') && line.split(/\s+/).includes(file)), file + ' reaches explicit target');
+    assert.ok(!normal.includes(file), file + ' is not wired into normal runtime');
+  }
+  assert.equal(dockerignored('scripts/rollback-schema034.json', ignore), false);
+  assert.match(normal, /^COPY scripts \.\/scripts$/m);
+  assert.match(rollback, /CMD \["node","rollback-server.mjs"\]/);
+  assert.match(dockerfile, /FROM runtime AS production\s*$/);
+});
+
+test('history-free image marker is limited to build tests and never native rollback gate', () => {
+  const dockerfile = read('Dockerfile');
+  assert.match(dockerfile, /^RUN node build\.mjs && ROLLBACK_HISTORY_FREE_IMAGE_BUILD=1 node --test test\/\*\.test\.mjs$/m);
+  assert.doesNotMatch(dockerfile, /^ENV.*ROLLBACK_HISTORY_FREE_IMAGE_BUILD/m);
+  assert.doesNotMatch(dockerfile.split('AS runtime')[1], /ROLLBACK_HISTORY_FREE_IMAGE_BUILD/);
+  const workflow = read('.github/workflows/tests.yml');
+  assert.match(workflow, /Fail-fast native rollback compatibility contracts[\s\S]*?run: node --test --test-concurrency=2 test\/rollback\*\.test\.mjs/);
+  assert.doesNotMatch(workflow, /ROLLBACK_HISTORY_FREE_IMAGE_BUILD/);
+});
+
+test('schema034 keeps a separately pinned historical033 rehearsal and activation gate', () => {
+  const workflow=read('.github/workflows/tests.yml'),baseline=read('scripts/verify-pinned033-upgrade.mjs');
+  assert.match(workflow,/Pinned historical 029-to-033 and PR100 baseline \(not034 rollback\)/);
+  assert.match(workflow,/node scripts\/verify-pinned033-upgrade.mjs --postgres/);
+  assert.match(baseline,/acb3adbb3ce714889350f6facc55c3c32471fc42/);
+  assert.match(baseline,/\['worktree','add','--detach',dir,pinned033\]/);
+  assert.match(baseline,/\['worktree','remove','--force',dir\]/);
+  assert.ok(read('test/rollback-activation034.test.mjs').includes('No invented historical evidence'));
+});
