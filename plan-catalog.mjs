@@ -85,7 +85,13 @@ export async function selectEmployers(pool, {states = [], max_companies = 10, em
     AND ($7::boolean=false OR COALESCE((payload->>'in_service_distributions_reported')::boolean,false))
     AND ($2::text[]<>'{}' OR NOT EXISTS(SELECT 1 FROM lab_tasks t JOIN lab_runs r ON r.id=t.run_id
       WHERE r.user_id=$3 AND r.created_at>now()-interval '7 days' AND t.payload->>'company'=p.payload->>'sponsor'))
-    ORDER BY sponsor_key, plan_year DESC, (payload->>'net_assets')::numeric DESC NULLS LAST)
+    -- Pick one actual plan per sponsor, never sum potentially overlapping people.
+    -- Preserve newest eligible year first, then use the requested research signal
+    -- before asset size so a larger low-count plan cannot hide a higher-count one.
+    ORDER BY sponsor_key, plan_year DESC,
+      CASE WHEN $8='former_employee_population' THEN (payload->>'separated_future_benefits')::numeric
+        WHEN $8='former_employees' THEN (payload->>'separated_future_benefits')::numeric*(payload->>'average_account_balance')::numeric END DESC NULLS LAST,
+      (payload->>'net_assets')::numeric DESC NULLS LAST,id)
     SELECT payload FROM latest ORDER BY
     -- Prefer reported former-participant counts; unknown is not a reported zero.
     -- Legacy weighted sorting also keeps missing inputs unknown. These are
