@@ -495,7 +495,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
         if(target)target.website=config.websites[i]||'';
         else employers.push({company,website:config.websites[i]||'',state:config.states.length===1?config.states[0]:''});
       }
-      if(!employers.length&&config.playbook&&!config.location)throw fail(422,`No employer plans matched “${findPlaybook(config.playbook).label}”${config.states.length?' in '+config.states.join(', '):''}. Add more states, or check that the DOL plan catalog is loaded.`);
+      if(!employers.length&&config.playbook&&!config.location)throw fail(422,`No employer plans matched “${findPlaybook(config.playbook).label}”${config.states.length?' with sponsor mailing addresses in '+config.states.join(', '):''}. Sponsor states are not worksite or residence locations. Leave states blank to search all sponsors, or check that the DOL plan catalog is loaded.`);
       if(!employers.length&&!config.location) {
         const saved=(await pool.query(`SELECT payload FROM discovery_leads WHERE ${visibleSQL} ORDER BY updated_at DESC LIMIT 2000`,[TEAM,user.uid])).rows;
         employers=[...new Map(saved.map(r=>parse(r.payload)).filter(l=>l.company&&(!config.states.length||config.states.includes(l.state))).map(l=>[nameKey(l.company),{company:l.company,website:l.company_website||'',city:'',state:''}])).values()];
