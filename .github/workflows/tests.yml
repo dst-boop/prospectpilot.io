@@ -90,3 +90,8 @@ jobs:
           IMAGE_ID=$(docker image inspect prospectpilot-rollback-ci --format '{{.Id}}')
           echo "ROLLBACK_REHEARSAL_IMAGE=$IMAGE_ID"
           docker run --rm --network host --read-only --tmpfs /tmp -e STAGING_DATABASE_URL=postgres://postgres:synthetic-ci-only@127.0.0.1:5432/prospectpilot_test --entrypoint node "$IMAGE_ID" scripts/verify-rollback-image.mjs --synthetic-image
+      - name: Actual guarded server bootstrap and guard-loss shutdown (synthetic only)
+        run: |
+          IMAGE_ID=$(docker image inspect prospectpilot-rollback-ci --format '{{.Id}}')
+          echo "ROLLBACK_BOOTSTRAP_IMAGE=$IMAGE_ID"
+          docker run --rm --network host --read-only --tmpfs /tmp -e STAGING_DATABASE_URL=postgres://postgres:synthetic-ci-only@127.0.0.1:5432/prospectpilot_test --entrypoint node "$IMAGE_ID" scripts/verify-rollback-bootstrap-image.mjs --synthetic-image
