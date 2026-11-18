@@ -40,3 +40,5 @@ test('only staging-served Contacts script skips provider jobs and identifies uns
  assert.throws(()=>stagingProspectScript(original.replace('initProviderUI({api','changed({api')),/needs review/);
  assert.ok(blockedStagingControls.includes('profileImageRead'));
 });
+
+test('staged audience has an explicit fictional mode and no real export instruction sequence',()=>{const html=stagingPage(read('audience.html'));assert.match(html,/data-fictional-exercise="true"/);assert.match(html,/fixed test dataset, not search results/);assert.match(html,/Open fictional CSV exercise/);assert.doesNotMatch(html,/Use the arrow beside Export|In Advanced Search, choose Contacts/);assert.match(read('audience.html'),/Use the arrow beside Export/);assert.doesNotMatch(read('audience.html'),/data-fictional-exercise/);});
