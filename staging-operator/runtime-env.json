@@ -1,0 +1,12 @@
+{
+  "STAGING_PROJECT_ID": "prospectpilot-stg-261118",
+  "GOOGLE_CLOUD_PROJECT": "prospectpilot-stg-261118",
+  "STAGING_OWNER_UID": "WVxUh1LmGvWKYnRxjBYM0VbwGZX2",
+  "STAGING_ORIGIN": "https://prospectpilot-stg-app-889507481125.us-central1.run.app",
+  "STAGING_CREATED_AT": "2026-11-18T00:00:00.000Z",
+  "STAGING_EXPIRES_AT": "2026-11-25T00:00:00.000Z",
+  "STAGING_FIREBASE_CONFIG": "{\"projectId\": \"prospectpilot-stg-261118\", \"authDomain\": \"prospectpilot-stg-261118.firebaseapp.com\", \"apiKey\": \"AIzaSyAht3Zz3qGQWsq76hCa_WP3RFOC9ipFZWs\", \"appId\": \"1:889507481125:web:214df4cb1165f73c6f21cc\"}",
+  "PGHOST": "/cloudsql/prospectpilot-stg-261118:us-central1:prospectpilot-stg-db",
+  "PGDATABASE": "prospectpilot_stg_app",
+  "PGUSER": "prospectpilot_stg_runtime"
+}
