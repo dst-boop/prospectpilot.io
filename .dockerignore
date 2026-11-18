@@ -131,3 +131,7 @@
 !audience.css
 !audience-client.js
 !audience-catalog.mjs
+
+!historical-identities.mjs
+!identity-keyring.mjs
+!legacy-identity-guard.mjs

@@ -1,3 +1,4 @@
+import {fetchLegacySafely} from './legacy-identity-guard.mjs';
 import {readOnlyFallback} from './readonly-fallback.mjs';
 import {createResearchLab} from './research-lab.mjs';
 import {createLabSources} from './lab-sources.mjs';
@@ -13,8 +14,8 @@ const db=createDatabase(pool),native=createNativeResearch({warn:createWarnServic
 const lab=createResearchLab({pool,allowance:prospectJobs.allowanceRefusal,sources:createLabSources({warn:createWarnService({get:publicGet}),searchKey:process.env.BRAVE_SEARCH_API_KEY||'',searchCostMicros:process.env.BRAVE_QUERY_COST_MICROS===undefined?null:Number(process.env.BRAVE_QUERY_COST_MICROS)})});
 let stop=false;process.on('SIGTERM',()=>{stop=true;});
 const queue=createResearchJobs({pool,runSource:async(job,source)=>{
- const response=await worker.fetch(new Request('https://prospectpilot.io/api/research/auto',{method:'POST',headers:{'content-type':'application/json','oai-authenticated-user-id':job.user_id,'oai-authenticated-user-email':job.user_email},body:JSON.stringify({lead_id:job.lead_id,source,identity_signature:job.identity_signature})}),{DB:db,NATIVE_RESEARCH:native});
- const data=await response.json();if(!response.ok){const e=Error('Research source failed');e.status=response.status;throw e;}return data;
+ const response=await fetchLegacySafely(worker,new Request('https://prospectpilot.io/api/research/auto',{method:'POST',headers:{'content-type':'application/json','oai-authenticated-user-id':job.user_id,'oai-authenticated-user-email':job.user_email},body:JSON.stringify({lead_id:job.lead_id,source,identity_signature:job.identity_signature})}),{DB:db,NATIVE_RESEARCH:native});
+ const data=await response.json();if(!response.ok){const e=Error(response.status===409?'Legacy research is paused; use the current Research Lab workflow.':'Research source failed');e.status=response.status;throw e;}return data;
 }});
 try{await lab.scheduleDue();const until=Date.now()+12*60*1000;let idle=0;while(!stop&&Date.now()<until){// Autopilot last: the loop re-runs immediately whenever any tick did work, so
 // a step queued at the end of a pass is picked up at the start of the next one,

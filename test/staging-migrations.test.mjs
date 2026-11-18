@@ -80,7 +80,7 @@ for (const backend of ['pglite', 'postgres']) {
       await db.query("INSERT INTO prospect_networking_captures(id,user_id,contact_id,request_key,fingerprint,payload,result) VALUES ('capture','synthetic-owner','old-contact','request','synthetic-fingerprint','{}','{}')");
       await migrate(db.pool);
       assert.deepEqual(await snapshot(db), before);
-      assert.equal((await db.query('SELECT count(*)::int AS n FROM prospectpilot_migrations')).rows[0].n, 33);
+      assert.equal((await db.query('SELECT count(*)::int AS n FROM prospectpilot_migrations')).rows[0].n, 34);
       assert.equal((await db.query('SELECT count(*)::int AS n FROM prospect_networking_captures')).rows[0].n, 1);
     } finally { await db.close(); }
   });
@@ -94,7 +94,7 @@ for (const backend of ['pglite', 'postgres']) {
       for (const db of [first, second]) {
         assert.equal((await db.query('SELECT current_schema() AS name')).rows[0].name, db.schema);
         await migrate(db.pool);
-        assert.equal((await db.query('SELECT count(*)::int AS n FROM prospectpilot_migrations')).rows[0].n, 33);
+        assert.equal((await db.query('SELECT count(*)::int AS n FROM prospectpilot_migrations')).rows[0].n, 34);
         await db.query('CREATE TABLE isolation_probe (id TEXT PRIMARY KEY)');
         await db.query('INSERT INTO isolation_probe VALUES ($1)', [db.schema]);
       }

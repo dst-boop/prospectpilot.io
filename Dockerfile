@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-cert
 COPY --from=build /app/node_modules ./node_modules
 COPY package.json ./
 COPY contact-benchmark.mjs ./
+COPY historical-identities.mjs identity-keyring.mjs legacy-identity-guard.mjs ./
 COPY advisor-pipeline.mjs advisor-conversation-guidance.mjs ./
 COPY opportunity-policy.mjs ./
 COPY --from=build /app/generated ./generated

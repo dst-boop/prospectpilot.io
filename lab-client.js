@@ -261,8 +261,9 @@ $('identityList').onclick=async event=>{
   const button=event.target.closest('button[data-review]');if(!button)return;
   const buttons=button.closest('li').querySelectorAll('button');buttons.forEach(b=>b.disabled=true);
   try{
-    await request('/api/lab/identity-reviews/'+encodeURIComponent(button.dataset.review),{method:'POST',body:JSON.stringify({decision:button.dataset.decision,target_id:button.dataset.target||''})});
-    notice({merge:'Added to the existing record.',same:'Combined into one record.',save_new:'Saved as a new person.',separate:'Kept as two people.',discard:'Discarded.'}[button.dataset.decision]);
+    const result=await request('/api/lab/identity-reviews/'+encodeURIComponent(button.dataset.review),{method:'POST',body:JSON.stringify({decision:button.dataset.decision,target_id:button.dataset.target||''})});
+    if(result?.held_for_historical_review){notice('Not saved or merged. This arrival moved to historical identity review.');$('historicalReviews').open=true;await loadHistoricalReviews();$('historicalStatus').focus();}
+    else notice({merge:'Added to the existing record.',same:'Combined into one record.',save_new:'Saved as a new person.',separate:'Kept as two people.',discard:'Discarded.'}[button.dataset.decision]);
     await Promise.all([loadIdentityReviews(),loadWorklist(),loadLeads()]);
   }catch(e){notice(e.message,true);buttons.forEach(b=>b.disabled=false);}
 };
@@ -661,5 +662,49 @@ function renderConversationGuide(){
   }
   $('conversationBrief').append(section);
 }
+
+// Incoming-only historical identity holds. Decisions never imply outreach permission.
+let historicalRows=[],historicalBusy=false,historicalLoadVersion=0;
+const historicalChanges=row=>Object.entries(row?.proposed_changes||{}).filter(([,value])=>['string','number','boolean'].includes(typeof value));
+function historicalLock(locked){historicalBusy=locked;for(const id of ['historicalReload','historicalSelect','historicalSave','historicalDiscard','historicalReason','historicalDistinct'])$(id).disabled=locked;const row=historicalRows.find(r=>r.id===$('historicalSelect').value);if(row&&['update_contact','update_lead'].includes(row.operation)&&(!historicalChanges(row).length||!row.existing_record?.id))$('historicalSave').disabled=true;}
+function historicalRender(){
+ const row=historicalRows.find(r=>r.id===$('historicalSelect').value)||historicalRows[0];
+ $('historicalControls').hidden=!row;$('historicalReason').value='';$('historicalDistinct').checked=false;
+ if(!row){$('historicalArrival').textContent='';return;}
+ $('historicalSelect').value=row.id;
+ const updating=['update_contact','update_lead'].includes(row.operation);
+ $('historicalSave').textContent=updating?'I reviewed the source: apply changes to the existing '+(row.operation==='update_contact'?'contact':'lead'):'I reviewed the source: save as a different person';
+ $('historicalDiscard').textContent=updating?'Discard these proposed changes':'Discard this incoming record';
+ const a=row.arrival||{},changes=historicalChanges(row),target=row.existing_record;
+ const targetSummary=updating?(target?.id?`<section><h4>Existing live record to update</h4><p>${esc(target.name||'Name unavailable')} · ${esc(target.company||'Company unknown')}</p><p>Current email: ${esc(target.email||'Not supplied')}<br>Current LinkedIn URL: ${esc(target.linkedin_url||'Not supplied')}</p><small>Record reference: ${esc(target.id)}</small></section>`:'<p>The existing live record is unavailable. Refresh before approving. No changes have been applied.</p>'):'';
+ $('historicalArrival').innerHTML=targetSummary+`<h3>${esc(a.name||'Name unavailable')}</h3><dl><dt>Company</dt><dd>${esc(a.company||'Unknown')}</dd><dt>Incoming email</dt><dd>${esc(a.email||'Not supplied')}</dd><dt>Incoming LinkedIn URL</dt><dd>${esc(a.linkedin_url||'Not supplied')}</dd><dt>Source</dt><dd>${esc(row.source||'Source not recorded')}</dd><dt>Effect if approved</dt><dd>${updating?'Apply proposed changes to the existing '+(row.operation==='update_contact'?'contact':'lead'):(row.destination==='contact'?'Create a contact in your directory':'Create a Research Lab lead')}</dd></dl>`+(updating?(changes.length?'<h4>Proposed changes</h4><p>Only the incoming proposed values are shown. This review does not verify contact routes or grant outreach permission.</p><dl>'+changes.map(([key,value])=>`<dt>${esc(title(key))}</dt><dd>${esc(value===''?'(clear this field)':String(value))}</dd>`).join('')+'</dl>':'<p>Proposed changes are unavailable. Refresh this review before approving; nothing has been applied.</p>'):'');
+ historicalLock(historicalBusy);
+}
+async function loadHistoricalReviews(){
+ if(historicalBusy)return;const version=++historicalLoadVersion;historicalLock(true);$('historicalStatus').textContent='Loading held reviews…';
+ try{const data=await request('/api/lab/historical-identity-reviews');if(version!==historicalLoadVersion)return;
+ historicalRows=data.reviews||[];$('historicalSelect').innerHTML=historicalRows.map((r,i)=>`<option value="${esc(r.id)}">${i+1}. ${esc(r.arrival?.name||'Name unavailable')} · ${esc(r.arrival?.company||'Unknown company')}</option>`).join('');historicalRender();
+ $('historicalStatus').textContent=historicalRows.length?`${historicalRows.length} shown of ${Number(data.total)||historicalRows.length} held reviews. Only your incoming records and authorized live targets are shown. Refresh after resolving these to see remaining records.`:'No held reviews returned. This is not confirmation of identity or permission to contact.';
+ }catch(e){historicalRows=[];historicalRender();$('historicalStatus').textContent='Held reviews could not load. '+e.message;}finally{historicalLock(false);}
+}
+async function resolveHistoricalReview(decision){
+ if(historicalBusy)return;const row=historicalRows.find(r=>r.id===$('historicalSelect').value);if(!row)return;
+ if(['update_contact','update_lead'].includes(row.operation)&&!row.existing_record?.id&&decision==='different_person'){$('historicalStatus').textContent='The existing live record is unavailable. Refresh before approving.';return;}
+ if(['update_contact','update_lead'].includes(row.operation)&&!historicalChanges(row).length&&decision==='different_person'){$('historicalStatus').textContent='Proposed changes are unavailable. Refresh this review before approving.';return;}
+ const reason=$('historicalReason').value.trim(),distinct=$('historicalDistinct').checked===true;
+ if(decision==='different_person'&&(!reason||!distinct)){$('historicalStatus').textContent='Check the original source, enter a reason, and confirm this is a different person before saving.';(!reason?$('historicalReason'):$('historicalDistinct')).focus();return;}
+ historicalLock(true);let message='',reload=false;
+ try{await request('/api/lab/historical-identity-reviews/'+encodeURIComponent(row.id),{method:'POST',body:JSON.stringify({decision,reason,...(decision==='different_person'?{confirmed_distinct:true}:{})})});reload=true;message=decision==='discard'?(['update_contact','update_lead'].includes(row.operation)?'Proposed changes discarded. The existing record was not changed.':'Incoming record discarded. No existing person was restored.'):['update_contact','update_lead'].includes(row.operation)?'Reviewed changes applied to the existing record. Review contact permissions before outreach.':'Saved as a different person. Review contact permissions before outreach.';}
+ catch(e){if(e.status===409){reload=true;message='This review changed or was already decided. The queue has been refreshed; check its current state before acting.';}else message='Decision not confirmed. '+e.message+' Refresh the queue before retrying if the connection was interrupted.';}
+ finally{historicalLock(false);}
+ if(reload)await loadHistoricalReviews();
+ $('historicalStatus').textContent=message+(reload&&$('historicalStatus').textContent.startsWith('Held reviews could not load.')?' '+$('historicalStatus').textContent:'');$('historicalStatus').focus();
+}
+$('historicalReload').onclick=loadHistoricalReviews;
+$('historicalSelect').onchange=()=>{if(!historicalBusy){historicalRender();$('historicalStatus').textContent='Review the selected incoming record and source. No decision has been saved for this selection.';}};
+$('historicalSave').onclick=()=>resolveHistoricalReview('different_person');
+$('historicalDiscard').onclick=()=>resolveHistoricalReview('discard');
+$('historicalOpen').onclick=()=>{$('historicalReviews').open=true;loadHistoricalReviews();};
+if(location.hash==='#historicalReviews'){$('historicalReviews').open=true;loadHistoricalReviews();}
 
 init();

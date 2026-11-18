@@ -1,3 +1,4 @@
+import {captureIdentityEvidence,transferIdentityEvidence,holdHistoricalArrival,historicalMatches,historicalCandidateHash,historicalIdentitySignature,scrubHistoricalReports} from './historical-identities.mjs';
 import {createAdvisorWorkflow,withDirectoryRestrictions} from './advisor-workflow.mjs';
 import {randomUUID} from 'node:crypto';
 import {normalizeLead, mergeLead, isUsableStoredLead} from './generated/worker.mjs';
@@ -8,7 +9,7 @@ import {applyPlaybook, findPlaybook, playbookChoices} from './rollover-playbooks
 import {ADVICE_TARGET} from './opportunity-policy.mjs';
 import {SOURCE_CATALOG} from './source-catalog.mjs';
 import {LEAD_TEAM,LEAD_VISIBLE_SQL,ownsLead,forgetPerson,forgottenKeys} from './forget.mjs';
-import {identityLookupKeys} from './prospect-workspace.mjs';
+import {identityLookupKeys,contactIdentities,createProspectWorkspace} from './prospect-workspace.mjs';
 import {csvRows} from './warn.mjs';
 
 const TEAM=LEAD_TEAM;
@@ -331,6 +332,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       // A person this user deleted stays deleted, whether a CSV or a research
       // run finds them again.
       if((await forgottenKeys(client,user.uid,keys)).size){rejected++;continue;}
+      if(await holdHistoricalArrival(client,user.uid,'lead',lead,{run_id:run?.id||null,source,reported:reportedFields(raw,lead)})){ambiguous++;continue;}
       const matches=[...new Map(keys.flatMap(key=>index.get(key)||[]).map(r=>[r.id,r])).values()];
       // More than one record claims this arrival: hold it for the advisor
       // instead of guessing or dropping it.
@@ -340,6 +342,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
         const existing=matches[0];
         // An advisor cannot overwrite another advisor's record through import deduplication.
         if(!writable(existing)){duplicates++;continue;}
+        await captureIdentityEvidence(client,existing.owner_user_id,'lead',existing.id,parse(existing.payload));
         saved=mergeWithHistory(parse(existing.payload),lead,now().toISOString(),reportedFields(raw,lead));saved.id=existing.id;
         await client.query('UPDATE discovery_leads SET payload=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2',[JSON.stringify(saved),saved.id]);duplicates++;
       } else {
@@ -350,6 +353,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
         const namesakes=(people.get(personKey(saved))||[]).filter(writable);
         if(namesakes.length){probable++;await queueReview(client,user,run,'probable',{},candidateKeys(saved),namesakes.map(r=>r.id),saved.id);}
       }
+      await captureIdentityEvidence(client,matches[0]?.owner_user_id||user.uid,'lead',saved.id,saved,lead);
       const stored={id:saved.id,payload:JSON.stringify(saved),owner_user_id:user.uid,owner_email:user.email};
       for(const key of candidateKeys(saved))index.set(key,[stored]);
       if(isNew&&personKey(saved)){const key=personKey(saved);people.set(key,[...(people.get(key)||[]),stored]);}
@@ -400,6 +404,76 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       })};
     });
   }
+  async function historicalIdentityReviews(user){
+    const reviews=(await pool.query("SELECT id,destination,candidate,payload,created_at FROM prospect_historical_reviews WHERE user_id=$1 AND status='open' ORDER BY created_at DESC,id LIMIT 100",[user.uid])).rows;
+    const total=Number((await pool.query("SELECT count(*) AS n FROM prospect_historical_reviews WHERE user_id=$1 AND status='open'",[user.uid])).rows[0].n);
+    const contactIds=reviews.map(r=>r.payload.existing_contact_id).filter(Boolean),leadIds=reviews.map(r=>r.payload.existing_lead_id).filter(Boolean);
+    const currentContacts=new Map((await pool.query('SELECT id,payload FROM prospect_contacts WHERE user_id=$1 AND id=ANY($2::text[])',[user.uid,contactIds])).rows.map(r=>[r.id,r.payload]));
+    const currentLeads=new Map((await pool.query('SELECT id,payload FROM discovery_leads WHERE owner_user_id=$1 AND id=ANY($2::text[])',[user.uid,leadIds])).rows.map(r=>[r.id,parse(r.payload)]));
+    return {total,reviews:reviews.map(r=>({id:r.id,destination:r.destination,operation:r.payload.existing_contact_id?'update_contact':r.payload.existing_lead_id?'update_lead':'create',created_at:r.created_at,
+      source:r.payload.source||r.payload.input?.source||r.candidate.source||'',
+      existing_record:r.payload.existing_contact_id&&currentContacts.has(r.payload.existing_contact_id)?reviewSummary(r.payload.existing_contact_id,currentContacts.get(r.payload.existing_contact_id)):r.payload.existing_lead_id&&currentLeads.has(r.payload.existing_lead_id)?reviewSummary(r.payload.existing_lead_id,currentLeads.get(r.payload.existing_lead_id)):null,
+      arrival:reviewSummary(null,r.candidate),proposed_changes:Object.fromEntries((r.payload.changed_fields||[]).filter(k=>['first_name','last_name','company','company_domain','title','current_title','industry','seniority','email','linkedin_url','phone','business_phone','mobile_phone','city','state','country','suppressed','email_status','phone_status','estimated_age_range','estimated_net_worth'].includes(k)&&['string','number','boolean'].includes(typeof r.candidate[k])).map(k=>[k,r.candidate[k]]))}))};
+  }
+  async function resolveHistoricalIdentity(user,id,input={}){
+    if(!input||typeof input!=='object'||Array.isArray(input)||!['different_person','discard'].includes(input.decision)||Object.keys(input).some(k=>!['decision','reason','confirmed_distinct'].includes(k)))throw fail(422,'Choose an identity review decision.');
+    if(input.decision==='different_person'&&(input.confirmed_distinct!==true||typeof input.reason!=='string'||!input.reason.trim()||input.reason.length>1000))throw fail(422,'Confirm that you reviewed the source and provide a reason for treating this as a different person.');
+    return transaction(pool,async client=>{
+      await client.query('SELECT pg_advisory_xact_lock(505006)');
+      // Same list-before-owner order as directory imports; never invert it.
+      const pending=(await client.query('SELECT payload FROM prospect_historical_reviews WHERE id=$1 AND user_id=$2',[id,user.uid])).rows[0];
+      if(input.decision==='different_person'&&pending?.payload?.input?.list_id)await client.query('SELECT id FROM prospect_lists WHERE id=$1 AND user_id=$2 FOR UPDATE',[pending.payload.input.list_id,user.uid]);
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`prospect:${user.uid}`]);
+      const row=(await client.query('SELECT * FROM prospect_historical_reviews WHERE id=$1 AND user_id=$2 FOR UPDATE',[id,user.uid])).rows[0];
+      if(!row)throw fail(404,'Review not found.');
+      if(row.status!=='open')throw fail(409,'This review was already decided. Refresh the review list.');
+      let savedId=null;
+      if(input.decision==='different_person'){
+        const candidate=row.candidate;
+        await historicalMatches(client,user.uid,candidate);
+        const keys=row.destination==='contact'?identityLookupKeys(candidate):candidateKeys(candidate);
+        if((await forgottenKeys(client,user.uid,keys)).size)throw fail(409,'Current deletion restrictions still apply. This review cannot override them.');
+        if(row.destination==='contact'&&row.payload.existing_contact_id){
+          const target=row.payload.existing_contact_id;
+          const live=(await client.query('SELECT payload FROM prospect_contacts WHERE id=$1 AND user_id=$2 FOR UPDATE',[target,user.uid])).rows[0];
+          if(!live||historicalCandidateHash(live.payload)!==row.payload.source_revision)throw fail(409,'The contact changed. Discard this stale review and review its current values.');
+          if((await client.query('SELECT id FROM prospect_contacts WHERE user_id=$1 AND id<>$2 AND identity_keys ?| $3::text[]',[user.uid,target,keys])).rows.length)throw fail(409,'Another contact now matches these identifiers.');
+          await captureIdentityEvidence(client,user.uid,'contact',target,live.payload,candidate);
+          await client.query('UPDATE prospect_contacts SET payload=$1::jsonb,identity_keys=$2::jsonb,updated_at=now() WHERE id=$3 AND user_id=$4',[JSON.stringify(candidate),JSON.stringify(contactIdentities(candidate)),target,user.uid]);savedId=target;
+        }else if(row.destination==='lead'&&row.payload.existing_lead_id){
+          const target=row.payload.existing_lead_id;
+          const live=(await client.query('SELECT payload FROM discovery_leads WHERE id=$1 AND owner_user_id=$2 FOR UPDATE',[target,user.uid])).rows[0];
+          if(!live||historicalCandidateHash(parse(live.payload))!==row.payload.source_revision)throw fail(409,'The lead changed. Discard this stale review and review its current values.');
+          const others=(await client.query('SELECT payload FROM discovery_leads WHERE team=$1 AND id<>$2',[TEAM,target])).rows;
+          if(others.some(r=>candidateKeys(parse(r.payload)).some(k=>keys.includes(k))))throw fail(409,'Another record now matches these identifiers.');
+          await captureIdentityEvidence(client,user.uid,'lead',target,parse(live.payload),candidate);
+          await client.query('UPDATE discovery_leads SET payload=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2 AND owner_user_id=$3',[JSON.stringify(candidate),target,user.uid]);
+          await evaluate(user,candidate,client);savedId=target;
+        }else if(row.destination==='contact'){
+          if((await client.query('SELECT id FROM prospect_contacts WHERE user_id=$1 AND identity_keys ?| $2::text[]',[user.uid,keys])).rows.length)throw fail(409,'An existing contact now matches. Review that contact before deciding.');
+          const workspace=createProspectWorkspace({pool:{transactionClient:client,query:(...a)=>client.query(...a)}});
+          const result=await workspace.importCSV(user,row.payload.input,{networking:row.payload.networking||null,historicalApproval:{id:row.id,candidateHash:historicalCandidateHash(candidate),networkingFingerprint:row.payload.networking_fingerprint}});
+          if(result.added!==1||result.conflicts||result.rejected)throw fail(409,'The arrival changed or cannot be saved safely. Review the source again.');
+          savedId=result.rows.find(r=>r.contact_id)?.contact_id;
+          // Private networking imports intentionally omit person details in general reports.
+          savedId ||= result.capture?.contact_id;
+          if(!savedId)throw fail(409,'The reviewed contact could not be confirmed.');
+          await scrubHistoricalReports(client,user.uid,[id],savedId);
+        }else{
+          const existing=(await client.query('SELECT payload FROM discovery_leads WHERE team=$1',[TEAM])).rows;
+          if(existing.some(r=>candidateKeys(parse(r.payload)).some(k=>keys.includes(k))))throw fail(409,'Identifiers now match an existing record. Review it before deciding.');
+          const saved={...withFieldHistory(candidate,now().toISOString(),row.payload.reported||candidate),id:randomUUID()};
+          await client.query('INSERT INTO discovery_leads(id,team,owner_user_id,owner_email,payload) VALUES($1,$2,$3,$4,$5)',[saved.id,TEAM,user.uid,user.email||'',JSON.stringify(saved)]);
+          await captureIdentityEvidence(client,user.uid,'lead',saved.id,saved);
+          if(row.payload.run_id&&(await client.query('SELECT id FROM lab_runs WHERE id=$1 AND user_id=$2',[row.payload.run_id,user.uid])).rows.length)await client.query('INSERT INTO lab_run_leads(run_id,lead_id,is_new,source) VALUES($1,$2,true,$3) ON CONFLICT DO NOTHING',[row.payload.run_id,saved.id,row.payload.source||'Historical identity review']);
+          await evaluate(user,saved,client);savedId=saved.id;
+        }
+      }else await scrubHistoricalReports(client,user.uid,[id]);
+      const resolution=input.decision==='discard'?{decision:'discard'}:{decision:input.decision,reason:input.reason.trim(),result_id:savedId,identity_signature:historicalIdentitySignature(row.candidate)};
+      await client.query("UPDATE prospect_historical_reviews SET status=$1,candidate='{}',payload='{}',resolution=$2::jsonb,resolved_at=now() WHERE id=$3 AND user_id=$4",[input.decision==='discard'?'discarded':'resolved',JSON.stringify(resolution),id,user.uid]);
+      return {resolved:true,decision:input.decision,id:savedId,destination:row.destination};
+    });
+  }
   async function resolveIdentityReview(user,id,input={}) {
     const decision=String(input.decision||''),target=String(input.target_id||'');
     return transaction(pool,async client=>{
@@ -426,15 +500,25 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
         if(!lead)throw fail(409,'This arrival is no longer held.');
         // A person deleted since the arrival stays deleted.
         if((await forgottenKeys(client,user.uid,candidateKeys(lead))).size)throw fail(409,'This person was deleted from your records.');
+        const historical=await holdHistoricalArrival(client,user.uid,'lead',lead,{run_id:review.run_id,source:'Identity review'});
+        if(historical){
+          await client.query("UPDATE lab_identity_reviews SET status='discarded',candidate='{}',resolved_at=now() WHERE id=$1 AND user_id=$2",[id,user.uid]);
+          return {held_for_historical_review:true,review_id:historical.id};
+        }
         let saved;
         if(decision==='merge'){
           const row=await pickTarget();
           saved={...absorbRecord(parse(row.payload),lead,at),id:row.id};
+          if((await forgottenKeys(client,row.owner_user_id,candidateKeys(saved))).size)throw fail(409,'Current deletion restrictions apply to merged identifiers.');
+          const historical=await holdHistoricalArrival(client,row.owner_user_id,'lead',saved,{existing_lead_id:row.id,source_revision:historicalCandidateHash(parse(row.payload)),source:'Identity merge',changed_fields:Object.keys(saved).filter(k=>saved[k]!==parse(row.payload)[k])});
+          if(historical)return {held_for_historical_review:true,review_id:row.owner_user_id===user.uid?historical.id:null};
+          await captureIdentityEvidence(client,row.owner_user_id,'lead',row.id,parse(row.payload),saved,lead);
           await client.query('UPDATE discovery_leads SET payload=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2',[JSON.stringify(saved),saved.id]);status='merged';
         } else {
           saved={...lead,id:randomUUID()};
           await client.query('INSERT INTO discovery_leads(id,team,owner_user_id,owner_email,payload) VALUES($1,$2,$3,$4,$5)',[saved.id,TEAM,user.uid,user.email,JSON.stringify(saved)]);status='saved';
         }
+        if(decision==='save_new')await captureIdentityEvidence(client,user.uid,'lead',saved.id,saved);
         await link(saved.id);await evaluate(user,saved,client);leadId=saved.id;
       } else if(decision==='same'){
         const row=await pickTarget(),arrival=await load(review.lead_id);
@@ -448,12 +532,17 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
         if(Number(work.n)||(Array.isArray(arrived.research_records)&&arrived.research_records.length))
           throw fail(409,'The newer record already has evidence, research, calls, activity or a linked contact. Open both and combine them by hand.');
         const saved={...absorbRecord(parse(row.payload),arrived,at),id:row.id};
+        if((await forgottenKeys(client,row.owner_user_id,candidateKeys(saved))).size)throw fail(409,'Current deletion restrictions apply to merged identifiers.');
+        const historical=await holdHistoricalArrival(client,row.owner_user_id,'lead',saved,{existing_lead_id:row.id,source_revision:historicalCandidateHash(parse(row.payload)),source:'Identity merge',changed_fields:Object.keys(saved).filter(k=>saved[k]!==parse(row.payload)[k])});
+        if(historical)return {held_for_historical_review:true,review_id:row.owner_user_id===user.uid?historical.id:null};
+        await captureIdentityEvidence(client,row.owner_user_id,'lead',row.id,parse(row.payload),arrived,saved);
         await client.query('UPDATE discovery_leads SET payload=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2',[JSON.stringify(saved),saved.id]);
         await client.query('INSERT INTO lab_run_leads(run_id,lead_id,is_new,source) SELECT run_id,$2,false,source FROM lab_run_leads WHERE lead_id=$1 ON CONFLICT(run_id,lead_id) DO NOTHING',[arrival.id,saved.id]);
         // Other open reviews about the newer record now point at the kept one.
         await client.query('UPDATE lab_identity_reviews SET match_ids=ARRAY(SELECT DISTINCT CASE WHEN m=$1 THEN $2 ELSE m END FROM unnest(match_ids) m) WHERE $1=ANY(match_ids)',[arrival.id,saved.id]);
         await client.query('DELETE FROM lab_identity_reviews WHERE lead_id=$1 AND id<>$2',[arrival.id,review.id]);
         await client.query('UPDATE lab_identity_reviews SET lead_id=NULL WHERE id=$1',[review.id]);
+        await transferIdentityEvidence(client,arrival.owner_user_id,'lead',arrival.id,row.id,row.owner_user_id);
         await client.query('DELETE FROM discovery_leads WHERE id=$1',[arrival.id]);
         await evaluate(user,saved,client);status='merged';leadId=saved.id;
       } else status=decision==='separate'?'separate':'discarded';
@@ -803,6 +892,9 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       const rows=[];for(const id of ids){const row=await detail(user,id);if(row.quality.status!=='excluded'&&(!input.verified_only||row.quality.status==='verified'))rows.push(row);}
       return new Response(researchCSV(rows,ADVICE_TARGET),{headers:{'content-type':'text/csv; charset=utf-8','content-disposition':'attachment; filename="prospectpilot-research.csv"'}});
     }
+    if(path==='/api/lab/historical-identity-reviews'&&request.method==='GET')return historicalIdentityReviews(user);
+    const historical=path.match(/^\/api\/lab\/historical-identity-reviews\/([^/]+)$/);
+    if(historical&&request.method==='POST')return resolveHistoricalIdentity(user,decodeURIComponent(historical[1]),await body());
     if(path==='/api/lab/identity-reviews'&&request.method==='GET')return identityReviews(user);
     const identityMatch=path.match(/^\/api\/lab\/identity-reviews\/([^/]+)$/);
     if(identityMatch&&request.method==='POST')return resolveIdentityReview(user,decodeURIComponent(identityMatch[1]),await body());
@@ -814,5 +906,5 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     if(runMatch&&request.method==='GET')return runDetail(user,decodeURIComponent(runMatch[1]));
     throw fail(404,'Research endpoint not found.');
   }
-  return {relatedPeople,importContacts,advisor,route,identityReviews,resolveIdentityReview,tick,scheduleDue,enqueue,importCSV,detail,list,review,metrics,settings,cost,runDetail};
+  return {historicalIdentityReviews,resolveHistoricalIdentity,relatedPeople,importContacts,advisor,route,identityReviews,resolveIdentityReview,tick,scheduleDue,enqueue,importCSV,detail,list,review,metrics,settings,cost,runDetail};
 }

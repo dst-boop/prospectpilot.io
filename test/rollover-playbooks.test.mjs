@@ -32,7 +32,7 @@ test('plan filters choose employers by plan type and former-participant count',a
   const db=new PGlite();try{
     await db.exec(readFileSync(new URL('../generated/schema.sql',import.meta.url),'utf8'));
     await db.exec(readFileSync(new URL('../migrations/006-research-lab.sql',import.meta.url),'utf8'));
-    await db.exec(readFileSync(new URL('../migrations/017-forget.sql',import.meta.url),'utf8'));
+    await db.exec(readFileSync(new URL('../migrations/017-forget.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/034-historical-identities.sql',import.meta.url),'utf8'));
     await db.exec(readFileSync(new URL('../migrations/012-plan-catalog-summary.sql',import.meta.url),'utf8'));
     const year=new Date().getUTCFullYear()-1;
     const plans=[
