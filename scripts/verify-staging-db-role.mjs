@@ -52,6 +52,7 @@ try{
  assert.equal((await req('/api/prospect/import/preview',{method:'POST',body:{csv:fictionalCSV}})).status,200);
  assert.equal((await req('/api/prospect/import',{method:'POST',body:{csv:fictionalCSV}})).status,200);
  const contacts=await(await req('/api/prospect/contacts')).json();assert.equal(contacts.total,2);
+ const acquired=(await pool.query("SELECT contact_id,channel,source FROM lead_acquisitions WHERE user_id=$1 ORDER BY contact_id",[config.uid])).rows;assert.equal(acquired.length,2);assert.deepEqual(acquired.map(r=>r.contact_id),contacts.contacts.map(r=>r.id).sort());assert.ok(acquired.every(r=>r.channel==='contacts'&&r.source==='csv_import'));
  const cid=contacts.contacts[0].id;const detail=await(await req('/api/prospect/contacts/'+cid)).json();
  assert.equal((await req('/api/prospect/contacts/'+cid,{method:'PATCH',body:{fields:{title:'Reviewed fictional Partner'},revision:detail.contact.edit_revision,reason:'Synthetic role proof'}})).status,200);
  const handoff=await req('/api/lab/contact-import',{method:'POST',body:{ids:[cid]}});assert.equal(handoff.status,200);
@@ -59,6 +60,22 @@ try{
  const leadDetail=await(await req('/api/lab/leads/'+leadId)).json();
  assert.equal((await req('/api/lab/leads/'+leadId+'/review',{method:'POST',body:{field:'contact',value:{channel:'email',address:detail.contact.email,identity_confirmed:true},verdict:'confirmed',source:'Synthetic fixture',note:'Fictional evidence for role proof.',observed_at:new Date().toISOString(),identity_signature:leadDetail.quality.identity_signature}})).status,200);
  assert.match(await(await req('/api/lab/worklist')).text(),/Fiction|Sample/);
+ assert.equal((await pool.query('SELECT count(*)::int AS n FROM lead_acquisitions WHERE user_id=$1',[config.uid])).rows[0].n,2); // An imported handoff must not double-count acquisition.
+ const currentContact=await(await req('/api/prospect/contacts/'+cid)).json();
+ assert.equal((await req('/api/prospect/contacts/'+cid+'/prepare',{method:'POST',body:{revision:currentContact.contact.edit_revision}})).status,200);
+ const exported=await req('/api/prospect/export',{method:'POST',body:{ids:[cid]}});assert.equal(exported.status,200);assert.ok((await exported.text()).includes(detail.contact.email));
+ const createdList=await req('/api/prospect/lists',{method:'POST',body:{name:'Fictional restricted-role list'}});assert.equal(createdList.status,200);const list=await createdList.json();
+ const allLists=await(await req('/api/prospect/lists')).json();assert.ok(allLists.lists.some(item=>item.id===list.id));
+ assert.equal((await req('/api/lab/advisor-profile',{method:'POST',body:{display_name:'Fictional Advisor',firm:'Example Practice',metro:'Example City',time_zone:'UTC'}})).status,200);
+ const profile=await(await req('/api/lab/advisor-profile')).json();assert.equal(profile.name,'Fictional Advisor');assert.equal(profile.firm,'Example Practice');
+ const activity=await(await req('/api/lab/leads/'+leadId+'/activity')).json();
+ const nextAt=new Date(now+3*86400000).toISOString();
+ const followup={outcome:'follow_up',direction:'inbound',note:'Fictional inbound follow-up for restricted-role proof.',next_at:nextAt,signature:activity.action.signature,idempotency_key:'synthetic-role-follow-up'};
+ const savedActivity=await req('/api/lab/leads/'+leadId+'/activity',{method:'POST',body:followup});assert.equal(savedActivity.status,200,await savedActivity.text());
+ const updated=await(await req('/api/lab/leads/'+leadId+'/activity')).json();assert.equal(updated.activities.length,1);assert.equal(updated.activities[0].note,followup.note);
+ const savedLead=await(await req('/api/lab/leads/'+leadId)).json();assert.equal(savedLead.lead.follow_up_date,nextAt);
+ const replay=await req('/api/lab/leads/'+leadId+'/activity',{method:'POST',body:followup});assert.equal(replay.status,200);assert.equal((await replay.json()).replayed,true);
+
  for(const path of ['/prospect','/lab','/audience','/login'])assert.equal((await req(path)).status,200,path);
  let forwarded=false,status;const guarded=createStagingHttpHandler(()=>{forwarded=true;},config);
  guarded({headers:{host:'production.example.test'}},{writeHead(n){status=n;},end(){}});assert.equal(status,403);assert.equal(forwarded,false);
