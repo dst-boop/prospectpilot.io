@@ -28,9 +28,11 @@ export function installStagingUI(ids) {
  new MutationObserver(apply).observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['hidden','disabled','href']});
  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',apply,{once:true});else apply();
 }
+export const stagingUIStyle='[data-staging-unavailable="true"]{display:none!important} #stagingUiStatus:empty{display:none}';
+export const stagingUIScript='('+installStagingUI.toString()+')('+JSON.stringify(blockedStagingControls)+');';
 export function stagingPage(html){
- const style='<style>[data-staging-unavailable="true"]{display:none!important} #stagingUiStatus:empty{display:none}</style>';
- const boot='<script>('+installStagingUI.toString()+')('+JSON.stringify(blockedStagingControls)+');</script>';
+ const style='<link rel="stylesheet" href="/staging-ui.css">';
+ const boot='<script src="/staging-ui.js"></script>';
  const guidance='<section aria-label="Fictional exercise"><p><strong>Practice only:</strong> use fictional names, notes and profile details. Research, provider jobs, sharing, team assignment, deletion and external compose/invite controls are unavailable here. Local draft copying, audience-plan downloads and recording fictional outcomes remain available. This is a UI safeguard, not general network isolation.</p><p><a href="/audience">Manual audience exercise</a> · <a href="/staging-fixture.csv">Download fictional CSV</a> · <a href="/prospect?import=1">Preview in Contacts</a> · <a href="/lab">Worklist</a></p><p id="stagingUiStatus" role="status" aria-live="polite"></p></section>';
  return html.replace('<head>','<head>'+style+boot).replace('<body>','<body>'+guidance)
  .replace('Choose a community you can serve, learn the filters to try in ZoomInfo, then bring your results back for review.','Practice a proposed audience using fictional details. Do not search for real people or purchase exports in this exercise; use the supplied fictional CSV for upload.')

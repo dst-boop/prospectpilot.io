@@ -16,7 +16,7 @@ const claims={uid:config.uid,aud:project,iss:'https://securetoken.google.com/'+p
 const db=new PGlite();
 const query=async(sql,values)=>!values&&sql.includes(';')?(await db.exec(sql)).at(-1):db.query(sql,values);
 const pool={query,connect:async()=>({query,release(){}}),end:async()=>{}};
-let browser;
+let browser,page;const consoleErrors=[];
 try{
  await migrate(pool);
  const auth={verifyIdToken:async()=>claims,verifySessionCookie:async()=>claims,createSessionCookie:async()=> 'synthetic-session'};
@@ -34,7 +34,7 @@ try{
   const response=await request(u.pathname+u.search,{method:req.method(),...(req.postData()?{body:JSON.parse(req.postData())}:{})});
   return route.fulfill({status:response.status,headers:Object.fromEntries(response.headers),body:Buffer.from(await response.arrayBuffer())});
  });
- const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));page.on('popup',popup=>popups.push(popup));
+ page=await context.newPage();page.on('console',message=>{if(message.type()==='error')consoleErrors.push(message.text());});page.on('pageerror',error=>errors.push(String(error)));page.on('popup',popup=>popups.push(popup));
  await page.goto(config.origin+'/prospect?import=1');
  await page.locator('#importDialog[open]').waitFor();
  await page.locator('#importInputMode').selectOption('paste');await page.locator('#csvText').fill(fictionalCSV);await page.locator('#source').fill('Fictional browser exercise');
@@ -100,6 +100,10 @@ try{
  const download=await downloadReady;await download.saveAs(output+'/audience-plan.txt');assert.match(readFileSync(output+'/audience-plan.txt','utf8'),/Partner/);assert.match(readFileSync(output+'/audience-plan.txt','utf8'),/10–20/);
  await page.setViewportSize({width:390,height:844});await page.screenshot({path:output+'/audience-mobile.png',fullPage:true});
  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'mobile audience overflow');
- assert.equal(popups.length,0);assert.deepEqual(external,[]);assert.deepEqual(errors,[]);
+ assert.equal(popups.length,0);assert.deepEqual(external,[]);assert.deepEqual(errors,[]);assert.deepEqual(consoleErrors,[],'browser console errors, including CSP violations');
  console.log('PASS: actual staged assets in Chromium; fictional preview/import, local draft copy, dynamic outbound suppression, hidden keyboard targets, saved follow-up, keyboard audience navigation/download. Test auth/clipboard and local PGlite only; no live Google/Cloud SQL, OS mail-client or general outbound network-isolation proof.');
+}catch(error){
+ console.error('BROWSER_CONSOLE_ERRORS',JSON.stringify(consoleErrors));
+ if(page)await page.screenshot({path:output+'/failure.png',fullPage:true}).catch(()=>{});
+ throw error;
 }finally{await browser?.close();await db.close();}
