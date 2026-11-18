@@ -6,7 +6,7 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {randomBytes,createHash} from 'node:crypto';
 import pg from 'pg';
-import {validateTwoImageEnvironment,validateTwoImagePins,validateTwoImageChanges,parseTwoImageOutput} from './two-image-safety.mjs';
+import {validateTwoImageEnvironment,validateTwoImagePins,validateTwoImageChanges,parseTwoImageOutput,twoImageBaseTag,verifyTwoImageTagId,classifyTwoImageBuildFailure} from './two-image-safety.mjs';
 const root=fileURLToPath(new URL('..',import.meta.url));
 if(process.argv.length!==3||process.argv[2]!=='--postgres')throw Error('Explicit --postgres required');
 const {config,url}=validateTwoImageEnvironment(process.env);
@@ -14,15 +14,15 @@ const pins=validateTwoImagePins(JSON.parse(await readFile(new URL('./two-image-p
 const nonce=randomBytes(12).toString('hex'),schema='pp_two_'+nonce,key='synthetic-two-image-'+randomBytes(32).toString('hex');
 const temp=await mkdtemp(join(tmpdir(),'pp-two-image-'));
 const clean={PATH:process.env.PATH||'/usr/bin:/bin',HOME:temp};
-const containers=[],images=[];let primary;
-function run(bin,args,{input,timeout=60000,max=4*1024*1024,cwd=root,label=bin}={}){
+const containers=[],images=[],tags=[];let primary;
+function run(bin,args,{input,timeout=60000,max=4*1024*1024,cwd=root,label=bin,buildDiagnostic=false}={}){
  return new Promise((resolve,reject)=>{
-  const child=spawn(bin,args,{cwd,env:clean,stdio:['pipe','pipe','pipe']});let chunks=[],size=0,failed=false;
+  const child=spawn(bin,args,{cwd,env:clean,stdio:['pipe','pipe','pipe']});let chunks=[],size=0,failed=false,diagnostic='';
   const timer=setTimeout(()=>{failed=true;child.kill('SIGKILL');},timeout);
   child.stdout.on('data',b=>{size+=b.length;if(size>max){failed=true;child.kill('SIGKILL');}else chunks.push(b);});
-  child.stderr.on('data',b=>{size+=b.length;if(size>max){failed=true;child.kill('SIGKILL');}});
+  child.stderr.on('data',b=>{if(buildDiagnostic&&diagnostic.length<65536)diagnostic+=b.toString().slice(0,65536-diagnostic.length);size+=b.length;if(size>max){failed=true;child.kill('SIGKILL');}});
   child.on('error',()=>{clearTimeout(timer);reject(Error('Synthetic command could not start: '+label));});
-  child.on('close',code=>{clearTimeout(timer);if(code!==0||failed)reject(Error('Synthetic command failed/bounded: '+label));else resolve(Buffer.concat(chunks));});
+  child.on('close',code=>{clearTimeout(timer);if(code!==0||failed)reject(Error('Synthetic command failed/bounded: '+label+(buildDiagnostic?' ['+classifyTwoImageBuildFailure(diagnostic)+']':'')));else resolve(Buffer.concat(chunks));});
   child.stdin.on('error',()=>{});child.stdin.end(input);
  });
 }
@@ -44,6 +44,7 @@ try{
   await docker(['build','--target','rollback-runtime','--iidfile',iid,context],{timeout:1200000,max:32*1024*1024,label:phase+' base build'});
   const id=(await readFile(iid,'utf8')).trim();if(!/^sha256:[a-f0-9]{64}$/.test(id))throw Error('Invalid image identity');
   built[phase]=id;images.push(id);
+  console.log(JSON.stringify({stage:"base-built",phase,...pins[phase],imageID:id}));
  }
  for(const phase of ['floor','successor']){
   const files=['plan-catalog.mjs','research-lab.mjs','rollback-bootstrap.mjs','rollback-schema.mjs','scripts/rollback-bootstrap-network-guard.mjs'];
@@ -53,6 +54,7 @@ try{
   const name='pp-two-'+nonce+'-hash-'+phase;containers.push(name);
   const actual=JSON.parse((await docker(['run','--name',name,'--read-only','--cap-drop=ALL','--security-opt','no-new-privileges','--network','none','--entrypoint','timeout',built[phase],'--signal=TERM','--kill-after=5s','20s','node','-e',program],{timeout:30000,max:65536,label:phase+' runtime content hashes'})).toString());
   if(JSON.stringify(actual)!==JSON.stringify(expected))throw Error('Runtime content hash mismatch: '+phase);contentHashes[phase]=actual;
+  console.log(JSON.stringify({stage:"runtime-hashes-verified",phase,...pins[phase],imageID:built[phase],hashesVerified:true,contentHashes:actual}));
  }
  if(built.floor===built.successor)throw Error('Independent images must differ');
  const overlays={};
@@ -60,8 +62,13 @@ try{
   const context=join(temp,phase+'-overlay');await mkdir(context);
   // Only test instrumentation is overlaid; never application/runtime modules.
   for(const file of ['two-image-phase.mjs'])await copyFile(join(root,'scripts',file),join(context,file));
-  await writeFile(join(context,'Dockerfile'),`FROM ${built[phase]}\nCOPY two-image-phase.mjs /app/scripts/\n`);
-  const iid=join(temp,phase+'-overlay.iid');await docker(['build','--iidfile',iid,context],{timeout:120000,max:4*1024*1024,label:phase+' instrumentation build'});
+  const tag=twoImageBaseTag(nonce,phase);tags.push(tag);
+  await docker(['image','tag',built[phase],tag],{label:phase+' local base tag'});
+  const verifyTag=async()=>verifyTwoImageTagId((await docker(['image','inspect','--format','{{.Id}}',tag],{label:phase+' local base identity'})).toString(),built[phase]);
+  await verifyTag();
+  await writeFile(join(context,'Dockerfile'),`FROM ${tag}\nCOPY two-image-phase.mjs /app/scripts/\n`);
+  const iid=join(temp,phase+'-overlay.iid');await docker(['build','--pull=false','--iidfile',iid,context],{timeout:120000,max:4*1024*1024,label:phase+' instrumentation build',buildDiagnostic:true});
+  await verifyTag();
   const id=(await readFile(iid,'utf8')).trim();if(!/^sha256:[a-f0-9]{64}$/.test(id))throw Error('Invalid overlay identity');overlays[phase]=id;images.push(id);
  }
  let receipt;
@@ -80,6 +87,7 @@ try{
  const failed=[];const attempt=async(label,fn)=>{try{await fn();}catch{failed.push(label);}};
  for(const name of containers)await attempt('container',()=>docker(['rm','-f',name]));
  await attempt('schema',async()=>{const client=new pg.Client({...config,statement_timeout:10000,query_timeout:12000});try{await client.connect();await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);}finally{await client.end();}});
+ for(const tag of tags)await attempt('local image tag',()=>docker(['image','rm',tag],{label:'remove run-owned local tag'}));
  // Image cleanup targets only IDs created by this run; no global prune.
  // Base IDs can be shared with Docker's cache, so leave immutable images cached.
  await attempt('temporary contexts',()=>rm(temp,{recursive:true,force:true}));

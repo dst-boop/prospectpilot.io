@@ -22,3 +22,23 @@ test('two-image requires installed network guard and clean bounded fixture-bound
  const floor={verified:true,...identity,external_calls:0,fullCompatibility:false};
  assert.deepEqual(parseTwoImageOutput(output().replace('TWO_IMAGE_RECEIPT:'+JSON.stringify(receipt),'TWO_IMAGE_RESULT:'+JSON.stringify(floor)),identity,'floor'),floor);
 });
+
+test('overlay base uses run-owned tag with exact immutable ID and sanitized failure categories',async()=>{
+ const {twoImageBaseTag,verifyTwoImageTagId,classifyTwoImageBuildFailure}=await import('../scripts/two-image-safety.mjs');
+ const tag=twoImageBaseTag('a'.repeat(24),'floor');assert.equal(tag,'pp-two-image-'+'a'.repeat(24)+'-floor:synthetic');
+ for(const [nonce,phase] of [['../bad','floor'],['a'.repeat(24),'production']])assert.throws(()=>twoImageBaseTag(nonce,phase));
+ const id='sha256:'+'b'.repeat(64);verifyTwoImageTagId(id+'\n',id);assert.throws(()=>verifyTwoImageTagId('sha256:'+'c'.repeat(64),id));
+ assert.throws(()=>verifyTwoImageTagId('not-id','not-id'));
+ assert.equal(classifyTwoImageBuildFailure('secret: pull access denied'),'base-resolution');
+ assert.equal(classifyTwoImageBuildFailure('invalid reference format private-value'),'invalid-reference');
+ assert.equal(classifyTwoImageBuildFailure('unknown private-value'),'unspecified');
+});
+
+test('overlay orchestration checks local tag before and after build and only removes run-owned tag names',async()=>{
+ const {readFile}=await import('node:fs/promises');const source=await readFile(new URL('../scripts/two-image-rehearsal.mjs',import.meta.url),'utf8');
+ assert.match(source,/image','tag',built\[phase\],tag/);
+ assert.equal((source.match(/await verifyTag\(\);/g)||[]).length,2);
+ assert.match(source,/FROM \$\{tag\}/);assert.match(source,/'build','--pull=false'/);
+ assert.match(source,/docker\(\['image','rm',tag\]/);assert.doesNotMatch(source,/\['image','rm',(?:id|built\[)/);
+ assert.match(source,/stage:"base-built"/);assert.match(source,/stage:"runtime-hashes-verified"/);
+});

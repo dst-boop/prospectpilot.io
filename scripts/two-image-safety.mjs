@@ -30,3 +30,19 @@ export function parseTwoImageOutput(output,{nonce,schema},phase='successor'){
  if(Object.keys(receipt).sort().join(',')!=='digest,nonce,schema,version'||receipt.version!==1||receipt.nonce!==nonce||receipt.schema!==schema||!/^[a-f0-9]{64}$/.test(receipt.digest||''))throw Error('Receipt identity mismatch');
  return receipt;
 }
+// Run-owned tags are aliases only; never clean up a shared content-addressed ID.
+export function twoImageBaseTag(nonce,phase){
+ if(!/^[a-f0-9]{24}$/.test(nonce)||!['floor','successor'].includes(phase))throw Error('Invalid local image tag identity');
+ return `pp-two-image-${nonce}-${phase}:synthetic`;
+}
+export function verifyTwoImageTagId(actual,expected){
+ if(!/^sha256:[a-f0-9]{64}$/.test(expected)||actual.trim()!==expected)throw Error('Local base tag does not match pinned image ID');
+}
+export function classifyTwoImageBuildFailure(stderr){
+ // Return fixed categories only, never arbitrary daemon output or build arguments.
+ if(/pull access denied|failed to resolve source metadata|failed to resolve reference|repository does not exist/i.test(stderr))return 'base-resolution';
+ if(/invalid reference format|invalid tag/i.test(stderr))return 'invalid-reference';
+ if(/no space left on device/i.test(stderr))return 'storage-capacity';
+ if(/cannot connect to the docker daemon|is the docker daemon running/i.test(stderr))return 'daemon-unavailable';
+ return 'unspecified';
+}
