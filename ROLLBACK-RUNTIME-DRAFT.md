@@ -25,3 +25,7 @@ The exact runtime-image rehearsal uses disposable native PostgreSQL, synthetic i
 - Verify current production schema/revisions/jobs/traffic, backup/PITR and tested restore, all writers fenced and drained, maintenance/abort/recovery owners and time/loss objectives.
 - Establish a viable initial029→033 recovery procedure without legacy qualification or blind paid-work replay.
 - Only then nominate/approve the immutable floor under the release policy. `floors:[]` is intentionally unchanged. No merge/deploy or production action in this draft.
+
+## Catalog portability notes
+
+Native PostgreSQL16 and PGlite/PostgreSQL18 expose different catalog representations. The search-path array is explicitly cast to text[] for node-postgres decoding. NOT NULL remains checked through column metadata, with validation retained, rather than treating PostgreSQL18's extra named NOT NULL catalog rows as required on16. PostgreSQL's [18 release notes](https://www.postgresql.org/docs/18/release-18.html) document the change; [16 catalog documentation](https://www.postgresql.org/docs/16/catalog-pg-constraint.html) identifies pg_attribute as the representation there. Native schema preflight remains a release gate, and mismatch diagnostics contain only the disposable synthetic schema definition, never production data.
