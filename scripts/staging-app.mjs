@@ -1,3 +1,4 @@
+import {stagingPage,stagingProspectScript} from './staging-ui.mjs';
 import {readFileSync} from 'node:fs';
 import {createHandler} from '../handler.mjs';
 import {createResearchLab} from '../research-lab.mjs';
@@ -7,7 +8,7 @@ export const fictionalCSV='First Name,Last Name,Company,Title,Email,Country\nAle
 const read=f=>readFileSync(new URL('../'+f,import.meta.url),'utf8');
 const deny=()=>{throw Error('External execution is disabled in fictional staging');};
 const banner='<aside role="status"><strong>FICTIONAL STAGING · Owner-only · No production data.</strong> Use fictional information only. Provider searches, enrichment, invitations, team assignment and outreach are disabled. <a href="/staging-fixture.csv">Download fictional CSV</a>, then <a href="/prospect?import=1">preview and import it in Contacts</a>, select a contact and send it to Worklist to review the next action.</aside>';
-const page=f=>read(f).replace('<body>','<body>'+banner);
+const page=f=>stagingPage(read(f).replace('<body>','<body>'+banner));
 const readPaths=new Set(['/','/health','/healthz','/version','/login','/auth/login.js','/logout','/brand.svg','/favicon.ico','/site.css','/lab','/lab-client.js','/lab.css','/prospect','/prospect-client.js','/prospect-jobs-client.js','/prospect.css','/audience','/audience-client.js','/audience-catalog.mjs','/audience.css','/staging-fixture.csv',...['me','contacts','lists','saved-searches','data-quality','daily-review','lead-costs'].map(p=>'/api/prospect/'+p),...['me','settings','sources','summary','worklist','leads','runs','scoreboard','advisor-profile','identity-reviews','historical-identity-reviews'].map(p=>'/api/lab/'+p)]);
 export function stagingRouteAllowed(path,method){
  if(method==='GET')return readPaths.has(path)||/^\/api\/prospect\/(contacts|imports)\/[A-Za-z0-9_-]+$/.test(path)||/^\/api\/lab\/(leads|runs)\/[A-Za-z0-9_-]+(?:\/(activity|related))?$/.test(path);
@@ -23,7 +24,7 @@ export function createAuthenticatedStaging({pool,auth,config,loginScript,clock=D
  const handler=createHandler({auth:gated,ownerEmail:'',origins:[config.origin],releaseId:'fictional-staging',lab,prospect,
  loginHtml,loginScript,siteStyle:read('site.css'),brandMark:read('brand.svg'),
  labPage:page('lab.html'),labScript:read('lab-client.js'),labStyle:read('lab.css'),
- prospectPage:page('prospect.html').replace('<option value="zoominfo">ZoomInfo export — no API required</option>','').replace('<option value="generic">','<option value="generic" selected>'),prospectScript:read('prospect-client.js'),prospectStyle:read('prospect.css'),prospectJobsScript:read('prospect-jobs-client.js'),
+ prospectPage:page('prospect.html').replace('<option value="zoominfo">ZoomInfo export — no API required</option>','').replace('<option value="generic">','<option value="generic" selected>'),prospectScript:stagingProspectScript(read('prospect-client.js')),prospectStyle:read('prospect.css'),prospectJobsScript:read('prospect-jobs-client.js'),
  audienceAssets:{'/audience':page('audience.html'),'/audience-client.js':read('audience-client.js'),'/audience-catalog.mjs':read('audience-catalog.mjs'),'/audience.css':read('audience.css')}});
  const refused=(detail,status=403)=>Response.json({detail},{status,headers:{'Cache-Control':'no-store'}});
  return async request=>{
