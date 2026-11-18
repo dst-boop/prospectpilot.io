@@ -4,7 +4,7 @@ import {startRollbackRuntime} from '../rollback-bootstrap.mjs';
 import {createStagingDatabase} from './helpers/staging-database.mjs';
 import {historicalModules,baselineCommit,tableSnapshot,schemaSnapshot} from './helpers/full-upgrade.mjs';
 
-test('actual historical029 refuses rollback application startup and retains saved data',{timeout:60000},async()=>{
+test('actual historical029 refuses rollback application startup and retains saved data',{timeout:60000,skip:process.env.ROLLBACK_HISTORY_FREE_IMAGE_BUILD==='1'?'Pinned historical029 fixture runs in full-checkout native CI; image context has no git/history':false},async()=>{
  const db=await createStagingDatabase();let historical,exclusive=false,shared=false,ended=0,started=0;
  try{
   historical=await historicalModules(baselineCommit);

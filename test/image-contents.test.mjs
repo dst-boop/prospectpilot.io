@@ -112,3 +112,13 @@ test('guarded rollback entrypoints reach build context and only opt-in runtime t
   assert.match(rollback, /CMD \["node","rollback-server.mjs"\]/);
   assert.match(dockerfile, /FROM runtime AS production\s*$/);
 });
+
+test('history-free image marker is limited to build tests and never native rollback gate', () => {
+  const dockerfile = read('Dockerfile');
+  assert.match(dockerfile, /^RUN node build\.mjs && ROLLBACK_HISTORY_FREE_IMAGE_BUILD=1 node --test test\/\*\.test\.mjs$/m);
+  assert.doesNotMatch(dockerfile, /^ENV.*ROLLBACK_HISTORY_FREE_IMAGE_BUILD/m);
+  assert.doesNotMatch(dockerfile.split('AS runtime')[1], /ROLLBACK_HISTORY_FREE_IMAGE_BUILD/);
+  const workflow = read('.github/workflows/tests.yml');
+  assert.match(workflow, /Fail-fast native rollback compatibility contracts[\s\S]*?run: node --test --test-concurrency=2 test\/rollback\*\.test\.mjs/);
+  assert.doesNotMatch(workflow, /ROLLBACK_HISTORY_FREE_IMAGE_BUILD/);
+});

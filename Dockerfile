@@ -5,7 +5,8 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --ignore-scripts
 COPY . .
 # Tests gate the image; development dependencies stay out of the final stage.
-RUN node build.mjs && node --test test/*.test.mjs
+# Pinned-history rehearsal runs on the full-checkout CI runner, not this history-free context.
+RUN node build.mjs && ROLLBACK_HISTORY_FREE_IMAGE_BUILD=1 node --test test/*.test.mjs
 RUN pnpm prune --prod
 
 FROM node:24-bookworm-slim AS runtime
