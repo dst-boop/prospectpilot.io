@@ -37,6 +37,7 @@ test('actual application imports only fictional CSV, handoff reaches worklist, a
  assert.equal((await req('/api/prospect/import',{method:'POST',body:{csv:fictionalCSV},origin:'https://evil.test'})).status,403);
  assert.equal((await req('/api/prospect/import',{method:'POST',body:{csv:'real,data'}})).status,422);
  assert.equal((await req('/api/prospect/lists/x/shares',{method:'POST',body:{email:'other@example.test'}})).status,403);
+ for(const path of ['/staging-ui.js','/staging-ui.css']){const asset=await req(path);assert.equal(asset.status,200);assert.match(asset.headers.get('content-type'),path.endsWith('.js')?/javascript/:/css/);assert.equal((await req(path,{cookie:null})).status,401);assert.equal((await req(path,{cookie:'other'})).status,401);assert.equal((await req(path,{method:'POST'})).status,403);}
  const fixture=await req('/staging-fixture.csv');assert.equal(await fixture.text(),fictionalCSV);
  assert.equal((await req('/staging-fixture.csv',{cookie:null})).status,401);
  const preview=await req('/api/prospect/import/preview',{method:'POST',body:{csv:fictionalCSV}});assert.equal(preview.status,200);
@@ -49,7 +50,7 @@ test('actual application imports only fictional CSV, handoff reaches worklist, a
  const work=await req('/api/lab/worklist');assert.equal(work.status,200);assert.match(await work.text(),/Fiction|Sample/);
  const page=await req('/audience');assert.match(await page.text(),/FICTIONAL STAGING/);assert.match(page.headers.get('content-security-policy'),/connect-src 'none'/);
  assert.match(await (await req('/login')).text(),/approved owner only/);assert.ok(seen.every(Boolean));
- clock=config.expires;assert.equal((await req('/api/prospect/contacts')).status,410);assert.equal((await req('/auth/session',{method:'POST',body:{idToken:'owner'}})).status,410);
+ clock=config.expires;assert.equal((await req('/staging-ui.js')).status,410);assert.equal((await req('/api/prospect/contacts')).status,410);assert.equal((await req('/auth/session',{method:'POST',body:{idToken:'owner'}})).status,410);
   assert.deepEqual(network.attempts,[],'no outbound HTTP, TCP, DNS or UDP attempt');
  }finally{network?.restore();await db.close();}
 });
