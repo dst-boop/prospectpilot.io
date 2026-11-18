@@ -117,6 +117,33 @@ export function createFirmScopedSnapshotLoader({pool, firmId, auth, sessionCooki
           throw fail(413,'The assigned identity inventory needs a bounded review.');
       }
       const contactIds = contacts.map(row=>row.id), listIds = lists.map(row=>row.id), leadIds = discoveryLeads.map(row=>row.id);
+      // Schema 034 has owner-scoped history, not firm-scoped deletion policy.
+      // Inspect only evidence attached to the already authorized live roots.
+      // Never retrieve deleted markers, review candidates, notes or key material
+      // for unrelated records. This is a preflight inventory, not transfer approval.
+      async function identityPreflight(uid, cids, lids) {
+        const evidence = await rows(`SELECT record_kind,record_id,token_owner_id,key_hash,key_version
+          FROM prospect_identity_evidence WHERE user_id=$1 AND
+          ((record_kind='contact' AND record_id=ANY($2::text[])) OR
+           (record_kind='lead' AND record_id=ANY($3::text[])))
+          ORDER BY record_kind,record_id,token_owner_id,key_hash`,[uid,cids,lids]);
+        const associated = await rows(`SELECT id,status,resolved_at FROM prospect_historical_reviews
+          WHERE user_id=$1 AND status IN ('open','resolved') AND
+          ((destination='contact' AND (payload->>'existing_contact_id'=ANY($2::text[]) OR resolution->>'result_id'=ANY($2::text[]))) OR
+           (destination='lead' AND (payload->>'existing_lead_id'=ANY($3::text[]) OR resolution->>'result_id'=ANY($3::text[]))))
+          ORDER BY id`,[uid,cids,lids]);
+        const covered=new Set(evidence.map(r=>r.record_kind+':'+r.record_id));
+        const missing=cids.filter(id=>!covered.has('contact:'+id)).length+lids.filter(id=>!covered.has('lead:'+id)).length;
+        return {record_count:cids.length+lids.length,evidence_count:evidence.length,
+          records_without_retained_evidence:missing,associated_review_count:associated.length,
+          // Digest preserves namespace/version change detection without exposing tokens.
+          fingerprint:hash({evidence,associated}),key_availability:'not_assessed'};
+      }
+      const historicalIdentity={version:'firm-historical-preflight-1',
+        source:await identityPreflight(sourceUid,contactIds,leadIds),
+        target_assigned_contacts:await identityPreflight(targetUid,targetContacts.map(r=>r.id),[]),
+        owner_wide_deleted_markers:'not_queried',unassociated_arrival_reviews:'not_queried',
+        target_leads:'not_assessed',can_transfer:false};
       // Later merges append provenance without updating the acquisition ledger.
       // Refuse embedded run/import/job references too, without reading payloads.
       for (const [table,ids,payload] of [['prospect_contacts',contactIds,'payload'],['discovery_leads',leadIds,'payload::jsonb']])
@@ -180,8 +207,11 @@ export function createFirmScopedSnapshotLoader({pool, firmId, auth, sessionCooki
         scope:{kind:'explicit_firm_assignments',firm_id:firmId,actor_uid:actorUid,source_uid:sourceUid,target_uid:targetUid},
         isolation:'repeatable read', read_only:true, can_execute:false,
         coverage:{account_wide:false,private_contacts:false,other_firms:false,identity_collisions:'assigned_target_contacts_only',payloads:false},
-        accounts, membership, contacts,targetContacts,lists,discoveryLeads,...children,
+        accounts, membership, contacts,targetContacts,lists,discoveryLeads,historicalIdentity,...children,
         blockers:[
+          {code:'historical_identity_policy_unresolved',message:'Owner-wide deleted identifiers and unassociated arrival reviews are not firm-assigned. Destination historical coverage and key availability are unknown; no transfer is approved.'},
+          ...(historicalIdentity.source.records_without_retained_evidence ? [{code:'historical_evidence_missing',message:'Some assigned records have no retained strong-identifier evidence. Missing history must not be treated as clear.'}] : []),
+          ...(historicalIdentity.source.associated_review_count ? [{code:'historical_review_associated',message:'Assigned records have associated identity reviews; their private data and approval scope require a separate policy review.'}] : []),
           {code:'account_offboarding_incomplete',message:'Account-wide schedules, detached work, tombstones and global suppression are not firm-scoped; no full offboarding claim is possible.'},
           {code:'private_collision_coverage_unavailable',message:'Private and other-firm contacts were not queried; duplicates outside the assigned receiving inventory remain unknown.'},
           {code:'service_continuity_unverified',message:'Existing serviced accounts, service ownership and continuity have not been verified; do not treat this inventory as available prospects.'},
