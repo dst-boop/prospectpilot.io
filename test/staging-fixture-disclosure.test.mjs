@@ -7,10 +7,10 @@ test('staging import modal discloses exact fixture restriction before both input
  const html=stagingPage(read('prospect.html'));
  const modal=html.slice(html.indexOf('<form id="importForm">'),html.indexOf('</form>',html.indexOf('<form id="importForm">')));
  assert.match(modal,/<h2>Import the fictional test CSV<\/h2>/);
- assert.match(modal,/Only the supplied, unchanged fictional CSV is accepted/);
- assert.match(modal,/<a href="\/staging-fixture.csv">Download fictional-staging.csv<\/a>/);
+ assert.match(modal,/Only the supplied, unchanged fictional CSV fixtures are accepted/);
+ assert.match(modal,/<a href="\/staging-fixture.csv">Download the 2-row fixture<\/a>/);
  assert.match(modal,/without editing or re-saving/);
- assert.match(modal,/including the header and both rows/);
+ assert.match(modal,/including the header and all rows/);
  assert.match(modal,/Real contacts, provider exports, contact exports and row reports are not accepted/);
  assert.ok(modal.indexOf('id="stagingFixtureOnly"')<modal.indexOf('id="csvFile"'));
  for(const id of ['csvFile','csvText'])assert.match(modal,new RegExp('id="'+id+'" aria-describedby="stagingFixtureOnly"'));

@@ -1,3 +1,5 @@
+import {fictionalCSV,fixtureDownloads,allowedStagingCSV} from './staging-fixtures.mjs';
+export {fictionalCSV} from './staging-fixtures.mjs';
 import {stagingLogoutPage,stagingLogoutScript} from './staging-logout.mjs';
 import {stagingPage,stagingProspectScript,stagingUIScript,stagingUIStyle} from './staging-ui.mjs';
 import {readFileSync} from 'node:fs';
@@ -5,12 +7,11 @@ import {createHandler} from '../handler.mjs';
 import {createResearchLab} from '../research-lab.mjs';
 import {createProspectWorkspace} from '../prospect-workspace.mjs';
 import {restrictedStagingAuth} from './staging-config.mjs';
-export const fictionalCSV='First Name,Last Name,Company,Title,Email,Country\nAlex,Fiction,Example Legal,Partner,alex@example.test,US\nSam,Sample,Example Engineering,Engineer,sam@example.test,US';
 const read=f=>readFileSync(new URL('../'+f,import.meta.url),'utf8');
 const deny=()=>{throw Error('External execution is disabled in fictional staging');};
 const banner='<aside role="status"><strong>FICTIONAL STAGING · Owner-only · No production data.</strong> Use fictional information only. Provider searches, enrichment, invitations, team assignment and outreach are disabled. <a href="/staging-fixture.csv">Download fictional CSV</a>, then <a href="/prospect?import=1">preview and import it in Contacts</a>, select a contact and send it to Worklist to review the next action.</aside>';
 const page=f=>stagingPage(read(f).replace('<body>','<body>'+banner));
-const readPaths=new Set(['/staging-logout.js','/staging-ui.js','/staging-ui.css','/','/health','/healthz','/version','/login','/auth/login.js','/logout','/brand.svg','/favicon.ico','/site.css','/lab','/lab-client.js','/lab.css','/prospect','/prospect-client.js','/prospect-jobs-client.js','/prospect.css','/audience','/audience-client.js','/audience-catalog.mjs','/audience.css','/staging-fixture.csv',...['me','contacts','lists','saved-searches','data-quality','daily-review','lead-costs'].map(p=>'/api/prospect/'+p),...['me','settings','sources','summary','worklist','leads','runs','scoreboard','advisor-profile','identity-reviews','historical-identity-reviews'].map(p=>'/api/lab/'+p)]);
+const readPaths=new Set(['/staging-logout.js','/staging-ui.js','/staging-ui.css','/','/health','/healthz','/version','/login','/auth/login.js','/logout','/brand.svg','/favicon.ico','/site.css','/lab','/lab-client.js','/lab.css','/prospect','/prospect-client.js','/prospect-jobs-client.js','/prospect.css','/audience','/audience-client.js','/audience-catalog.mjs','/audience.css','/staging-fixture.csv','/staging-fixture-large.csv',...['me','contacts','lists','saved-searches','data-quality','daily-review','lead-costs'].map(p=>'/api/prospect/'+p),...['me','settings','sources','summary','worklist','leads','runs','scoreboard','advisor-profile','identity-reviews','historical-identity-reviews'].map(p=>'/api/lab/'+p)]);
 export function stagingRouteAllowed(path,method){
  if(method==='GET')return readPaths.has(path)||/^\/api\/prospect\/(contacts|imports)\/[A-Za-z0-9_-]+$/.test(path)||/^\/api\/lab\/(leads|runs)\/[A-Za-z0-9_-]+(?:\/(activity|related))?$/.test(path);
  if(method==='POST')return ['/auth/session','/logout','/api/prospect/import','/api/prospect/import/preview','/api/prospect/export','/api/prospect/lists','/api/lab/contact-import','/api/lab/advisor-profile'].includes(path)||/^\/api\/prospect\/contacts\/[A-Za-z0-9_-]+\/(prepare|review)$/.test(path)||/^\/api\/lab\/leads\/[A-Za-z0-9_-]+\/(activity|review)$/.test(path)||/^\/api\/lab\/(historical-identity-reviews|identity-reviews)\/[A-Za-z0-9_-]+$/.test(path);
@@ -33,17 +34,18 @@ export function createAuthenticatedStaging({pool,auth,config,loginScript,clock=D
   if(clock()>=config.expires)return refused('Fictional staging has expired. No access or writes are allowed.',410);
   if(url.origin!==config.origin||(!['GET','HEAD'].includes(request.method)&&request.headers.get('origin')!==config.origin))return refused('Staging origin rejected.');
   if(!stagingRouteAllowed(url.pathname,request.method))return refused('This operation is disabled in fictional staging.');
-  if(request.method==='GET'&&['/logout','/staging-logout.js','/staging-fixture.csv','/staging-ui.js','/staging-ui.css'].includes(url.pathname)){
+  if(request.method==='GET'&&['/logout','/staging-logout.js','/staging-fixture.csv','/staging-fixture-large.csv','/staging-ui.js','/staging-ui.css'].includes(url.pathname)){
    const cookie=(request.headers.get('cookie')||'').split(';').map(s=>s.trim()).find(s=>s.startsWith('__session='))?.slice(10);
    try{await gated.verifySessionCookie(cookie);}catch{return refused('Sign in as the approved staging owner.',401);}
    if(url.pathname==='/logout')return new Response(stagingLogoutPage,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"}});
    if(url.pathname==='/staging-logout.js')return new Response(stagingLogoutScript,{headers:{'Content-Type':'text/javascript; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
-   if(url.pathname!=='/staging-fixture.csv')return new Response(url.pathname.endsWith('.js')?stagingUIScript:stagingUIStyle,{headers:{'Content-Type':url.pathname.endsWith('.js')?'text/javascript; charset=utf-8':'text/css; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
-   return new Response(fictionalCSV,{headers:{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="fictional-staging.csv"','Cache-Control':'no-store'}});
+   if(!fixtureDownloads.has(url.pathname))return new Response(url.pathname.endsWith('.js')?stagingUIScript:stagingUIStyle,{headers:{'Content-Type':url.pathname.endsWith('.js')?'text/javascript; charset=utf-8':'text/css; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
+   const fixture=fixtureDownloads.get(url.pathname);
+   return new Response(fixture.csv,{headers:{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="'+fixture.filename+'"','Cache-Control':'no-store'}});
   }
   if(request.method==='POST'&&['/api/prospect/import','/api/prospect/import/preview'].includes(url.pathname)){
    let input;try{input=await request.clone().json();}catch{return refused('Provide the supplied fictional CSV.',422);}
-   if(input.csv?.replace(/\r\n/g,'\n').trim()!==fictionalCSV||input.format&&input.format!=='generic')return refused('This pilot accepts only the supplied fictional CSV. Real data imports are disabled.',422);
+   if(!allowedStagingCSV(input?.csv)||input?.format&&input.format!=='generic')return refused('This pilot accepts only either supplied unchanged fictional CSV. Real data imports are disabled.',422);
   }
   const response=await handler(request);
   response.headers.set('Referrer-Policy','no-referrer');response.headers.set('X-Robots-Tag','noindex, nofollow');
