@@ -19,7 +19,7 @@ try{
   const response=await handler(new Request(url.href,{headers:{cookie:'__session=synthetic-guide-session'}}));
   await route.fulfill({status:response.status,headers:Object.fromEntries(response.headers),body:Buffer.from(await response.arrayBuffer())});
  });
- const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
+ const page=await context.newPage();const downloads=[];page.on('download',download=>downloads.push(download));page.on('pageerror',error=>errors.push(String(error)));
  // Deliberately synthetic clipboard. This tests asynchronous UI state, not OS permission.
  await page.addInitScript(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:value=>new Promise((resolve,reject)=>{window.guideCopy={value,resolve,reject};})}}));
  await page.goto('https://guide.test/audience');
@@ -27,6 +27,17 @@ try{
  await page.locator('#setupForm button[type=submit]').click();
  assert.match(await page.locator('#filterList').innerText(),/starting screen/);
  assert.equal(await page.locator('#plan').isVisible(),true);
+ assert.equal(downloads.length,0,'building a plan must not download');
+ const downloadReady=page.waitForEvent('download');await page.locator('#download').click();
+ const download=await downloadReady;assert.equal(download.suggestedFilename(),'prospectpilot-search-plan.txt');
+ await download.saveAs('/tmp/audience-search-plan.txt');
+ const downloadedText=readFileSync('/tmp/audience-search-plan.txt','utf8');
+ assert.match(downloadedText,/DNC unknown is not cleared/);assert.match(downloadedText,/starting screen/);
+ assert.match(await page.locator('#copyStatus').innerText(),/Download requested/);
+ const secondReady=page.waitForEvent('download');await page.locator('#download').focus();await page.keyboard.press('Enter');
+ const secondDownload=await secondReady;await secondDownload.saveAs('/tmp/audience-search-plan-repeat.txt');
+ assert.equal(readFileSync('/tmp/audience-search-plan-repeat.txt','utf8'),downloadedText);
+ assert.equal(downloads.length,2);
  await page.screenshot({path:'/tmp/audience-desktop-plan.png',fullPage:true});
  await page.locator('#copy').click();await page.locator('#back').click();
  await page.evaluate(()=>window.guideCopy.reject(Error('synthetic clipboard denial')));
