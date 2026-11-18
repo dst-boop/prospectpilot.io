@@ -32,7 +32,8 @@ const priorKey=process.env.FORGET_TOMBSTONE_KEY,priorKeys=process.env.FORGET_TOM
 process.env.FORGET_TOMBSTONE_KEY=syntheticKey;
 const owner={uid:'synthetic-image-advisor',email:'image@example.test',email_verified:true,firebase:{sign_in_provider:'password'}};
 const peer={...owner,uid:'synthetic-image-recycled'};
-const auth={verifySessionCookie:async(cookie,revoked)=>{assert.equal(revoked,true);if(cookie==='owner')return owner;if(cookie==='peer')return peer;throw Error('Invalid synthetic session');}};
+const adminIdentity={...owner,uid:'synthetic-image-admin',email:'admin@example.test'};
+const auth={verifySessionCookie:async(cookie,revoked)=>{assert.equal(revoked,true);if(cookie==='owner')return owner;if(cookie==='peer')return peer;if(cookie==='admin')return adminIdentity;throw Error('Invalid synthetic session');}};
 const createLab=pool=>createResearchLab({pool,sources:{readiness:{},run:deny},dispatch:deny});
 const create= (pool,mode)=>createHandler({auth,origins:['https://synthetic.example.test'],ownerEmail:'admin@example.test',lab:createLab(pool),readOnly:readOnlyFallback(mode),releaseId:'synthetic-image-rehearsal',worker:{fetch:deny}});
 const request=(handler,path,{method='GET',body,cookie='owner'}={})=>handler(new Request('https://synthetic.example.test'+path,{method,headers:{origin:'https://synthetic.example.test',cookie:'__session='+cookie,...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})}));
@@ -140,8 +141,12 @@ try{
  assert.equal((await normalPool.query('SELECT status FROM prospect_historical_reviews WHERE id=$1',[historicalReview.id])).rows[0].status,'discarded');
  // HTTP guard exercised through real handler; queue guard exercised directly,
  // plus runtime worker wiring checked. No normal worker/paid queues are started.
- for(const path of ['/api/v3/discovery/imports/csv','/api/enrichment/commit','/api/research/auto','/api/research/save','/api/wealthfeed/check','/api/beta/calls'])
-  assert.equal((await request(recovered,path,{method:'POST',body:{}})).status,409,path);
+ for(const path of ['/api/v3/discovery/imports/csv','/api/enrichment/commit','/api/research/auto','/api/research/save','/api/wealthfeed/check','/api/beta/calls']){
+  assert.equal((await request(recovered,path,{method:'POST',body:{}})).status,403,path+' denies ordinary user before legacy delegation');
+  const denied=await request(recovered,path,{method:'POST',body:{},cookie:'admin'});
+  assert.equal(denied.status,409,path+' denies administrator mutation at identity guard');
+  assert.match((await denied.json()).detail,/\/prospect.*\/lab/);
+ }
  const guardedQueue=await fetchLegacySafely({fetch:deny},new Request('https://synthetic.example.test/api/research/auto',{method:'POST',body:'{}'}),{});
  assert.equal(guardedQueue.status,409);
  const workerSource=readFileSync(new URL('../research-worker.mjs',import.meta.url),'utf8');
