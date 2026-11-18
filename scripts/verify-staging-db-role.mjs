@@ -39,7 +39,7 @@ try{
  assert.equal((await pool.query('SELECT count(*)::int AS n FROM pg_class WHERE relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)')).rows[0].n,0);
  assert.equal((await pool.query('SELECT count(*)::int AS n FROM pg_namespace WHERE nspowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)')).rows[0].n,0);
 
- for(const sql of ['CREATE TABLE forbidden(x int)','ALTER TABLE prospect_contacts ADD COLUMN forbidden int','DROP TABLE prospect_contacts','TRUNCATE prospect_contacts','UPDATE staging_pilot_identity SET owner_uid=owner_uid',"INSERT INTO staging_pilot_identity VALUES(false,'forbidden','forbidden',now())","INSERT INTO prospectpilot_migrations(id) VALUES('forbidden')",'DELETE FROM prospectpilot_migrations'])await assert.rejects(pool.query(sql),e=>e.code==='42501');
+ for(const sql of ['CREATE TABLE forbidden(x int)','ALTER TABLE prospect_contacts ADD COLUMN forbidden int','DROP TABLE prospect_contacts','TRUNCATE prospect_contacts','DELETE FROM employer_plan_catalog_summary','DELETE FROM employer_plan_catalog','UPDATE employer_plan_catalog SET payload=payload','UPDATE staging_pilot_identity SET owner_uid=owner_uid',"INSERT INTO staging_pilot_identity VALUES(false,'forbidden','forbidden',now())","INSERT INTO prospectpilot_migrations(id) VALUES('forbidden')",'DELETE FROM prospectpilot_migrations'])await assert.rejects(pool.query(sql),e=>e.code==='42501');
  await assertStagingDatabase(pool,config);
  const manifest=await buildStagingLogin(config);assert.ok(manifest.script.includes(project));assert.ok(!manifest.script.includes('lead-qualifier-505002'));
  const claims={uid:config.uid,aud:project,iss:'https://securetoken.google.com/'+project,email:'owner@example.test',email_verified:true,firebase:{sign_in_provider:'google.com'},auth_time:Math.floor(now/1000)};
@@ -61,6 +61,7 @@ try{
  assert.equal((await req('/api/lab/leads/'+leadId+'/review',{method:'POST',body:{field:'contact',value:{channel:'email',address:detail.contact.email,identity_confirmed:true},verdict:'confirmed',source:'Synthetic fixture',note:'Fictional evidence for role proof.',observed_at:new Date().toISOString(),identity_signature:leadDetail.quality.identity_signature}})).status,200);
  assert.match(await(await req('/api/lab/worklist')).text(),/Fiction|Sample/);
  assert.equal((await pool.query('SELECT count(*)::int AS n FROM lead_acquisitions WHERE user_id=$1',[config.uid])).rows[0].n,2); // An imported handoff must not double-count acquisition.
+ assert.equal((await req('/api/lab/summary')).status,200);
  const currentContact=await(await req('/api/prospect/contacts/'+cid)).json();
  assert.equal((await req('/api/prospect/contacts/'+cid+'/prepare',{method:'POST',body:{revision:currentContact.contact.edit_revision}})).status,200);
  const exported=await req('/api/prospect/export',{method:'POST',body:{ids:[cid]}});assert.equal(exported.status,200);assert.ok((await exported.text()).includes(detail.contact.email));
