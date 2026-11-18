@@ -10,7 +10,7 @@ export function validateTwoImageEnvironment(env){
 export function validateTwoImagePins(pins){
  for(const name of ['floor','successor'])for(const field of ['commit','tree'])if(!/^[a-f0-9]{40}$/.test(pins?.[name]?.[field]||''))throw Error('Exact commit and tree pins required');
  if(pins.floor.commit===pins.successor.commit||pins.floor.tree===pins.successor.tree)throw Error('Distinct source trees required');
- if(!Array.isArray(pins.allowedChangedFiles)||!pins.allowedChangedFiles.length||pins.allowedChangedFiles.some(f=>typeof f!=='string'||f.split('/').includes('..')||!(/^(plan-catalog\.mjs|research-lab\.mjs|lab-client\.js|test\/[a-zA-Z0-9/_.-]+\.mjs|[A-Z0-9_-]+\.md)$/.test(f))))throw Error('Only explicit product files/tests/docs may differ');
+ if(!Array.isArray(pins.allowedChangedFiles)||!pins.allowedChangedFiles.length||pins.allowedChangedFiles.some(f=>typeof f!=='string'||f.split('/').includes('..')||!(/^(plan-catalog\.mjs|research-lab\.mjs|lab-client\.js|\.github\/workflows\/tests\.yml|scripts\/verify-pinned034-upgrade\.mjs|test\/[a-zA-Z0-9/_.-]+\.mjs|[A-Z0-9_-]+\.md)$/.test(f))))throw Error('Only explicit product files/tests/docs may differ');
  return pins;
 }
 export function validateTwoImageChanges(files,pins){

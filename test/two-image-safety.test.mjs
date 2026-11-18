@@ -42,3 +42,18 @@ test('overlay orchestration checks local tag before and after build and only rem
  assert.match(source,/docker\(\['image','rm',tag\]/);assert.doesNotMatch(source,/\['image','rm',(?:id|built\[)/);
  assert.match(source,/stage:"base-built"/);assert.match(source,/stage:"runtime-hashes-verified"/);
 });
+
+test('repinned negative control permits only named rehearsal infrastructure beyond product delta',async()=>{
+ const {readFile}=await import('node:fs/promises');
+ const actual=JSON.parse(await readFile(new URL('../scripts/two-image-pins.json',import.meta.url),'utf8'));
+ assert.equal(actual.floor.commit,'9f840ac9e07a9051055bdd3eb97857f0d2645392');
+ assert.equal(actual.successor.commit,'6e85c69d3f1883bb4d82f7a3624aaf03567a15c6');
+ assert.equal(actual.successor.tree,'7ceb709a81039ef2ca1aea9717de0a35116388f2');
+ const fixtureFiles=['.github/workflows/tests.yml','scripts/verify-pinned034-upgrade.mjs','test/initial034-successor.test.mjs','test/initial034.rehearsal.mjs'];
+ assert.deepEqual([...actual.allowedChangedFiles].sort(),[...pins.allowedChangedFiles,...fixtureFiles].sort());
+ validateTwoImageChanges(actual.allowedChangedFiles,actual);
+ for(const file of ['scripts/rollback-bootstrap-network-guard.mjs','scripts/two-image-phase.mjs','scripts/verify-pinned033-upgrade.mjs','.github/workflows/deploy.yml','rollback-schema.mjs','migrations/034_historical_identity.sql']){
+  assert.throws(()=>validateTwoImageChanges([...actual.allowedChangedFiles,file],actual));
+  assert.throws(()=>validateTwoImagePins({...actual,allowedChangedFiles:[...actual.allowedChangedFiles,file]}));
+ }
+});
