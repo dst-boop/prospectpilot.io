@@ -1,0 +1,16 @@
+{
+  "floor": {
+    "commit": "6e85c69d3f1883bb4d82f7a3624aaf03567a15c6",
+    "tree": "7ceb709a81039ef2ca1aea9717de0a35116388f2"
+  },
+  "successor": {
+    "commit": "31a76db2d504d3e65f802a8ce815f82eedefd2eb",
+    "tree": "105ed7e4fbb8791b845a550883c8ae61f82b21a1"
+  },
+  "allowedChangedFiles": [
+    "audience-client.js",
+    "audience.html",
+    "scripts/audience-visual-ci.mjs",
+    "test/audience-client.test.mjs"
+  ]
+}
