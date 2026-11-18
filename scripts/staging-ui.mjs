@@ -30,7 +30,26 @@ export function installStagingUI(ids) {
 }
 export const stagingUIStyle='[data-staging-unavailable="true"]{display:none!important} #stagingUiStatus:empty{display:none}';
 export const stagingUIScript='('+installStagingUI.toString()+')('+JSON.stringify(blockedStagingControls)+');';
+function stagingImportDisclosure(html){
+ if(!html.includes('id="importInputMode"'))return html;
+ const replacements=[
+  ['<h2>Import professional contacts</h2>','<h2>Import the fictional test CSV</h2>'],
+  ['<label>CSV format<select id="importFormat">','<p id="stagingFixtureOnly"><strong>Only the supplied, unchanged fictional CSV is accepted.</strong> <a href="/staging-fixture.csv">Download fictional-staging.csv</a> directly, then upload that file without editing or re-saving it. For paste mode, paste its complete original text, including the header and both rows. Real contacts, provider exports, contact exports and row reports are not accepted. The staging request limit is 100 KB (100,000 bytes including request encoding), not the production import limit.</p><label>Test file format<select id="importFormat" aria-describedby="stagingFixtureOnly">'],
+  ['<option value="file">Upload CSV file</option>','<option value="file">Upload the supplied fictional CSV</option>'],
+  ['<option value="paste">Paste CSV text</option>','<option value="paste">Paste the complete original fixture text</option>'],
+  ['CSV file<input id="csvFile" type="file"','Unchanged fictional-staging.csv<input id="csvFile" aria-describedby="stagingFixtureOnly" type="file"'],
+  ['CSV text<textarea id="csvText"','Complete original fictional CSV text<textarea id="csvText" aria-describedby="stagingFixtureOnly"'],
+  ['placeholder="First Name,Last Name,Company,Email"','placeholder="Paste the complete original text from fictional-staging.csv, including the header and both fictional rows."'],
+  ['Up to 5,000 rows / 4 MB. Preview does not save contacts. Unsupported phone fields are retained for review without discarding the contact.','This exercise accepts only the two rows in the supplied fictional fixture. Preview does not save contacts.']
+ ];
+ for(const [before,after] of replacements){
+  if(html.split(before).length!==2)throw Error('Staging import disclosure adapter needs review');
+  html=html.replace(before,after);
+ }
+ return html;
+}
 export function stagingPage(html){
+ html=stagingImportDisclosure(html);
  const style='<link rel="stylesheet" href="/staging-ui.css">';
  const boot='<script src="/staging-ui.js"></script>';
  const guidance='<section aria-label="Fictional exercise"><p><strong>Practice only:</strong> use fictional names, notes and profile details. Research, provider jobs, sharing, team assignment, deletion and external compose/invite controls are unavailable here. Local draft copying, audience-plan downloads and recording fictional outcomes remain available. This is a UI safeguard, not general network isolation.</p><p><a href="/audience">Manual audience exercise</a> · <a href="/staging-fixture.csv">Download fictional CSV</a> · <a href="/prospect?import=1">Preview in Contacts</a> · <a href="/lab">Worklist</a></p><p id="stagingUiStatus" role="status" aria-live="polite"></p></section>';
@@ -46,7 +65,9 @@ export function stagingPage(html){
 export function stagingProspectScript(source){
  const original="initProviderUI({api,selected,filters,getLists:()=>lists.filter(l=>!l.role||l.role==='owner'),refresh:async()=>{await loadLists();await load();},notice}).catch(e=>notice(e.message,true));";
  if(source.split(original).length!==2)throw Error('Staging provider initialization adapter needs review');
+ const sizeMarker="if(!r.ok){let data;";
+ if(source.split(sizeMarker).length!==2)throw Error('Staging import error adapter needs review');
  const marker="manageButton.className='secondary';";
  if(source.split(marker).length!==2)throw Error('Staging list control adapter needs review');
- return source.replace(original,"/* Fictional staging: provider and job initialization deliberately omitted. */").replace(marker,marker+"manageButton.id='manageListOpen';").replace('Choose a CSV up to 4 MB, or switch to Paste CSV text.','Choose the supplied fictional-staging.csv file, or paste its fictional CSV text.').replace('Choose a CSV file. In ZoomInfo, export your list or search results as CSV.','Choose the supplied fictional-staging.csv file. Real provider exports are not accepted here.').replace('Import an authorized contact list or clear your filters to try again.','Import the supplied fictional CSV or clear your filters to try again.').replace('Checks the email domain, applies restrictions, and prepares a brief and draft. No messages are sent.','Prepares a local brief from fictional saved data. Domain/provider checks and outreach are disabled in staging.');
+ return source.replace(sizeMarker,"if(r.status===413&&/^import(?:\\/preview)?$/.test(path))throw Error('This staging request is too large. Only the supplied unchanged fictional-staging.csv is accepted; the request limit is 100 KB including encoding. Download the fixture using the link above and try again. No contacts were saved by this rejected request.');"+sizeMarker).replace(original,"/* Fictional staging: provider and job initialization deliberately omitted. */").replace(marker,marker+"manageButton.id='manageListOpen';").replace('Choose a CSV up to 4 MB, or switch to Paste CSV text.','Choose the supplied fictional-staging.csv file, or paste its fictional CSV text.').replace('Choose a CSV file. In ZoomInfo, export your list or search results as CSV.','Choose the supplied fictional-staging.csv file. Real provider exports are not accepted here.').replace('Import an authorized contact list or clear your filters to try again.','Import the supplied fictional CSV or clear your filters to try again.').replace('Checks the email domain, applies restrictions, and prepares a brief and draft. No messages are sent.','Prepares a local brief from fictional saved data. Domain/provider checks and outreach are disabled in staging.');
 }

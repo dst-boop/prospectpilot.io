@@ -3,7 +3,7 @@ import {Readable} from 'node:stream';
 import {pipeline} from 'node:stream/promises';
 
 class HttpFailure extends Error {constructor(status,message){super(message);this.status=status;}}
-export function createHttpHandler(handler,{maxBodyBytes=5_000_000,maxInflight=40,logger=console,releaseCheckOrigin=''}={}) {
+export function createHttpHandler(handler,{maxBodyBytes=5_000_000,maxInflight=40,logger=console,releaseCheckOrigin='',bodyTooLargeMessage='File exceeds 5 MB.'}={}) {
   const candidate=candidateOrigin(releaseCheckOrigin);
   const candidateHost=candidate?new URL(candidate).hostname:null;
   let active=0;
@@ -29,10 +29,10 @@ export function createHttpHandler(handler,{maxBodyBytes=5_000_000,maxInflight=40
       let url;try{url=new URL(req.url,'https://'+host);}catch{throw new HttpFailure(400,'Invalid request address.');}
       if(candidateRequest&&!((url.pathname===READINESS_PATH&&req.method==='GET')||(['/health','/healthz'].includes(url.pathname)&&['GET','HEAD'].includes(req.method))))throw new HttpFailure(403,'Release readiness unavailable.');
       const length=req.headers['content-length'];
-      if(length!==undefined&&(!/^\d+$/.test(length)||Number(length)>maxBodyBytes))throw new HttpFailure(413,'File exceeds 5 MB.');
+      if(length!==undefined&&(!/^\d+$/.test(length)||Number(length)>maxBodyBytes))throw new HttpFailure(413,bodyTooLargeMessage);
       const chunks=[];let size=0;
       for await(const chunk of req.iterator({destroyOnReturn:false})){
-        size+=chunk.length;if(size>maxBodyBytes)throw new HttpFailure(413,'File exceeds 5 MB.');chunks.push(chunk);
+        size+=chunk.length;if(size>maxBodyBytes)throw new HttpFailure(413,bodyTooLargeMessage);chunks.push(chunk);
       }
       const init={method:req.method,headers:req.headers,signal:abort.signal};
       if(size&&req.method!=='GET'&&req.method!=='HEAD')init.body=chunks.length===1?chunks[0]:Buffer.concat(chunks,size);
