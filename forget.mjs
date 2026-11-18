@@ -1,5 +1,5 @@
-// "Delete this person" — one action that removes a person and everything the
-// app learned about them, wherever this user holds it: the contact directory
+// "Delete this person" removes the associated records this user holds:
+// the contact directory
 // record, the Research Lab lead it is linked to, their observations,
 // qualification, advisor activity, rest periods, call records, research jobs,
 // the inputs and results of provider tasks about them, and their name in
@@ -13,9 +13,12 @@
 //  - the lead ledger (lead_acquisitions) keeps the lead's date and source and
 //    its charges keep pointing at it, so cost per lead does not change after
 //    the fact; its link to the contact or lab lead becomes NULL;
-//  - a tombstone of HASHED identity keys, so an import or a research run
-//    cannot quietly bring the person back. Hashes, not keys: the deletion
-//    record must not itself be a copy of the person.
+//  - tombstones of HASHED known identity keys, checked on future imports and
+//    research writes. Older or changed identifiers may not be recognized.
+//    Hashes, not raw keys: minimize the retained identity information.
+// Old import reports whose associations were already discarded may retain
+// personal details; current stable report references improve future cleanup.
+// This operation is not a guarantee of complete erasure or reimport prevention.
 //
 // Ported from Lead Qualifier's /api/leads/forget (dst-boop/lead-qualifier,
 // ADR and LEARNINGS "There was no way to delete one person").

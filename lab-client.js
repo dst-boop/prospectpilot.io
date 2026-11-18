@@ -165,7 +165,7 @@ async function openRun(id){const version=++runDetailVersion;$('runDetails').text
 // Deleting is permanent, so it takes a second click.
 $('forgetLead').onclick=async()=>{if(activitySaving){canLeaveActivity();return;}const button=$('forgetLead');if(!current||button.disabled)return;const version=leadDetailVersion,id=current.lead.id;
   if(!button.dataset.armed){button.dataset.armed='1';button.textContent='Click again to delete permanently';return;}
-  button.disabled=true;$('forgetError').textContent='';try{await request('/api/lab/leads/'+encodeURIComponent(id),{method:'DELETE'});selected.delete(id);if(version===leadDetailVersion)$('detail').close();notice('Deleted. Nothing about this person remains except a do-not-call block, if one existed.');await refresh(false);}
+  button.disabled=true;$('forgetError').textContent='';try{await request('/api/lab/leads/'+encodeURIComponent(id),{method:'DELETE'});selected.delete(id);if(version===leadDetailVersion)$('detail').close();notice('Deletion completed. Existing do-not-call blocks, identity markers and accounting records are retained. Older import reports may retain details.');await refresh(false);}
   catch(err){if(version===leadDetailVersion)$('forgetError').textContent=err.message;else notice(err.message,true);}finally{button.disabled=false;}};
 $('detail').addEventListener('close',()=>{activityDraftBaseline=null;leadDetailVersion++;current=null;clearConversation();$('saveReview').disabled=true;});
 $('runDialog').addEventListener('close',()=>{runDetailVersion++;});
