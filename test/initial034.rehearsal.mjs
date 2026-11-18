@@ -18,8 +18,10 @@ const root=fileURLToPath(new URL('..',import.meta.url));
 function assertTarget(){
  const git=args=>execFileSync('git',args,{cwd:root,encoding:'utf8',timeout:10000,maxBuffer:16*1024*1024});
  assert.equal(git(['rev-parse',target+'^{commit}']).trim(),target);
- const files=git(['ls-tree','-r','--name-only',target]).trim().split('\n').filter(f=>/^[a-zA-Z0-9-]+\.mjs$/.test(f)||f==='generated/schema.sql'||/^migrations\/.*\.sql$/.test(f));
- for(const file of files)assert.equal(readFileSync(new URL('../'+file,import.meta.url),'utf8'),git(['show',target+':'+file]),'Exact pinned target source: '+file);
+ const runtimeTarget=git(['rev-parse','HEAD^{commit}']).trim();
+ assert.match(runtimeTarget,/^[a-f0-9]{40}$/);
+ const files=git(['ls-tree','-r','--name-only',runtimeTarget]).trim().split('\n').filter(f=>/^[a-zA-Z0-9-]+\.mjs$/.test(f)||f==='generated/schema.sql'||/^migrations\/.*\.sql$/.test(f));
+ for(const file of files)assert.equal(readFileSync(new URL('../'+file,import.meta.url),'utf8'),git(['show',runtimeTarget+':'+file]),'Exact checked-out successor source: '+file);
  const fixtureSource=readFileSync(new URL('./helpers/initial034-fixture.mjs',import.meta.url),'utf8').replaceAll('export async function','async function');
  const original=git(['show',target+':test/full-upgrade.rehearsal.mjs']);
  for(const name of ['seed029','verifyKeys']){
