@@ -1,0 +1,21 @@
+{
+  "floor": {
+    "commit": "6e85c69d3f1883bb4d82f7a3624aaf03567a15c6",
+    "tree": "7ceb709a81039ef2ca1aea9717de0a35116388f2"
+  },
+  "successor": {
+    "commit": "62c6fab8d385d4546c022b0758600496f7f26839",
+    "tree": "ca07f43fa895051e9fa43b88db54dc27599cc5df"
+  },
+  "allowedChangedFiles": [
+    "audience-client.js",
+    "audience.html",
+    "design/team-identity-preflight.md",
+    "firm-scoped-snapshot.mjs",
+    "lab.html",
+    "scripts/audience-visual-ci.mjs",
+    "test/audience-client.test.mjs",
+    "test/firm-scoped-snapshot.test.mjs",
+    "test/legacy-disclosure.test.mjs"
+  ]
+}
