@@ -52,6 +52,8 @@ await lab.importCSV(user,{source:'Synthetic fixtures',csv:'First Name,Last Name,
 await lab.cost(user,{run_id:imported.run.id,category:'labor',amount_micros:12000000,note:'Synthetic cost example, not actual spending',idempotency_key:'fixture-cost'});
 const assets=new Map([['/lab-client.js',['text/javascript',read('lab-client.js')]],['/lab.css',['text/css',read('lab.css')]]]);
 assets.set('/prospect-client.js',['text/javascript',read('prospect-client.js')]);assets.set('/prospect.css',['text/css',read('prospect.css')]);
+for(const [path,type] of [['/audience-client.js','text/javascript'],['/audience-catalog.mjs','text/javascript'],['/audience.css','text/css']])assets.set(path,[type,read(path.slice(1))]);
+const audiencePage=read('audience.html').replace('<body>','<body><p role="status">SYNTHETIC DEMONSTRATION - Fictional search plans only. No provider calls. Do not enter real personal information.</p>');
 assets.set('/brand.svg',['image/svg+xml',read('brand.svg')]);assets.set('/favicon.ico',['image/svg+xml',read('brand.svg')]);
 assets.set('/prospect-jobs-client.js',['text/javascript',read('prospect-jobs-client.js')]);
 assets.set('/networking-client.js',['text/javascript',read('networking-client.js')]);assets.set('/networking.css',['text/css',read('networking.css')]);
@@ -75,6 +77,7 @@ const handle=async request=>{
     if(url.pathname==='/about')return new Response(read('home.html'),{headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
     if(url.pathname==='/site.css')return new Response(read('site.css'),{headers:{...headers,'Content-Type':'text/css; charset=utf-8'}});
     if(assets.has(url.pathname)){const [type,body]=assets.get(url.pathname);return new Response(body,{headers:{...headers,'Content-Type':type}});}
+    if(url.pathname==='/audience')return new Response(audiencePage,{headers:{...headers,'Content-Type':'text/html; charset=utf-8','Content-Security-Policy':headers['Content-Security-Policy'].replace("connect-src 'self'","connect-src 'none'")}});
     if(url.pathname==='/networking')return new Response(networkingPage,{headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
     if(url.pathname==='/prospect')return new Response(prospectPage,{headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
     if(['/', '/lab'].includes(url.pathname))return new Response(page,{headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
