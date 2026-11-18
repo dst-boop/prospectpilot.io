@@ -39,6 +39,11 @@ jobs:
         run: node scripts/verify-pinned033-upgrade.mjs --postgres
         env:
           STAGING_DATABASE_URL: postgres://postgres:synthetic-ci-only@127.0.0.1:5432/prospectpilot_test
+      - name: Initial029-to034 quiesced migration and preactivation restore (synthetic only)
+        run: node scripts/initial034-rehearsal.mjs --postgres
+        env:
+          STAGING_DATABASE_URL: postgres://postgres:synthetic-ci-only@127.0.0.1:5432/prospectpilot_test
+          SYNTHETIC_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
       - name: Isolated PostgreSQL staging smoke (no external providers)
         run: pnpm staging:postgres
         env:
