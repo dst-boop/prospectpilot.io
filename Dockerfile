@@ -31,3 +31,10 @@ COPY migrations ./migrations
 COPY readonly-fallback.mjs release-readiness.mjs server.mjs http-server.mjs handler.mjs login-destination.mjs database.mjs migrate.mjs home.html site.css brand.svg login.html research-jobs.mjs research-worker.mjs warn.mjs warn.html warn-client.js native-research.mjs linkedin.mjs linkedin.html linkedin-client.js ./
 USER node
 CMD ["node","server.mjs"]
+
+# Explicit opt-in frozen rollback artifact. Default build below remains normal.
+FROM runtime AS rollback-runtime
+COPY rollback-bootstrap.mjs rollback-schema.mjs rollback-server.mjs rollback-worker.mjs ./
+CMD ["node","rollback-server.mjs"]
+
+FROM runtime AS production
