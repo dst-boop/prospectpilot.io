@@ -1,0 +1,54 @@
+name: fictional tester authority
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  native-tester-isolation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: synthetic-ci-only
+          POSTGRES_DB: prospectpilot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - run: npm install --global pnpm@11.19.0
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Synthetic source regressions
+        run: node --test --test-concurrency=1 test/staging-tester-authority.test.mjs test/authenticated-staging.test.mjs
+      - name: Browser dependencies
+        run: |
+          npm install --prefix /tmp/pp-browser --no-save --ignore-scripts playwright@1.62.1
+          /tmp/pp-browser/node_modules/.bin/playwright install --with-deps chromium
+      - name: Actual synthetic tester browser flow
+        run: node scripts/staging-tester-visual-ci.mjs
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: fictional-tester-browser
+          path: /tmp/staging-tester-browser/
+      - name: Build exact candidate image, no push
+        run: docker build -t prospectpilot-tester-candidate:${{ github.event.pull_request.head.sha }} .
+      - name: Native restricted LOGIN proof inside exact image
+        run: >-
+          docker run --rm --network host
+          -e STAGING_DATABASE_URL=postgres://postgres:synthetic-ci-only@127.0.0.1:5432/prospectpilot_test
+          --entrypoint node
+          prospectpilot-tester-candidate:${{ github.event.pull_request.head.sha }}
+          scripts/verify-staging-tester-image.mjs --synthetic-image

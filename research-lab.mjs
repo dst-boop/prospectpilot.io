@@ -216,7 +216,7 @@ export async function assessInventory(ids,assess,{clock=()=>performance.now(),bu
 // advisor's membership plan cannot cover a paid reservation, or null when it
 // can (prospect-jobs.mjs allowanceRefusal). It is the same monthly allowance
 // the contact lookups draw on.
-export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>new Date(),allowance=async()=>null}={}) {
+export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>new Date(),allowance=async()=>null,isolateCandidateOwners=false}={}) {
   async function targetFor() { return ADVICE_TARGET; }
   async function accessible(user,id,client=pool,lock=false) {
     const row=(await client.query(`SELECT discovery_leads.*,(SELECT jsonb_agg(pc.payload) FROM advisor_contact_links acl JOIN prospect_contacts pc ON pc.id=acl.contact_id AND pc.user_id=acl.user_id WHERE acl.lead_id=discovery_leads.id AND acl.user_id=discovery_leads.owner_user_id) AS linked_contacts FROM discovery_leads WHERE ${visibleSQL} AND id=$3${lock?' FOR UPDATE':''}`,[TEAM,user.uid,id])).rows[0];
@@ -316,7 +316,9 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     if(!candidates.length)return {added:0,duplicates:0,rejected:0,ambiguous:0};
     // Serialize imports and source completions for this team, including concurrent workers.
     await client.query('SELECT pg_advisory_xact_lock(505006)');
-    const rows=(await client.query('SELECT id,payload,owner_user_id,owner_email FROM discovery_leads WHERE team=$1',[TEAM])).rows;
+    // Staging can explicitly isolate fixture matching across admitted identities.
+    // Production keeps its existing team-wide duplicate policy by default.
+    const rows=(await client.query('SELECT id,payload,owner_user_id,owner_email FROM discovery_leads WHERE team=$1'+(isolateCandidateOwners?' AND owner_user_id=$2':''),isolateCandidateOwners?[TEAM,user.uid]:[TEAM])).rows;
     const index=new Map();
     for(const r of rows)for(const key of candidateKeys(parse(r.payload))){if(!index.has(key))index.set(key,[]);index.get(key).push(r);}
     // Same name at the same company, whatever the location: the probable-match index.
@@ -444,7 +446,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
           const target=row.payload.existing_lead_id;
           const live=(await client.query('SELECT payload FROM discovery_leads WHERE id=$1 AND owner_user_id=$2 FOR UPDATE',[target,user.uid])).rows[0];
           if(!live||historicalCandidateHash(parse(live.payload))!==row.payload.source_revision)throw fail(409,'The lead changed. Discard this stale review and review its current values.');
-          const others=(await client.query('SELECT payload FROM discovery_leads WHERE team=$1 AND id<>$2',[TEAM,target])).rows;
+          const others=(await client.query('SELECT payload FROM discovery_leads WHERE team=$1 AND id<>$2'+(isolateCandidateOwners?' AND owner_user_id=$3':''),isolateCandidateOwners?[TEAM,target,user.uid]:[TEAM,target])).rows;
           if(others.some(r=>candidateKeys(parse(r.payload)).some(k=>keys.includes(k))))throw fail(409,'Another record now matches these identifiers.');
           await captureIdentityEvidence(client,user.uid,'lead',target,parse(live.payload),candidate);
           await client.query('UPDATE discovery_leads SET payload=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2 AND owner_user_id=$3',[JSON.stringify(candidate),target,user.uid]);
@@ -460,7 +462,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
           if(!savedId)throw fail(409,'The reviewed contact could not be confirmed.');
           await scrubHistoricalReports(client,user.uid,[id],savedId);
         }else{
-          const existing=(await client.query('SELECT payload FROM discovery_leads WHERE team=$1',[TEAM])).rows;
+          const existing=(await client.query('SELECT payload FROM discovery_leads WHERE team=$1'+(isolateCandidateOwners?' AND owner_user_id=$2':''),isolateCandidateOwners?[TEAM,user.uid]:[TEAM])).rows;
           if(existing.some(r=>candidateKeys(parse(r.payload)).some(k=>keys.includes(k))))throw fail(409,'Identifiers now match an existing record. Review it before deciding.');
           const saved={...withFieldHistory(candidate,now().toISOString(),row.payload.reported||candidate),id:randomUUID()};
           await client.query('INSERT INTO discovery_leads(id,team,owner_user_id,owner_email,payload) VALUES($1,$2,$3,$4,$5)',[saved.id,TEAM,user.uid,user.email||'',JSON.stringify(saved)]);
