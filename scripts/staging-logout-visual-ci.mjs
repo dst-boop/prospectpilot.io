@@ -1,6 +1,10 @@
-// Browser-cookie/Origin regression only. No server, real identity or provider access.
+// Browser-cookie/Origin regression on ephemeral loopback HTTPS only. No real identity/provider access.
 import assert from 'node:assert/strict';
-import {mkdirSync} from 'node:fs';
+import {mkdirSync,mkdtempSync,readFileSync,rmSync} from 'node:fs';
+import {createServer} from 'node:https';
+import {execFileSync} from 'node:child_process';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {createRequire} from 'node:module';
 import {PGlite} from '@electric-sql/pglite';
 import {migrate} from '../migrate.mjs';
@@ -15,7 +19,7 @@ const claims={uid:config.uid,aud:project,iss:'https://securetoken.google.com/'+p
 const db=new PGlite();const query=async(sql,values)=>!values&&sql.includes(';')?(await db.exec(sql)).at(-1):db.query(sql,values);
 const pool={query,connect:async()=>({query,release(){}}),end:async()=>{}};
 const verify=async(token)=>{assert.equal(token,'synthetic-session');return claims;};
-let browser,page;const errors=[],outbound=[],posts=[];let failOnce=false;
+let browser,page,server,certDir;const errors=[],outbound=[],posts=[],trace=[],consoleErrors=[];let failOnce=false;
 try{
  await migrate(pool);
  const app=createAuthenticatedStaging({pool,config,auth:{verifyIdToken:verify,verifySessionCookie:verify,createSessionCookie:async()=> 'synthetic-session'},loginScript:'// synthetic test only'});
@@ -24,21 +28,35 @@ try{
   const headers={cookie:'__session=synthetic-session'};if(invalid!==undefined)headers.origin=invalid;
   const r=await app(new Request(origin+'/logout',{method:'POST',headers}));assert.equal(r.status,403);assert.equal(r.headers.get('set-cookie'),null);
  }
- browser=await chromium.launch({headless:true,...process.env.CHROMIUM_EXECUTABLE?{executablePath:process.env.CHROMIUM_EXECUTABLE}:{}});
- const context=await browser.newContext();
- await context.route('**/*',async route=>{
-  const req=route.request(),u=new URL(req.url());
-  if(u.origin!==origin){outbound.push(req.url());return route.abort();}
-  // Forward browser-generated headers verbatim. NEVER synthesize Origin or Cookie.
-  const headers=await req.allHeaders();
-  if(u.pathname==='/logout'&&req.method()==='POST'){
-   posts.push({origin:headers.origin,cookie:headers.cookie});
-   if(failOnce){failOnce=false;return route.fulfill({status:503,body:'Synthetic retry failure'});}
-  }
-  const response=await app(new Request(req.url(),{method:req.method(),headers,...(req.postDataBuffer()?{body:req.postDataBuffer()}:{})}));
-  await route.fulfill({status:response.status,headers:Object.fromEntries(response.headers),body:Buffer.from(await response.arrayBuffer())});
+ // Real loopback transport preserves browser redirects and Set-Cookie semantics.
+ // Route.fulfill cannot faithfully intercept every request in a redirected chain.
+ certDir=mkdtempSync(join(tmpdir(),'pp-synthetic-tls-'));
+ const key=join(certDir,'key.pem'),cert=join(certDir,'cert.pem'),hostname=new URL(origin).hostname;
+ execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',key,'-out',cert,'-days','1','-subj','/CN='+hostname,'-addext','subjectAltName=DNS:'+hostname],{stdio:'ignore',timeout:15000});
+ server=createServer({key:readFileSync(key),cert:readFileSync(cert)},async(req,res)=>{
+  try{
+   if(req.headers.host!==hostname){res.writeHead(403);return res.end('Synthetic host rejected');}
+   const chunks=[];for await(const chunk of req)chunks.push(chunk);const body=Buffer.concat(chunks);
+   const u=new URL(req.url,origin),headers=req.headers;
+   if(u.pathname==='/logout'&&req.method==='POST'){
+    posts.push({origin:headers.origin,cookie:headers.cookie});
+    if(failOnce){failOnce=false;res.writeHead(503);return res.end('Synthetic retry failure');}
+   }
+   const response=await app(new Request(u,{method:req.method,headers,...(body.length?{body}:{})}));
+   trace.push({path:u.pathname,method:req.method,origin:headers.origin||null,hasCookie:!!headers.cookie,status:response.status,location:response.headers.get('location'),setsCookie:response.headers.has('set-cookie')});
+   res.writeHead(response.status,Object.fromEntries(response.headers));res.end(Buffer.from(await response.arrayBuffer()));
+  }catch(error){errors.push(error.message);res.writeHead(500);res.end('Synthetic server error');}
  });
- page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));
+ await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
+ assert.equal(server.address().address,'127.0.0.1');
+ browser=await chromium.launch({headless:true,args:['--no-proxy-server',`--host-resolver-rules=MAP ${hostname} 127.0.0.1:${server.address().port}, MAP * ~NOTFOUND`],...process.env.CHROMIUM_EXECUTABLE?{executablePath:process.env.CHROMIUM_EXECUTABLE}:{}});
+ // Certificate exemption is confined to this disposable synthetic browser context.
+ const context=await browser.newContext({ignoreHTTPSErrors:true,serviceWorkers:'block'});
+ await context.route('**/*',async route=>{
+  if(new URL(route.request().url()).origin!==origin){outbound.push(route.request().url());return route.abort();}
+  return route.continue(); // No Origin/Cookie/request rewriting or response simulation.
+ });
+ page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')consoleErrors.push(m.text());});
  const seed=()=>context.addCookies([{name:'__session',value:'synthetic-session',url:origin,httpOnly:true,secure:true,sameSite:'Lax'}]);
  const loggedOut=async()=>{
   await page.waitForURL(origin+'/login?staging_signed_out=1');
@@ -74,5 +92,5 @@ try{
  assert.deepEqual(errors,[]);assert.deepEqual(outbound,[]);
  await page.screenshot({path:output+'/signed-out.png'});
  console.log('PASS: actual Chromium Origin + Cookie forwarding; browser Set-Cookie deletion; direct and Contacts sign-out; retry preserves session; post-logout protected APIs 401. Synthetic auth/PGlite only, no real Google or deployed proxy proof.');
-}catch(error){if(page)await page.screenshot({path:output+'/failure.png'}).catch(()=>{});throw error;}
-finally{await browser?.close();await db.close();}
+}catch(error){console.error(JSON.stringify({trace,consoleErrors,errors,pageURL:page?.url(),status:await page?.locator('#stagingLogoutStatus').textContent().catch(()=>null),cookiePresent:page?(await page.context().cookies(origin)).some(c=>c.name==='__session'):null}));if(page)await page.screenshot({path:output+'/failure.png'}).catch(()=>{});throw error;}
+finally{await browser?.close();if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}if(certDir)rmSync(certDir,{recursive:true,force:true});await db.close();}
