@@ -10,7 +10,7 @@ test('synthetic demo starts with current migrations and serves its contact fixtu
  const port=reservation.address().port;await new Promise(resolve=>reservation.close(resolve));
  const child=spawn(process.execPath,['scripts/demo.mjs'],{
   cwd:fileURLToPath(new URL('../',import.meta.url)),
-  env:{...process.env,NODE_ENV:'test',DEMO_PORT:String(port)},stdio:['ignore','pipe','pipe']
+  env:{PATH:process.env.PATH,HOME:process.env.HOME,NODE_ENV:'test',DEMO_PORT:String(port)},stdio:['ignore','pipe','pipe']
  });
  const closed=once(child,'close');let output='',errors='',timer;
  try{
@@ -29,6 +29,14 @@ test('synthetic demo starts with current migrations and serves its contact fixtu
   const review=await (await fetch(`http://127.0.0.1:${port}/api/prospect/daily-review`,{signal:AbortSignal.timeout(10000)})).json();
   assert.equal(review.counts.total,3,'the Daily review has a synthetic delivery to show');
   const origin=`http://127.0.0.1:${port}`;
+  const audience=await fetch(origin+'/audience');assert.equal(audience.status,200);
+  assert.match(audience.headers.get('content-security-policy'),/connect-src 'none'/);
+  const audienceHTML=await audience.text();assert.match(audienceHTML,/SYNTHETIC DEMONSTRATION/);assert.match(audienceHTML,/id="download"/);
+  for(const [path,type] of [['/audience-client.js','text/javascript'],['/audience-catalog.mjs','text/javascript'],['/audience.css','text/css']]){
+   const asset=await fetch(origin+path);assert.equal(asset.status,200,path);assert.match(asset.headers.get('content-type'),new RegExp(type));assert.ok((await asset.text()).length>0);
+  }
+  const afterAudience=await (await fetch(origin+'/api/prospect/contacts')).json();assert.deepEqual(afterAudience,data,'manual guide does not mutate contacts');
+  const wrongOrigin=await fetch(origin+'/api/prospect/lists',{method:'POST',headers:{Origin:'https://external.invalid','Content-Type':'application/json'},body:'{}'});assert.equal(wrongOrigin.status,403);
   const hub=await fetch(origin+'/team-hub');assert.equal(hub.status,200);assert.match(await hub.text(),/Nothing moves here/);
   const context=await (await fetch(origin+'/api/team-hub/context')).json();assert.equal(context.synthetic,true);assert.equal(context.can_execute,false);
   const preview=await fetch(origin+'/api/team-hub/preview',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({source_uid:'demo-departing',target_uid:'demo-receiver'})});
