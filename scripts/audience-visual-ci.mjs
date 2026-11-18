@@ -54,6 +54,18 @@ try{
   assert.equal(await page.locator('#valueText').inputValue(),focus);
   await page.locator('#refine').click();assert.equal(await page.locator('#focus').inputValue(),focus);
  }
+ // A small professional firm must not require the old-workplace-plan recipe.
+ await page.locator('#audience').selectOption('local');
+ assert.equal(await page.locator('#employeeCount').isVisible(),true);
+ assert.equal(await page.locator('#occupation').isVisible(),false);
+ await page.locator('#focus').fill('Partner');await page.locator('#employeeCount').fill('10–20');
+ await page.locator('#setupForm button[type=submit]').click();
+ const partnerPlan=await page.locator('#filterList').innerText();
+ assert.match(partnerPlan,/Partner/);assert.match(partnerPlan,/10–20/);assert.doesNotMatch(partnerPlan,/Seniority|Management/);
+ await page.locator('#back').click();await page.locator('#employeeCount').fill('');
+ await page.locator('#setupForm button[type=submit]').click();
+ assert.doesNotMatch(await page.locator('#filterList').innerText(),/Employee Count/);
+ await page.locator('#back').click();
  await page.setViewportSize({width:390,height:844});
  await page.screenshot({path:'/tmp/audience-mobile-setup.png',fullPage:true});
  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'setup mobile overflow');

@@ -1,5 +1,5 @@
 // Manual-search guidance only. Never map connector/API keys into invented UI labels.
-export const catalogVersion='2026-11-17.2';
+export const catalogVersion='2026-11-18.1';
 export const searchSource='https://gtm.ai/docs/gtm-one/advanced-search/run-an-advanced-search';
 export const broadStart='Broad starting plan: no additional constraints proposed. GTM One shows a starting screen until at least one filter is set. Choose one useful supported filter in your account, then review a small baseline sample. No location, employer size or seniority is required. Your edition may differ.';
 export const filterSource='https://gtm.ai/docs/gtm-one/advanced-search/overview-of-the-filters-available-in-advanced-search';
@@ -13,9 +13,9 @@ export const catalog=Object.freeze({
 });
 export const audiences=Object.freeze([
  {id:'workplace',name:'Potential old workplace plans',why:'Research people who may have prior workplace plans. Around age 40+ is a planning hypothesis, not a verified ZoomInfo age filter or evidence that someone has an old 401(k). Keep occupations broad; confirm relevance with the person.',field:'role',prompt:'Optional occupational focus',placeholder:'Leave blank to keep occupations broad',filters:['location','title','employeeCount','industry']},
- {id:'local',name:'Professionals in your area',why:'Start with a place and a professional community you know.',field:'role',prompt:'Which role or profession do you understand?',placeholder:'For example, engineers',filters:['location','title']},
- {id:'employer',name:'People at employers you know',why:'Build familiarity with an employer before approaching individuals.',field:'company',prompt:'Which employer do you want to understand?',placeholder:'Enter a company name',filters:['location','company']},
- {id:'industry',name:'A professional industry',why:'Focus your learning on a specific business community.',field:'industry',prompt:'Which industry can you speak about credibly?',placeholder:'For example, manufacturing',filters:['location','industry']}
+ {id:'local',name:'Professionals in your area',why:'Start with a place and a professional community you know.',field:'role',prompt:'Which role or profession do you understand?',placeholder:'For example, engineers',filters:['location','title','employeeCount']},
+ {id:'employer',name:'People at employers you know',why:'Build familiarity with an employer before approaching individuals.',field:'company',prompt:'Which employer do you want to understand?',placeholder:'Enter a company name',filters:['location','company','employeeCount']},
+ {id:'industry',name:'A professional industry',why:'Focus your learning on a specific business community.',field:'industry',prompt:'Which industry can you speak about credibly?',placeholder:'For example, manufacturing',filters:['location','industry','employeeCount']}
 ]);
 const clean=value=>String(value??'').trim().slice(0,160);
 export function buildPlan(input={}){
@@ -24,7 +24,7 @@ export function buildPlan(input={}){
  const values={location,title:value,company:value,industry:audience.id==='workplace'?clean(input.industry):value,employeeCount:size};
  const filters=audience.filters.filter(id=>values[id]).map(id=>({id,...catalog[id],value:values[id]}));
  if(!filters.length&&audience.id!=='workplace')return {errors:['Choose at least one proposed value: a focus, employer size or optional service area.']};
- return {errors:[],occupation:['both','hands-on','office'].includes(input.occupation)?input.occupation:'both',audience:audience.name,location,focus:value,filters,exclusion:clean(input.exclusion),version:catalogVersion};
+ return {errors:[],occupation:audience.id==='workplace'&&['both','hands-on','office'].includes(input.occupation)?input.occupation:'both',audience:audience.name,location,focus:value,filters,exclusion:clean(input.exclusion),version:catalogVersion};
 }
 export function eventDraft(input={},now=new Date()){
  const event=clean(input.event),date=clean(input.date);let url;try{url=new URL(input.source);}catch{return null;}

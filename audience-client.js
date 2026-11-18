@@ -2,7 +2,7 @@ import {audiences,broadStart,buildPlan,eventDraft,planText,safety,filterSource,e
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let current=null,copyAttempt=0;
-function syncAudience(){const a=audiences.find(a=>a.id===$('audience').value);$('focusLabel').textContent=a.prompt;$('focus').placeholder=a.placeholder;$('reason').textContent=a.why;$('sizeFields').hidden=a.id!=='workplace';}
+function syncAudience(){const a=audiences.find(a=>a.id===$('audience').value);$('focusLabel').textContent=a.prompt;$('focus').placeholder=a.placeholder;$('reason').textContent=a.why;$('workplaceFields').hidden=a.id!=='workplace';}
 function show(section){if(section==='setup'){copyAttempt++;$('copyStatus').textContent='';}$('setup').hidden=section!=='setup';$('plan').hidden=section!=='plan';$('stepLabel').textContent=section==='setup'?'Step 1 of 3 · Choose your audience':'Steps 2–3 · Search, review and upload';(section==='setup'?$('audience'):$('planTitle')).focus();}
 $('audience').innerHTML=audiences.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('');syncAudience();
 $('audience').onchange=()=>{$('focus').value='';$('eventReviewed').checked=false;$('eventOutput').textContent='';syncAudience();};
