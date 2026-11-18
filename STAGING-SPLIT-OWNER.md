@@ -1,0 +1,17 @@
+# Split-owner recovery candidate: not executed
+
+This isolated successor preserves original #154 source/proof. Actual Cloud SQL denied bootstrap postgres's initializer role GRANT with SQLSTATE42501. Existing two restricted SQL roles and three password secret version1s persist; no application DB exists. Do NOT rerun #156 or regenerate credentials.
+
+Alternative uses object privileges only: bootstrap postgres owns database and public schema (directly or via pg_database_owner). Initializer gets CONNECT and public USAGE/CREATE, not database CREATE, not role membership; initializer owns migrated tables/functions/marker. Runtime stays nonowner with no membership/DDL. Bootstrap applies stagingDatabaseGrants(database,runtime); initializer separately applies stagingTableGrants(runtime), both from scripts/staging-db-grants.mjs. Never execute the combined stagingGrants under a single identity in this model.
+
+No migration extensions/new-schema/ALTER DATABASE found; native proof remains required to confirm only schema CREATE suffices. New proof scripts/verify-staging-split-owner.mjs uses actual non-superuser bootstrap LOGIN CREATEDB/CREATEROLE with no role ADMIN/memberships for initializer/runtime. It runs all existing restricted workflows and denial tests after separate owner grants. No Cloud SQL mutation in proof; disposable loopback PostgreSQL only.
+
+## Recovery operator sequence after native proof and audit
+1. Verify file SHA256SUMS and exact reviewed source. Run python3 staging-operator/test_split_recovery.py (four no-network tests).
+2. Run native split-owner proof with exact reviewed files against disposable PostgreSQL16 and record success. No live step until proof passes and reviewer clears.
+3. Confirm isolated Cloud SQL proxy target prospectpilot-stg-261118:us-central1:prospectpilot-stg-db on127.0.0.1:55438; actual role flags/memberships and no appDB unchanged; no parallel provisioning actor. Runtime must not inherit project-wide Secret Accessor.
+4. Set STAGING_SPLIT_OWNER_PROOF=pg16-split-owner-v1 and STAGING_CONFIRMED_PROXY_TARGET=prospectpilot-stg-261118:us-central1:prospectpilot-stg-db; run python3 staging-operator/recover-split-owner.py. It uses only existing stored passwords (no creation/rotation), verifies all real role logins before changes, creates bootstrap-owned empty DB and initializer schema privileges. Runtime remains unable to connect until the separate grant step. Passwords only child process environment, never argv/files/output. No IAM changes, role attribute changes, role grants, migrations, application data or deployment.
+5. Verify actual empty DB ownership, initializer privileges and unchanged runtime restrictions. Then exact #152 initializer may run under initializer credentials with verified actual Google UID, origin and fixed expiry. Do not initialize earlier.
+6. Apply database/schema grants as bootstrap and table-only grants as initializer, with actual runtime capability tests before application exposure. Grant application is separate from recovery script.
+
+Partial failure retains state; no automatic cleanup/retry. SQL CREATE DATABASE cannot be in a transaction. If failure occurs after DB creation, inspect exact DB/ACL state and prepare another reviewed recovery, not rerun fresh-state guard. Original #156 helper is copied only for reviewed subprocess/transport utilities; its main/role-creation path is NEVER invoked by recovery.
