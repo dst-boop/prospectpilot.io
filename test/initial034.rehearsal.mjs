@@ -44,7 +44,7 @@ function docker(container,args,input){
   child.stdout.on('data',b=>{length+=b.length;if(length>32*1024*1024)failed=true;else output.push(b);});
   child.stderr.on('data',b=>{errorLength+=b.length;if(errorLength>65536)failed=true;});
   child.on('error',()=>{clearTimeout(timer);reject(Error('Synthetic backup tool could not start'));});
-  child.on('close',code=>{clearTimeout(timer);if(code!==0||failed)reject(Error('Synthetic backup tool failed or exceeded bound'));else resolve(Buffer.concat(output));});
+  child.on('close',code=>{clearTimeout(timer);if(code!==0||failed)reject(Error('Synthetic '+args[0]+' failed or exceeded bound'));else resolve(Buffer.concat(output));});
   child.stdin.on('error',()=>{});child.stdin.end(input);
  });
 }
@@ -55,7 +55,7 @@ for(const backend of ['pglite','postgres'])test(`initial034 ${backend}: pinned02
  assert.notEqual(process.env.NODE_ENV,'production');assertTarget();
  const config=validateStagingDatabaseUrl();
  const network=installSyntheticNetworkGuard();if(config)network.allowPort(config.port);
- let db,historical,writer,admin,roleCreated=false,guard,guardClient;
+ let db,historical,writer,admin,roleCreated=false,guard,guardClient,primaryError;
  const role='pp_initial_'+randomBytes(12).toString('hex'),password=randomBytes(24).toString('hex');
  try{
   db=await createStagingDatabase({backend});
@@ -127,7 +127,11 @@ for(const backend of ['pglite','postgres'])test(`initial034 ${backend}: pinned02
   await assertPreServiceAbort();
   if(backend==='postgres'){
    await db.query(`DROP SCHEMA "${db.schema}" CASCADE`);
-   await docker(process.env.SYNTHETIC_POSTGRES_CONTAINER,['pg_restore',...dbArgs,'--exit-on-error','--single-transaction','--schema='+db.schema],archive);
+   // The archive was produced above with pg_dump --schema for this exact
+   // random fixture only. A restore --schema filter excludes its SCHEMA TOC
+   // entry and cannot recreate the dropped namespace. Restore the whole scoped
+   // archive so namespace ownership and ACL entries are retained as well.
+   await docker(process.env.SYNTHETIC_POSTGRES_CONTAINER,['pg_restore',...dbArgs,'--exit-on-error','--single-transaction'],archive);
    assert.deepEqual(await tableSnapshot(db),before);assert.deepEqual(await schemaSnapshot(db),structure);assert.deepEqual(await initialSchemaSnapshot(db),catalog);
    assert.equal((await db.query('SELECT count(*)::int AS n FROM prospectpilot_migrations')).rows[0].n,29);
    assert.equal((await admin.query('SELECT rolcanlogin FROM pg_roles WHERE rolname=$1',[role])).rows[0].rolcanlogin,false,'Restore does not reopen synthetic writer');
@@ -140,9 +144,20 @@ for(const backend of ['pglite','postgres'])test(`initial034 ${backend}: pinned02
    t.diagnostic('Native pg_dump/pg_restore: exact029 snapshot restored after quiesced034 guard admission; no034 app traffic accepted. Not general live034 rollback.');
   }else t.diagnostic('PGlite proves only fixture/migration/guard/refusal semantics; no native writer fencing or external backup/restore claimed.');
   assert.equal(network.attempts.length,0);
- }finally{
-  await guard?.close().catch(()=>{});await writer?.end().catch(()=>{});
-  if(admin&&roleCreated){await admin.query('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename=$1 AND datname=$2',[role,'prospectpilot_test']).catch(()=>{});}
-  try{await db?.close();}finally{try{if(admin&&roleCreated)await admin.query(`DROP ROLE "${role}"`);}finally{await admin?.end();network.restore();await historical?.close();}}
+ }catch(error){primaryError=error;throw error;}finally{
+  const cleanupFailures=[];
+  const cleanup=async(label,action)=>{try{await action();}catch{cleanupFailures.push(label);}};
+  await cleanup('guard',()=>guard?.close());
+  await cleanup('writer',()=>writer?.end());
+  await cleanup('fixture sessions',async()=>{if(admin&&roleCreated)await admin.query('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename=$1 AND datname=$2',[role,'prospectpilot_test']);});
+  await cleanup('fixture database',()=>db?.close());
+  await cleanup('fixture role',async()=>{if(admin&&roleCreated)await admin.query(`DROP ROLE "${role}"`);});
+  await cleanup('admin connection',()=>admin?.end());
+  await cleanup('network guard',()=>network.restore());
+  await cleanup('historical modules',()=>historical?.close());
+  if(cleanupFailures.length){
+   const message='Synthetic cleanup failed: '+cleanupFailures.join(', ');
+   if(primaryError)t.diagnostic(message);else throw Error(message);
+  }
  }
 });
