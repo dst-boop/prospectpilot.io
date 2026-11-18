@@ -31,3 +31,20 @@ test('both current and archived report rendering use the scoped notice',()=>{
  assert.match(source,/innerHTML=ignored\+historicalImportNotice\(r\)\+/);
  assert.doesNotMatch(source,/Review incoming records held for historical identity checks/);
 });
+
+// Playwright string evaluation must receive one complete expression, not a
+// leading function declaration followed by an unrelated statement.
+test('browser hold injection is a valid expression and invokes shipped notice renderer',()=>{
+ const script=readFileSync(new URL('../scripts/staging-logout-visual-ci.mjs',import.meta.url),'utf8');
+ const noticeSource=source.slice(source.indexOf('function historicalImportNotice('),source.indexOf('function renderImportReport('));
+ const assignment=script.match(/const noticeExpression=([\s\S]*?);\n await page\.evaluate\(noticeExpression\);/);
+ assert.ok(assignment,'browser must evaluate the explicit notice expression');
+ const expression=vm.runInNewContext(assignment[1],{noticeSource});
+ let inserted;
+ vm.runInNewContext('('+expression+')',{document:{querySelector(selector){
+  assert.equal(selector,'#importPreview');
+  return {insertAdjacentHTML(position,html){assert.equal(position,'afterbegin');inserted=html;}};
+ }}});
+ assert.match(inserted,/target="_blank" rel="noopener noreferrer"/);
+ assert.doesNotMatch(inserted,/synthetic-navigation-only/);
+});

@@ -111,7 +111,8 @@ try{
  const noticeSource=clientSource.slice(clientSource.indexOf('function historicalImportNotice('),clientSource.indexOf('function renderImportReport('));
  const importState=()=>page.evaluate(()=>({url:location.href,open:document.querySelector('#importDialog').open,file:document.querySelector('#csvFile').files[0]?.name,size:document.querySelector('#csvFile').files[0]?.size,list:document.querySelector('#importList').value,source:document.querySelector('#source').value,result:document.querySelector('#importResult').textContent}));
  const beforeReview=await importState();
- await page.evaluate(noticeSource+"\ndocument.querySelector('#importPreview').insertAdjacentHTML('afterbegin',historicalImportNotice({rows:[{status:'identity_review',historical_review_id:'synthetic-navigation-only'}]}));");
+ const noticeExpression="(() => {\n"+noticeSource+"\ndocument.querySelector('#importPreview').insertAdjacentHTML('afterbegin',historicalImportNotice({rows:[{status:'identity_review',historical_review_id:'synthetic-navigation-only'}]}));\n})()";
+ await page.evaluate(noticeExpression);
  const reviewOpened=context.waitForEvent('page');
  await page.locator('#importPreview a[href="/lab#historicalReviews"]').click();
  const reviewPage=await reviewOpened;reviewPage.on('pageerror',e=>errors.push(e.message));await reviewPage.waitForLoadState('domcontentloaded');
