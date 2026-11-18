@@ -81,7 +81,7 @@ test('candidate transport retains real session authentication and canonical prox
   const headers={host:new URL(releaseCheckOrigin).host,'x-forwarded-host':'prospectpilot.io'};
   assert.equal((await rawFetch(base+'/api/release/readiness',{headers})).status,401);
   assert.equal((await rawFetch(base+'/api/release/readiness',{headers:{...headers,cookie:'__session=revoked'}})).status,401);
-  const r=await rawFetch(base+'/api/release/readiness',{headers:{...headers,cookie:'__session=synthetic'}});assert.equal(r.status,200);assert.deepEqual(await r.json(),{ready:true,release_id:'synthetic-release',schema_version:'033'});
+  const r=await rawFetch(base+'/api/release/readiness',{headers:{...headers,cookie:'__session=synthetic'}});assert.equal(r.status,200);assert.deepEqual(await r.json(),{ready:true,release_id:'synthetic-release',schema_version:'034'});
   assert.equal(verified,2);assert.equal(checks,1);
   // Existing Firebase Hosting proxy forwarding remains supported on non-candidate hosts.
   const normal={host:'service-default-uc.a.run.app','x-forwarded-host':'prospectpilot.io',cookie:'__session=synthetic'};

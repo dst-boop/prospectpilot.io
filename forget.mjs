@@ -24,6 +24,8 @@
 // ADR and LEARNINGS "There was no way to delete one person").
 import {createHash,createHmac} from 'node:crypto';
 import {candidateKeys,hash} from './lead-quality.mjs';
+import {previousIdentitySecrets} from './identity-keyring.mjs';
+import {retireIdentityEvidence} from './historical-identities.mjs';
 import {normalizeContact} from './prospect-data-quality.mjs';
 
 export const LEAD_TEAM='wealth-management';
@@ -49,7 +51,7 @@ export const tombstone=(uid,key)=>secret()?createHmac('sha256',secret()).update(
 export async function forgottenKeys(client,uid,keys){
   const unique=[...new Set(keys.filter(Boolean))];
   if(!uid||!unique.length)return new Set();
-  const forms=unique.map(key=>[...new Set([tombstone(uid,key),legacyTombstone(uid,key)])]);
+  const forms=unique.map(key=>[...new Set([tombstone(uid,key),legacyTombstone(uid,key),...previousIdentitySecrets().map(secret=>createHmac('sha256',secret).update(`prospectpilot-forget-v2\0${uid}\0${key}`).digest('hex'))])]);
   const hit=new Set((await client.query('SELECT key_hash FROM prospect_forgotten WHERE user_id=$1 AND key_hash=ANY($2::text[])',[uid,forms.flat()])).rows.map(row=>row.key_hash));
   return new Set(unique.filter((key,i)=>forms[i].some(hash=>hit.has(hash))));
 }
@@ -105,6 +107,9 @@ export async function forgetPerson(client,user,{contactId='',leadId=''},{contact
   const holderKeys=uid=>uid===user.uid?keys:baseKeys;
   for(const uid of holders)if(holderKeys(uid).length)
     await client.query('INSERT INTO prospect_forgotten(user_id,key_hash) SELECT $1,unnest($2::text[]) ON CONFLICT DO NOTHING',[uid,holderKeys(uid).map(key=>tombstone(uid,key))]);
+
+  for(const row of contacts.values())await retireIdentityEvidence(client,user.uid,'contact',row.id,parse(row.payload));
+  for(const row of leads.values())if(row.owner_user_id)await retireIdentityEvidence(client,row.owner_user_id,'lead',row.id,parse(row.payload),{additionalHolders:[user.uid]});
 
   if(contactIds.length){
     // Queued work about them is cancelled; finished work keeps its row (the

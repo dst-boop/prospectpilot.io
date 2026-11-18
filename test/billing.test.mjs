@@ -33,7 +33,7 @@ async function fixture(fn,extra={}){
   try{
     // Plan usage also counts Research Lab reservations (lab_costs).
     await db.exec(readFileSync(new URL('../generated/schema.sql',import.meta.url),'utf8'));
-    for(const name of ['006-research-lab','008-prospect-workspace','020-list-sharing','009-prospect-jobs','011-email-domain-check','017-forget','019-web-research','023-memberships','024-billing','025-topups'])await db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
+    for(const name of ['006-research-lab','008-prospect-workspace','020-list-sharing','009-prospect-jobs','011-email-domain-check','017-forget','034-historical-identities','019-web-research','023-memberships','024-billing','025-topups'])await db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
     const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
     const stripe=stubStripe(),logs=[];
     const config={dailyBudgetMicros:1000000,prices:{search:1000},plans:PLANS,defaultPlan:'internal',...extra};

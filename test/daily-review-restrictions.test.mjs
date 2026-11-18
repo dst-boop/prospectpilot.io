@@ -7,7 +7,7 @@ import {createProspectWorkspace} from '../prospect-workspace.mjs';
 
 test('daily review derives mobile hold without changing raw provider flags or crossing owners',async()=>{
  const db=new PGlite();try{
-  for(const n of ['008-prospect-workspace','020-list-sharing','017-forget'])await db.exec(readFileSync(new URL('../migrations/'+n+'.sql',import.meta.url),'utf8'));
+  for(const n of ['008-prospect-workspace','020-list-sharing','017-forget','034-historical-identities'])await db.exec(readFileSync(new URL('../migrations/'+n+'.sql',import.meta.url),'utf8'));
   const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})},app=createProspectWorkspace({pool}),user={uid:'synthetic-owner'};
   await db.query("INSERT INTO prospect_lists(id,user_id,name) VALUES('synthetic-list',$1,'Synthetic delivery')",[user.uid]);
   const scenarios=[['same',{phone:'+12125550199',mobile_phone:'+12125550199',phone_origin:'mobile',phone_restrictions:{direct:true,mobile:false}},true],['distinct',{phone:'+12125550198',mobile_phone:'+12125550199',phone_origin:'direct',phone_restrictions:{direct:true,mobile:false}},false],['suppressed',{mobile_phone:'+12125550199',suppressed:true,phone_restrictions:{mobile:false}},true]];

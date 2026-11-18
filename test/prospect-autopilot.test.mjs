@@ -15,7 +15,7 @@ async function fixture(fn,overrides={}) {
   const db=new PGlite();
   try {
     for(const name of ['008-prospect-workspace','020-list-sharing','009-prospect-jobs','011-email-domain-check',
-      '017-forget','018-phone-check','019-web-research','031-autopilot'])
+      '017-forget','034-historical-identities','018-phone-check','019-web-research','031-autopilot'])
       await db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
     const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
     const providers={readiness:{search:true,enrichment:true,email_verification:true,domain_check:true,phone_check:true,web_research:true},

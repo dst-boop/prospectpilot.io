@@ -1,3 +1,4 @@
+import {fetchLegacySafely} from './legacy-identity-guard.mjs';
 import {createReadOnlyFallback} from './readonly-fallback.mjs';
 import {candidateOrigin,READINESS_PATH,RELEASE_SCHEMA_VERSION} from './release-readiness.mjs';
 import {isTeamLeadHubPath} from './team-lead-hub.mjs';
@@ -111,7 +112,7 @@ export function createHandler({auth,db,worker,loginHtml,loginScript,homeHtml,sit
     headers.set('oai-authenticated-user-full-name',encodeURIComponent(claims.name||claims.email));
     headers.set('oai-authenticated-user-full-name-encoding','percent-encoded-utf-8');
     const next=new Request(request,{headers});
-    const result=await worker.fetch(next,{DB:db,PROVIDER_ENCRYPTION_KEY:providerKey,NATIVE_RESEARCH:nativeResearch,RESEARCH_JOBS:researchJobs});
+    const result=await fetchLegacySafely(worker,next,{DB:db,PROVIDER_ENCRYPTION_KEY:providerKey,NATIVE_RESEARCH:nativeResearch,RESEARCH_JOBS:researchJobs});
     const output=new Response(result.body,result);output.headers.set('Cache-Control','private, no-store');output.headers.set('X-Content-Type-Options','nosniff');
     return output;
   };

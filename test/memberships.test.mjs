@@ -19,7 +19,7 @@ async function fixture(fn,{plans=PLANS,defaultPlan='starter'}={}){
   try{
     // Plan usage also counts Research Lab reservations (lab_costs).
     await db.exec(readFileSync(new URL('../generated/schema.sql',import.meta.url),'utf8'));
-    for(const name of ['006-research-lab','008-prospect-workspace','020-list-sharing','009-prospect-jobs','011-email-domain-check','017-forget','019-web-research','023-memberships','024-billing','025-topups','012-plan-catalog-summary','007-quality-v2','013-advisor-workflow','014-outreach-cadence','015-dial-budget','016-inbound-contact','021-lab-companies','022-identity-reviews'])await db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
+    for(const name of ['006-research-lab','008-prospect-workspace','020-list-sharing','009-prospect-jobs','011-email-domain-check','017-forget','034-historical-identities','019-web-research','023-memberships','024-billing','025-topups','012-plan-catalog-summary','007-quality-v2','013-advisor-workflow','014-outreach-cadence','015-dial-budget','016-inbound-contact','021-lab-companies','022-identity-reviews'])await db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
     const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
     let calls=0;
     const providers={readiness:{search:true,profile_image:true},search:async()=>{calls++;return {contacts:[record],retrieved:1,total:1};},

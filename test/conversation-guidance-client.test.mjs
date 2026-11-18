@@ -11,7 +11,7 @@ function fixture(){
   const context=vm.createContext({URL,current:{lead:{id:'synthetic'}},activitySaving:false,
     document:{getElementById:id=>id==='conversationBrief'?{append:e=>sections.push(e)}:elements[id],createElement:tag=>({tag,innerHTML:'',children:[],append(e){this.children.push(e);}})}});
   vm.runInContext(source.slice(0,source.indexOf('let offset=')),context);
-  vm.runInContext(source.slice(source.indexOf('function renderConversationGuide(){'),source.lastIndexOf('init();')),context);
+  vm.runInContext(source.slice(source.indexOf('function renderConversationGuide(){'),source.indexOf('let historicalRows=')),context);
   context.currentWorkflow={action,conversation_guidance:conversationGuidance(action,quality)};
   return {context,sections,elements,render:()=>vm.runInContext('renderConversationGuide()',context)};
 }

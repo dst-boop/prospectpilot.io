@@ -6,7 +6,7 @@ import {createProspectWorkspace} from '../prospect-workspace.mjs';
 import {phoneReadiness} from '../prospect-data-quality.mjs';
 test('synthetic sequential import must not export a DNC number under mobile fallback',async()=>{
  const db=new PGlite();try{
-  for(const n of ['008-prospect-workspace','020-list-sharing','017-forget'])await db.exec(readFileSync(new URL('../migrations/'+n+'.sql',import.meta.url),'utf8'));
+  for(const n of ['008-prospect-workspace','020-list-sharing','017-forget','034-historical-identities'])await db.exec(readFileSync(new URL('../migrations/'+n+'.sql',import.meta.url),'utf8'));
   const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
   const app=createProspectWorkspace({pool}),user={uid:'synthetic-only'};
   const csv='First Name,Last Name,Company,Email,Direct Phone,Mobile Phone,Direct Phone Do Not Call,Mobile Phone Do Not Call\n';
@@ -50,7 +50,7 @@ test('distinct direct and mobile routes retain their independent restrictions an
 
 test('subsequent malformed imports cannot erase direct provenance or re-export a restricted physical number',async()=>{
  const db=new PGlite();try{
-  for(const n of ['008-prospect-workspace','020-list-sharing','017-forget'])await db.exec(readFileSync(new URL('../migrations/'+n+'.sql',import.meta.url),'utf8'));
+  for(const n of ['008-prospect-workspace','020-list-sharing','017-forget','034-historical-identities'])await db.exec(readFileSync(new URL('../migrations/'+n+'.sql',import.meta.url),'utf8'));
   const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
   const app=createProspectWorkspace({pool}),user={uid:'synthetic-only'};
   const csv='First Name,Last Name,Company,Email,Direct Phone,Mobile Phone,Direct Phone Do Not Call,Mobile Phone Do Not Call\n';
@@ -64,7 +64,7 @@ test('subsequent malformed imports cannot erase direct provenance or re-export a
 
 test('different incoming direct number stays a review conflict and cannot relabel mobile fallback',async()=>{
  const db=new PGlite();try{
-  for(const n of ['008-prospect-workspace','020-list-sharing','017-forget'])await db.exec(readFileSync(new URL('../migrations/'+n+'.sql',import.meta.url),'utf8'));
+  for(const n of ['008-prospect-workspace','020-list-sharing','017-forget','034-historical-identities'])await db.exec(readFileSync(new URL('../migrations/'+n+'.sql',import.meta.url),'utf8'));
   const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
   const app=createProspectWorkspace({pool}),user={uid:'synthetic-only'};
   const csv='First Name,Last Name,Company,Email,Direct Phone,Mobile Phone,Direct Phone Do Not Call,Mobile Phone Do Not Call\n';
@@ -78,7 +78,7 @@ test('different incoming direct number stays a review conflict and cannot relabe
 
 test('legacy accumulated DNC cannot use stale distinct raw to clear fallback after bounded history pruning',async()=>{
  const db=new PGlite();try{
-  for(const n of ['008-prospect-workspace','020-list-sharing','017-forget'])await db.exec(readFileSync(new URL('../migrations/'+n+'.sql',import.meta.url),'utf8'));
+  for(const n of ['008-prospect-workspace','020-list-sharing','017-forget','034-historical-identities'])await db.exec(readFileSync(new URL('../migrations/'+n+'.sql',import.meta.url),'utf8'));
   const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
   const app=createProspectWorkspace({pool}),user={uid:'synthetic-legacy'};
   const header='First Name,Last Name,Company,Email,Direct Phone,Mobile Phone,Direct Phone Do Not Call,Mobile Phone Do Not Call\n';
