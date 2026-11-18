@@ -1,0 +1,4 @@
+df172b9b3108d43081c835632c3a20e61caf245b6b9aa5ea27ef7de7443df192  staging-operator/apply-split-grants.py
+de656f7119f0dbc405ece1a921b547a48fdad2f702fecdc335abd9378e2a1124  staging-operator/initialize-env.json
+c381769ee426ae309160d2f75fcaac5807eca01e411e500360642148319d6624  staging-operator/INITIALIZE-AND-GRANTS.md
+ea8057e6e24a82d65816f9a12fb04233a6149d572c9953ea7696a3c7ad5dbbe5  staging-operator/test_initialization.py
