@@ -43,6 +43,16 @@ jobs:
         run: pnpm staging:postgres
         env:
           STAGING_DATABASE_URL: postgres://postgres:synthetic-ci-only@127.0.0.1:5432/prospectpilot_test
+      - name: Fail-fast native rollback compatibility contracts
+        run: node --test --test-concurrency=2 test/rollback*.test.mjs
+        env:
+          POSTGRES_TEST_URL: postgres://postgres:synthetic-ci-only@127.0.0.1:5432/prospectpilot_test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rollback-schema-diagnostic
+          path: /tmp/rollback-schema-actual.json
+          if-no-files-found: ignore
       - run: pnpm test
         env:
           POSTGRES_TEST_URL: postgres://postgres:synthetic-ci-only@127.0.0.1:5432/prospectpilot_test
@@ -74,3 +84,9 @@ jobs:
           docker run --rm --network host --read-only --tmpfs /tmp -e STAGING_DATABASE_URL=postgres://postgres:synthetic-ci-only@127.0.0.1:5432/prospectpilot_test --entrypoint node "$IMAGE_ID" scripts/verify-readonly-image.mjs --synthetic-image
       - name: Verify Python HTTPS trust store in runtime
         run: docker run --rm --entrypoint python3 prospectpilot-ci -c "import ssl; assert ssl.create_default_context().cert_store_stats()['x509_ca'] > 0, 'System CA certificates are missing'"
+      - name: Build explicit rollback runtime and rehearse full-function return
+        run: |
+          docker build --target rollback-runtime -t prospectpilot-rollback-ci .
+          IMAGE_ID=$(docker image inspect prospectpilot-rollback-ci --format '{{.Id}}')
+          echo "ROLLBACK_REHEARSAL_IMAGE=$IMAGE_ID"
+          docker run --rm --network host --read-only --tmpfs /tmp -e STAGING_DATABASE_URL=postgres://postgres:synthetic-ci-only@127.0.0.1:5432/prospectpilot_test --entrypoint node "$IMAGE_ID" scripts/verify-rollback-image.mjs --synthetic-image
