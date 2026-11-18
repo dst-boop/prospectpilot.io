@@ -1,0 +1,21 @@
+// Deliberately separate from server.mjs and scripts/demo.mjs. Real auth, no provider adapters.
+import {createServer} from 'node:http';
+import {initializeApp,applicationDefault} from 'firebase-admin/app';
+import {getAuth} from 'firebase-admin/auth';
+import pg from 'pg';
+import {shutdown} from '../http-server.mjs';
+import {stagingConfig} from './staging-config.mjs';
+import {createAuthenticatedStaging} from './staging-app.mjs';
+import {buildStagingLogin} from './build-staging-login.mjs';
+import {assertStagingDatabase,createStagingHttpHandler} from './staging-runtime-guards.mjs';
+const config=stagingConfig(process.env);
+const manifest=await buildStagingLogin(config);
+if(manifest.project!==config.project||JSON.stringify(manifest.firebase)!==JSON.stringify(config.firebase))throw Error('Staging login bundle does not match runtime project');
+const pool=new pg.Pool(config.db);
+await assertStagingDatabase(pool,config);
+initializeApp({credential:applicationDefault(),projectId:config.project});
+const handler=createAuthenticatedStaging({pool,auth:getAuth(),config,loginScript:manifest.script});
+const port=Number(process.env.PORT||8080);if(!Number.isInteger(port)||port<1024||port>65535)throw Error('Invalid staging port');
+const server=createServer(createStagingHttpHandler(handler,config));
+server.listen(port,'0.0.0.0');
+process.on('SIGTERM',()=>void shutdown(server,pool).then(()=>process.exit(0)));
