@@ -3,7 +3,7 @@ import {randomUUID} from 'node:crypto';
 import {normalizeLead, mergeLead, isUsableStoredLead} from './generated/worker.mjs';
 import {assessLead, candidateKeys, leadIdentity, validateObservation, nameKey, US_STATES, researchCSV, hash, qualificationVersion, sourceStrength, fieldKey, leadScores, scoreWeights} from './lead-quality.mjs';
 export {sourceStrength};
-import {matchPlans, selectEmployers, catalogSummary} from './plan-catalog.mjs';
+import {matchPlans, selectEmployers, catalogSummary, planResearchTargets} from './plan-catalog.mjs';
 import {applyPlaybook, findPlaybook, playbookChoices} from './rollover-playbooks.mjs';
 import {ADVICE_TARGET} from './opportunity-policy.mjs';
 import {SOURCE_CATALOG} from './source-catalog.mjs';
@@ -489,11 +489,20 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       // A campaign by place finds its own companies in the worker; the plan
       // catalog and saved leads are the fallback only for a campaign without one.
       const plans=config.location?[]:await selectEmployers(pool,config,user.uid);
-      employers=plans.map(p=>({company:p.sponsor,city:p.city,state:p.state,plan_id:p.id}));
+      employers=planResearchTargets(plans);
       for(const [i,company] of config.employers.entries()) {
         const target=employers.find(e=>nameKey(e.company)===nameKey(company));
-        if(target)target.website=config.websites[i]||'';
-        else employers.push({company,website:config.websites[i]||'',state:config.states.length===1?config.states[0]:''});
+        if(target){if(target.plan_identity_review)target.requested_website=config.websites[i]||'';else target.website=config.websites[i]||'';}
+        else {
+          // Eligibility filters/limits must not erase known name ambiguity. This
+          // bounded evidence lookup is independent of the discovery filters.
+          const matches=await matchPlans(pool,{company});
+          const unresolved=matches.length>=30||matches.some(p=>!p.ein)||new Set(matches.map(p=>p.ein)).size>1;
+          if(unresolved)employers.push({company,city:'',state:'',requested_website:config.websites[i]||'',plan_identity_review:true,
+            plan_identity_notice:'No eligible sponsor filing was selected for this name. Catalog namesakes or incomplete identifiers still require entity review; no website, location or single filing was assigned.',
+            plan_candidates:matches.map(p=>({id:p.id,ein:p.ein||null,sponsor:p.sponsor,city:p.city||'',state:p.state||'',plan_year:p.plan_year,separated_future_benefits:p.separated_future_benefits??null})),plan_sponsor_keys:[]});
+          else employers.push({company,website:config.websites[i]||'',state:config.states.length===1?config.states[0]:''});
+        }
       }
       if(!employers.length&&config.playbook&&!config.location)throw fail(422,`No employer plans matched “${findPlaybook(config.playbook).label}”${config.states.length?' with sponsor mailing addresses in '+config.states.join(', '):''}. Sponsor states are not worksite or residence locations. Leave states blank to search all sponsors, or check that the DOL plan catalog is loaded.`);
       if(!employers.length&&!config.location) {
