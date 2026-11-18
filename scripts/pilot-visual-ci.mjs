@@ -1,4 +1,5 @@
 import {createRequire} from 'node:module';
+import assert from 'node:assert/strict';
 const require=createRequire(import.meta.url);const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'/tmp/pp-browser/node_modules/playwright');
 import {createSyntheticStaging} from '../test/helpers/staging-app.mjs';
 const browser=await chromium.launch({headless:true});
@@ -11,10 +12,16 @@ try {
  const handoff=await json('/api/lab/contact-import',{ids:[captured.capture.contact_id]});
  const leadId=handoff.lead_ids[0];const detail=await (await staging.request('/api/lab/leads/'+leadId,{cookie})).json();
  for(const [field,value] of Object.entries({residence:{country:'US',scope:'residence',state:'NY'},planning_decision:{origin:'accepted_introduction',topic:'retirement_income',identity_confirmed:true,prospect_confirmed:true},contact:{channel:'email',address:'jordan@example.com',identity_confirmed:true,outreach_basis:'person_requested'}})) await json('/api/lab/leads/'+leadId+'/review',{field,value,verdict:'confirmed',source:'Synthetic fixture',note:'Fictional evidence',observed_at:new Date().toISOString(),identity_signature:detail.quality.identity_signature});
+ const discoveryRequests=[];
  const context=await browser.newContext({viewport:{width:1440,height:1000}});
  await context.route('**/*',async route=>{
   const req=route.request(),url=new URL(req.url());
   if(url.origin!=='https://pilot.test')return route.abort();
+  // Capture explicit UI submissions without enqueueing work or contacting providers.
+  if(url.pathname==='/api/lab/runs'&&req.method()==='POST'){
+   discoveryRequests.push(req.postDataJSON());
+   return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({message:'Synthetic request captured; no search was run.'})});
+  }
   const response=await staging.request(url.pathname+url.search,{cookie,method:req.method(),...(req.postData()?{body:JSON.parse(req.postData())}:{})});
   await route.fulfill({status:response.status,headers:Object.fromEntries(response.headers),body:Buffer.from(await response.arrayBuffer())});
  });
@@ -38,6 +45,45 @@ try {
  console.log('TITLE',await page.title());console.log((await page.locator('body').innerText()).slice(0,7000));
  await page.screenshot({path:'/tmp/pilot-desktop.png',fullPage:true});
  await page.setViewportSize({width:390,height:844});await page.screenshot({path:'/tmp/pilot-mobile.png',fullPage:true});
+ // Exercise the sponsor-state dialog on mobile and desktop with synthetic auth.
+ await page.evaluate(()=>{document.getElementById('states').value='NY';});
+ await page.locator('#findProspects').click();
+ await page.locator('input[name=playbook][value=former_employees]').check();
+ assert.equal(await page.getByLabel('Plan sponsor mailing states', {exact:false}).inputValue(),'NY');
+ assert.match(await page.locator('#playbookStateHelp').innerText(),/not local worksites or where participants live/);
+ await page.locator('#playbookAllStates').click();
+ assert.equal(await page.locator('#playbookStates').inputValue(),'');
+ assert.equal(await page.locator('#playbookStates').evaluate(el=>el===document.activeElement),true);
+ await page.locator('#playbookStates').fill('CA');
+ await page.locator('#playbookAllStates').focus();await page.keyboard.press('Enter');
+ assert.equal(await page.locator('#playbookStates').inputValue(),'');
+ assert.equal(await page.locator('#playbookStates').evaluate(el=>el===document.activeElement),true);
+ await page.waitForTimeout(100);
+ assert.equal(discoveryRequests.length,0,'Broadening must not submit or enqueue a search');
+ assert.equal(await page.locator('#playbookDialog').evaluate(el=>el.open),true);
+ assert.equal(await page.locator('#states').inputValue(),'NY','Proposed broadening must not persist settings');
+ await page.locator('input[name=playbook][value=business_owners]').check();
+ assert.equal(await page.locator('#playbookStatesLabel').isVisible(),false);
+ assert.equal(await page.locator('#playbookPlace').evaluate(el=>el.required),true);
+ await page.locator('input[name=playbook][value=former_employees]').check();
+ assert.equal(await page.locator('#playbookStatesLabel').isVisible(),true);
+ await page.locator('#playbookStateHelp').scrollIntoViewIfNeeded();
+ await page.screenshot({path:'/tmp/pilot-mobile-sponsor-states.png',fullPage:true});
+ assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'Mobile page must not overflow horizontally');
+ await page.setViewportSize({width:1440,height:1000});
+ await page.screenshot({path:'/tmp/pilot-desktop-sponsor-states.png',fullPage:true});
+ await page.locator('[data-close=playbookDialog]').click();
+ assert.equal(discoveryRequests.length,0,'Closing must not launch work');
+ await page.locator('#findProspects').click();
+ assert.equal(await page.locator('#playbookStates').inputValue(),'NY','Reopening restores the saved proposal');
+ await page.locator('#playbookAllStates').click();
+ await page.locator('#playbookStart').click();
+ await page.locator('#playbookDialog').waitFor({state:'hidden'});
+ assert.equal(discoveryRequests.length,1,'Only explicit Find prospects submits');
+ assert.deepEqual(discoveryRequests[0].states,[]);
+ assert.equal(discoveryRequests[0].playbook,'former_employees');
+ assert.equal(discoveryRequests[0].kind,'discovery');
+ console.log('SPONSOR_STATE_BROWSER_PASS: clear, keyboard, no auto-search, place toggle, cancel/reopen, explicit broad submission');
  if(errors.length)throw Error(errors.join('\n'));console.log('ERRORS',errors);console.log('OVERFLOW',await page.evaluate(()=>({viewport:innerWidth,scroll:document.documentElement.scrollWidth})));
  await browser.close();
 }finally{await staging.close();}

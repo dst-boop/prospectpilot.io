@@ -54,6 +54,12 @@ class CatalogTests(unittest.TestCase):
         row={'ACK_ID':'short','SF_TYPE_PENSION_BNFT_CODE':'2J','SF_SPONS_EIN':'123456789','SF_PLAN_NUM':'1','SF_PLAN_YEAR_BEGIN_DATE':'2025-01-01','SF_SPONSOR_NAME':'Example','SF_TOT_PARTCP_BOY_CNT':'99','SF_TOT_PARTCP_EOY_CNT':'80','SF_PARTCP_ACCOUNT_BAL_CNT':'70','RTD_SEP_PARTCP_FUT_CNT':'12'}
         self.assertIsNone(catalog.normalize(row,short=True)['separated_future_benefits'], 'Short form must not infer a count from totals or use an unrelated long-form field')
 
+    def test_state_comes_from_sponsor_mailing_address_not_worksite(self):
+        row=self.row();row.update({'SPONS_DFE_MAIL_US_STATE':'CA','WORKSITE_STATE':'NY'})
+        self.assertEqual(catalog.normalize(row)['state'], 'CA')
+        row={'ACK_ID':'short','SF_TYPE_PENSION_BNFT_CODE':'2J','SF_SPONS_EIN':'123456789','SF_PLAN_NUM':'1','SF_PLAN_YEAR_BEGIN_DATE':'2025-01-01','SF_SPONSOR_NAME':'Example','SF_SPONS_US_STATE':'CA','WORKSITE_STATE':'NY'}
+        self.assertEqual(catalog.normalize(row,short=True)['state'], 'CA')
+
     def test_blank_short_form_fields_stay_unknown(self):
         row={'ACK_ID':'short','SF_TYPE_PENSION_BNFT_CODE':'2J','SF_SPONS_EIN':'123456789','SF_PLAN_NUM':'1','SF_PLAN_YEAR_BEGIN_DATE':'2025-01-01','SF_SPONSOR_NAME':'Example','SF_IN_SERVICE_DISTRIB_IND':''}
         self.assertIsNone(catalog.normalize(row,short=True)['in_service_distributions_reported'])

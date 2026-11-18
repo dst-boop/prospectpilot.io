@@ -536,6 +536,7 @@ async function openPlaybooks(){
   $('playbookChoices').innerHTML=playbooks.map((p,i)=>`<label class="playbook-choice"><input type="radio" name="playbook" value="${esc(p.id)}"${i?'':' checked'}><span><strong>${esc(p.label)}</strong><small>${esc(p.accounts.join(', '))} · ${esc(p.triggers.join(', '))}</small><span class="muted">${esc(p.description)}</span></span></label>`).join('');
   document.querySelectorAll('input[name="playbook"]').forEach(e=>e.onchange=playbookNeeds);playbookNeeds();
 }
+$('playbookAllStates').onclick=()=>{$('playbookStates').value='';$('playbookStates').focus();};
 $('findProspects').onclick=openPlaybooks;
 $('playbookCustom').onclick=()=>{$('playbookDialog').close();openCustomSearch();};
 $('playbookForm').onsubmit=async e=>{e.preventDefault();const p=selectedPlaybook();if(!p||$('playbookStart').disabled)return;$('playbookStart').disabled=true;$('playbookError').textContent='';
