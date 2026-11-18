@@ -1,5 +1,5 @@
 // Staging presentation only. Server allowlist/auth remain the security boundary.
-export const blockedStagingControls = ['profileImageRead','profileImageFile','draftOutlook','draftMailApp','draftLinkedIn','inviteOutlook','inviteICS','providerSetup','saveSearchOpen','addListOpen','removeList','manageListOpen','manageListForm','shareListForm','renameList','deleteList','leaveList','deletePerson','toggleSuppression','runButton','saveSettings','assess','importOpen','export','costOpen','enrichExport','forgetLead','runForm','costForm','playbookStart','playbookCustom'];
+export const blockedStagingControls = ['dailyDownload','dailyImportExport','dailyEnrich','profileImageRead','profileImageFile','draftOutlook','draftMailApp','draftLinkedIn','inviteOutlook','inviteICS','providerSetup','saveSearchOpen','addListOpen','removeList','manageListOpen','manageListForm','shareListForm','renameList','deleteList','leaveList','deletePerson','toggleSuppression','runButton','saveSettings','assess','importOpen','export','costOpen','enrichExport','forgetLead','runForm','costForm','playbookStart','playbookCustom'];
 export function installStagingUI(ids) {
  const isLab=location.pathname==='/lab';
  const names=ids.filter(id=>isLab||!['importOpen','export'].includes(id));
@@ -37,6 +37,9 @@ export function stagingPage(html){
  return html.replace('<head>','<head>'+style+boot).replace('<body>','<body>'+guidance)
  .replace('Choose a community you can serve, learn the filters to try in ZoomInfo, then bring your results back for review.','Practice a proposed audience using fictional details. Do not search for real people or purchase exports in this exercise; use the supplied fictional CSV for upload.')
  .replace('In ZoomInfo, export your list or search results as CSV, then drop the file anywhere on this page or choose it below. ProspectPilot recognises the format, offers a new list named after the file and previews the rows; nothing is saved until you choose Import contacts.','Use only the supplied fictional-staging.csv in this exercise. Preview it before saving. Real provider exports and real personal data are outside this test.')
+ .replace('Other contact CSV','Supplied fictional CSV').replace('placeholder="e.g. Authorized provider export"','placeholder="Fictional staging fixture"').replace('placeholder="e.g. ZoomInfo"','placeholder="Fictional staging fixture"')
+ .replace('Other CSVs need First Name and Last Name, plus Company, Work Email or LinkedIn URL. Imported contact channels remain unverified until independently checked.','Only the supplied fictional CSV is accepted here. These are test records, not verified people or permission to contact anyone.')
+ .replace('ZoomInfo IDs, scores, dates, and direct/mobile calling restrictions are preserved when supplied.','Use fictional information only; provider exports are not part of this exercise.')
  .replace('value="ZoomInfo CSV export"','value="Fictional staging fixture"')
  .replace('<h2>Review in ZoomInfo before paying for an export</h2>','<h2>Outside this exercise: review before any export</h2>');
 }
@@ -45,5 +48,5 @@ export function stagingProspectScript(source){
  if(source.split(original).length!==2)throw Error('Staging provider initialization adapter needs review');
  const marker="manageButton.className='secondary';";
  if(source.split(marker).length!==2)throw Error('Staging list control adapter needs review');
- return source.replace(original,"/* Fictional staging: provider and job initialization deliberately omitted. */").replace(marker,marker+"manageButton.id='manageListOpen';").replace('Checks the email domain, applies restrictions, and prepares a brief and draft. No messages are sent.','Prepares a local brief from fictional saved data. Domain/provider checks and outreach are disabled in staging.');
+ return source.replace(original,"/* Fictional staging: provider and job initialization deliberately omitted. */").replace(marker,marker+"manageButton.id='manageListOpen';").replace('Choose a CSV up to 4 MB, or switch to Paste CSV text.','Choose the supplied fictional-staging.csv file, or paste its fictional CSV text.').replace('Choose a CSV file. In ZoomInfo, export your list or search results as CSV.','Choose the supplied fictional-staging.csv file. Real provider exports are not accepted here.').replace('Import an authorized contact list or clear your filters to try again.','Import the supplied fictional CSV or clear your filters to try again.').replace('Checks the email domain, applies restrictions, and prepares a brief and draft. No messages are sent.','Prepares a local brief from fictional saved data. Domain/provider checks and outreach are disabled in staging.');
 }
