@@ -111,11 +111,19 @@ export async function forgetPerson(client,user,{contactId='',leadId=''},{contact
   // Import reports list each row by name. The contact's source history says
   // which import and row it came from, which survives a later name correction
   // and cannot catch a namesake; those rows lose the name and issues.
+  // Stable report-row references outlive bounded display history. Match only
+  // this owner's contact IDs; never scrub a namesake by display name. Retain
+  // the provenance fallback below for reports created before references existed.
+  if(contactIds.length)await client.query(`UPDATE prospect_imports SET result=jsonb_set(result,'{rows}',
+    (SELECT jsonb_agg(CASE WHEN r->>'contact_id'=ANY($2::text[]) THEN r-'name'-'issues'-'contact_id' ELSE r END ORDER BY i)
+     FROM jsonb_array_elements(result->'rows') WITH ORDINALITY AS t(r,i)))
+    WHERE user_id=$1 AND jsonb_typeof(result->'rows')='array'
+    AND EXISTS(SELECT 1 FROM jsonb_array_elements(result->'rows') r WHERE r->>'contact_id'=ANY($2::text[]))`,[user.uid,contactIds]);
   const provenance=new Map();
   for(const row of contacts.values())for(const event of parse(row.payload).source_history||[])
     if(event?.import_id&&Number.isSafeInteger(event.row))provenance.set(event.import_id,[...(provenance.get(event.import_id)||[]),event.row]);
   for(const [importId,rows] of provenance)
-    await client.query(`UPDATE prospect_imports SET result=jsonb_set(result,'{rows}',(SELECT COALESCE(jsonb_agg(CASE WHEN (r->>'row')::int=ANY($3::int[]) THEN r-'name'-'issues' ELSE r END ORDER BY i),'[]'::jsonb) FROM jsonb_array_elements(result->'rows') WITH ORDINALITY AS t(r,i))) WHERE user_id=$1 AND id=$2 AND jsonb_typeof(result->'rows')='array'`,[user.uid,importId,rows]);
+    await client.query(`UPDATE prospect_imports SET result=jsonb_set(result,'{rows}',(SELECT COALESCE(jsonb_agg(CASE WHEN (r->>'row')::int=ANY($3::int[]) THEN r-'name'-'issues'-'contact_id' ELSE r END ORDER BY i),'[]'::jsonb) FROM jsonb_array_elements(result->'rows') WITH ORDINALITY AS t(r,i))) WHERE user_id=$1 AND id=$2 AND jsonb_typeof(result->'rows')='array'`,[user.uid,importId,rows]);
   // Identity reviews: an arrival held for review carries the person's
   // details, so it goes for everyone now blocking them; a review loses a
   // deleted record, and one left comparing against nothing goes too. A

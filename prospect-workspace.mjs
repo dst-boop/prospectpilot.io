@@ -245,12 +245,12 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
      merged.source_observed_at=old.source_observed_at||null;
      changed.set(id,{id,payload:merged,identity_keys:identities(merged)});
      indexRow({id,payload:merged,identity_keys:identities(merged)});result.duplicates++;
-     report(record.row,'duplicate',differing.length?`Existing values preserved; source differs in: ${differing.join(', ')}.`:'Matched an existing contact; missing fields can be added without replacing verified data.',merged,differing.length?{review_fields:differing,...!preview?{contact_id:id}:{}}:{});
+     report(record.row,'duplicate',differing.length?`Existing values preserved; source differs in: ${differing.join(', ')}.`:'Matched an existing contact; missing fields can be added without replacing verified data.',merged,{...differing.length?{review_fields:differing}:{},...!preview?{contact_id:id}:{}});
     }else{
      if(signal&&input.list_id)contact.deliveries={[input.list_id]:{signal}};
      contact.source_history=[evidence];contact.field_sources=Object.fromEntries(parsed.mapped_columns.filter(key=>contact[key]).map(key=>[key,evidence]));if(contact.phone&&!contact.field_sources.phone&&contact.mobile_phone===contact.phone)contact.field_sources.phone=evidence;
      changed.set(id,{id,payload:contact,identity_keys:identities(contact)});
-     indexRow({id,payload:contact,identity_keys:identities(contact)});result.added++;report(record.row,'added','New contact; imported contact channels remain unverified.',contact);
+     indexRow({id,payload:contact,identity_keys:identities(contact)});result.added++;report(record.row,'added','New contact; imported contact channels remain unverified.',contact,!preview?{contact_id:id}:{});
     }
    }
    if(!preview){
