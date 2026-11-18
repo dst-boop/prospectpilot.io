@@ -25,7 +25,7 @@ const queries={
  sequences:`SELECT c.relname AS name,format_type(s.seqtypid,NULL) AS type,s.seqstart::text AS start,s.seqincrement::text AS increment,s.seqmax::text AS maximum,s.seqmin::text AS minimum,s.seqcache::text AS cache,s.seqcycle AS cycle FROM pg_sequence s JOIN pg_class c ON c.oid=s.seqrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=current_schema() ORDER BY c.relname`,
 };
 export async function inspectRollbackSchema(client){
- const info=(await client.query('SELECT current_schema() AS schema,current_schemas(false) AS schemas')).rows[0];
+ const info=(await client.query('SELECT current_schema() AS schema,current_schemas(false)::text[] AS schemas')).rows[0];
  if(!info?.schema||!Array.isArray(info.schemas)||info.schemas.length!==1||info.schemas[0]!==info.schema)throw Error('Rollback schema requires one explicit application schema');
  const ids=(await client.query('SELECT id FROM prospectpilot_migrations ORDER BY id')).rows.map(r=>r.id);
  if(JSON.stringify(ids)!==JSON.stringify(ledger))throw Error('Rollback schema ledger must be exactly001 through033');

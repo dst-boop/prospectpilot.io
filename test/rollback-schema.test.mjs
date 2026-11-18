@@ -12,6 +12,7 @@ test('rollback033 catalog contract matches fresh schema with read-only inspectio
  const readOnly={query(sql,args){assert.match(sql,/^SELECT /);statements.push(sql);return db.query(sql,args);}};
  assert.equal((await verifyRollbackSchema(readOnly)).compatible,true);
  assert.deepEqual(await tableSnapshot(db),before);assert.equal(statements.length,11);
+ assert.match(statements[0],/current_schemas\(false\)::text\[\]/,'node-postgres needs text[] rather than unparsed name[]');
 }));
 
 test('rollback033 refuses column, constraint, index, trigger, function, row-security and extra-object drift',async()=>fixture(async db=>{
