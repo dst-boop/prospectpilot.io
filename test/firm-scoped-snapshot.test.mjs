@@ -49,7 +49,7 @@ before(async()=>{
 after(async()=>{await db.close();});
 beforeEach(async()=>{
   await db.exec(`TRUNCATE firm_workspaces,prospect_contacts,prospect_lists,discovery_leads,prospect_jobs,prospect_imports,
-    research_jobs,lead_call_blocks,lead_call_records,lab_runs RESTART IDENTITY CASCADE;`);
+    research_jobs,lead_call_blocks,lead_call_records,lab_runs,prospect_identity_evidence,prospect_historical_identifiers,prospect_historical_reviews RESTART IDENTITY CASCADE;`);
   await db.exec(seed);
   queries=[];authCalls=[];accountCalls=[];releases=[];
 });
@@ -239,4 +239,55 @@ test('unrelated and collision-only target networking captures stay private and o
   assert.equal(reads.length,1);assert.deepEqual(reads[0].values,[['contact-a']]);
   assert.ok(reads[0].sql.startsWith('SELECT EXISTS(SELECT 1 '));
   assert.doesNotMatch(reads[0].sql,/payload|request_key|fingerprint|result/);
+});
+
+test('034 preflight marks missing evidence unknown and never treats inventory as transfer approval',async()=>{
+ const snapshot=await loader()(pair);
+ assert.equal(snapshot.historicalIdentity.source.record_count,2);
+ assert.equal(snapshot.historicalIdentity.source.records_without_retained_evidence,2);
+ assert.equal(snapshot.historicalIdentity.target_assigned_contacts.records_without_retained_evidence,1);
+ assert.equal(snapshot.historicalIdentity.can_transfer,false);
+ assert.equal(snapshot.historicalIdentity.source.key_availability,'not_assessed');
+ for(const code of ['historical_evidence_missing','historical_identity_policy_unresolved','apply_not_implemented'])assert.ok(snapshot.blockers.some(b=>b.code===code));
+ assert.ok(!queries.some(q=>q.sql.includes('FROM prospect_historical_identifiers')));
+});
+const addEvidence=(uid,kind,id,namespace='original-owner',token='SECRET-TOKEN',version='hmac:unavailable-version')=>db.query(
+ 'INSERT INTO prospect_identity_evidence(user_id,record_kind,record_id,token_owner_id,key_hash,key_version) VALUES($1,$2,$3,$4,$5,$6)',[uid,kind,id,namespace,token,version]);
+test('034 exact associated evidence contributes counts and provenance fingerprint, not token disclosure or key coverage claims',async()=>{
+ await addEvidence('source','contact','contact-a');await addEvidence('source','lead','lead-a');
+ const before=await loader()(pair),serialized=JSON.stringify(before);
+ assert.equal(before.historicalIdentity.source.evidence_count,2);assert.equal(before.historicalIdentity.source.records_without_retained_evidence,0);
+ assert.doesNotMatch(serialized,/SECRET-TOKEN|original-owner|unavailable-version/);
+ assert.equal(before.historicalIdentity.source.key_availability,'not_assessed');
+ await db.query("UPDATE prospect_identity_evidence SET token_owner_id='corrected-namespace' WHERE record_id='contact-a'");
+ const after=await loader()(pair);assert.notEqual(after.historicalIdentity.source.fingerprint,before.historicalIdentity.source.fingerprint);
+ assert.equal(after.can_execute,false);assert.ok(after.blockers.some(b=>b.code==='historical_identity_policy_unresolved'));
+});
+test('034 private, other-firm, mismatched-owner and owner-wide deleted evidence is never enumerated',async()=>{
+ const before=await loader()(pair);
+ for(const [uid,kind,id] of [['source','contact','private-a'],['source','contact','contact-b'],['outsider','contact','contact-a'],['source','lead','private-lead'],['target','contact','private-target']])await addEvidence(uid,kind,id);
+ await db.query("INSERT INTO prospect_historical_identifiers(user_id,token_owner_id,key_hash,key_version) VALUES('source','private-namespace','DELETED-SECRET','legacy')");
+ const after=await loader()(pair);assert.equal(after.fingerprint,before.fingerprint);
+ assert.doesNotMatch(JSON.stringify(after),/DELETED-SECRET|private-namespace|SECRET-TOKEN/);
+});
+test('034 associated update and prior approval flag review without disclosing incoming or deleted details',async()=>{
+ for(const [id,owner,destination,payload,resolution,status] of [
+  ['associated','source','contact',{existing_contact_id:'contact-a'},{},'open'],
+  ['resolved','source','lead',{},{result_id:'lead-a'},'resolved'],
+  ['private','source','contact',{existing_contact_id:'private-a'},{},'open'],
+  ['other-owner','outsider','contact',{existing_contact_id:'contact-a'},{},'open'],
+  ['arrival','source','contact',{},{},'open']])await db.query(`INSERT INTO prospect_historical_reviews(id,user_id,destination,fingerprint,candidate,payload,key_hashes,resolution,status) VALUES($1,$2,$3,$1,'{"email":"PRIVATE-INCOMING"}',$4::jsonb,ARRAY['PRIVATE-HASH'],$5::jsonb,$6)`,[id,owner,destination,JSON.stringify(payload),JSON.stringify(resolution),status]);
+ const snapshot=await loader()(pair);assert.equal(snapshot.historicalIdentity.source.associated_review_count,2);
+ assert.ok(snapshot.blockers.some(b=>b.code==='historical_review_associated'));
+ assert.doesNotMatch(JSON.stringify(snapshot),/PRIVATE-INCOMING|PRIVATE-HASH|"associated"|"resolved"|other-owner/);
+ const reads=queries.filter(q=>q.sql.includes('FROM prospect_historical_reviews'));
+ assert.equal(reads.length,2);for(const r of reads){assert.match(r.sql,/SELECT id,status,resolved_at/);assert.doesNotMatch(r.sql,/SELECT.*candidate/);}
+});
+test('034 inventory cannot silently downgrade if evidence schema is unavailable',async()=>{
+ const failing={connect:async()=>({query:async(sql,values)=>{if(sql.includes('FROM prospect_identity_evidence'))throw Object.assign(Error('missing schema'),{code:'42P01'});return pool.connect().then(c=>c.query(sql,values));},release(){}})};
+ await assert.rejects(loader({pool:failing})(pair),{status:503});
+});
+test('034 evidence inventory refuses oversized association sets instead of truncating coverage',async()=>{
+ await db.query("INSERT INTO prospect_identity_evidence(user_id,record_kind,record_id,token_owner_id,key_hash,key_version) SELECT 'source','contact','contact-a','source','bounded-'||g,'legacy' FROM generate_series(1,1001) g");
+ await assert.rejects(loader()(pair),{status:413});assert.ok(queries.some(q=>q.sql==='ROLLBACK'));
 });
