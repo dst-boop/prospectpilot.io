@@ -103,6 +103,13 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   if(m.status&&!PAYING_STATUSES.includes(m.status))return `Your ${m.name} subscription is not active (${m.status}), so paid lookups are paused. No request was sent and nothing was charged. Update it under Manage billing.`;
   return m.used_this_month_micros+amount>m.monthly_allowance_micros?`Your ${m.name} plan's monthly allowance for paid lookups is used up. No request was sent and nothing was charged. Add a top-up pack under Plan & billing, or it resets on ${m.resets_at.slice(0,10)}.`:null;
  }
+ // Whether scheduled work may run for this advisor at all: false only when a
+ // Stripe subscription has lapsed. Hand-assigned rows have no status.
+ async function subscriptionActive(c,userId){
+  if(!config.plans)return true;
+  const status=(await c.query('SELECT status FROM prospect_memberships WHERE user_id=$1',[userId])).rows[0]?.status;
+  return !status||PAYING_STATUSES.includes(status);
+ }
  async function summary(user){const charges=(await pool.query(`SELECT COALESCE(sum(reserved_micros),0) AS reserved FROM prospect_charges WHERE user_id=$1 AND reserved_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,[user.uid])).rows[0];return {providers:providers.readiness,prices:{...config.prices,check_domain:0},daily_budget_micros:config.dailyBudgetMicros,reserved_today_micros:Number(charges.reserved),plan:await membership(pool,user.uid),actions:Object.fromEntries(Object.keys(capabilities).map(a=>[a,ready(a)])),cost_basis:'Reserved maximum at configured prices, not actual provider billing. The daily cap is shared by this deployment.'};}
  async function enqueue(user,input){
   if(!input||typeof input!=='object'||Array.isArray(input))throw fail(422,'Provide a provider job object.');
@@ -314,5 +321,5 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   if(id&&!rows.length)throw fail(404,'Job not found.');if(id)return {job:rows[0],tasks:(await pool.query('SELECT id,contact_id,action,status,attempts,result,completed_at FROM prospect_tasks WHERE job_id=$1 ORDER BY created_at,id',[id])).rows};return {jobs:rows};
  }
  async function route(request,user){const url=new URL(request.url),path=url.pathname,method=request.method;if(!user?.uid)throw fail(401,'Sign in.');if(path==='/api/prospect/providers'&&method==='GET')return summary(user);if(path==='/api/prospect/jobs'&&method==='GET')return jobs(user);if(path==='/api/prospect/jobs'&&method==='POST'){let input;try{input=await request.json();}catch{throw fail(422,'Invalid JSON.');}return enqueue(user,input);}const match=path.match(/^\/api\/prospect\/jobs\/([^/]+)$/);if(match&&method==='GET')return jobs(user,match[1]);throw fail(404,'Job endpoint not found.');}
- return {route,enqueue,tick,summary,jobs,profileImage,allowanceRefusal};
+ return {route,enqueue,tick,summary,jobs,profileImage,allowanceRefusal,subscriptionActive};
 }

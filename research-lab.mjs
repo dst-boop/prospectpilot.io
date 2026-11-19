@@ -28,6 +28,37 @@ export function mapResearchRow(raw) {
     former_employers:pick('Former Employers','Previous Company','Previous Employer')||raw.former_employers,
     signals:pick('401(k) Rollover Signal','401(k) Rollover Opportunity','Life Event Signal','Signals')||raw.signals};
 }
+// The advisor's own time zone for the daily run. Empty keeps the original
+// meaning of daily_hour, a UTC hour, so a schedule saved before this existed
+// does not move.
+function timeZone(value) {
+  const zone=String(value??'').trim().slice(0,64);
+  if(!zone)return '';
+  try{new Intl.DateTimeFormat('en-US',{timeZone:zone});}catch{throw fail(422,'Choose a supported time zone.');}
+  return zone;
+}
+// The sources a scheduled run may use: the built-in free ones. Licensed search
+// is never on this list.
+export const SCHEDULED_SOURCES=Object.freeze(['public_web','sec','warn']);
+// Turns an identity directory lookup (uid -> account record) into the
+// eligibility answer scheduled runs need: 'eligible' only for an enabled,
+// email-verified account. Anything unreadable is an error, which the caller
+// treats as "could not verify" and so does not run. Billing status is checked
+// separately and is never a substitute for this.
+export function accountEligibility(getAccount) {
+  return async uid=>{
+    const account=await getAccount(uid);
+    if(account?.uid!==uid||typeof account.disabled!=='boolean'||typeof account.emailVerified!=='boolean')throw Error('Account record unreadable.');
+    return !account.disabled&&account.emailVerified?'eligible':'ineligible';
+  };
+}
+const NO_AUTHORITY=async()=>{throw Error('No identity authority is configured.');};
+// The calendar day and hour it is for an advisor, following daylight saving.
+export function localClock(date,zone) {
+  if(!zone)return {day:date.toISOString().slice(0,10),hour:date.getUTCHours()};
+  const parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',hourCycle:'h23'}).formatToParts(date).map(p=>[p.type,p.value]));
+  return {day:`${parts.year}-${parts.month}-${parts.day}`,hour:Number(parts.hour)};
+}
 export function labConfiguration(input={}) {
   if(input.qualification_target!==undefined&&![ADVICE_TARGET,'legacy','rollover_100k'].includes(input.qualification_target))throw fail(422,'Choose a supported qualification target.');
   const states=cleanList(input.states,51).map(v=>v.toUpperCase());
@@ -43,7 +74,8 @@ export function labConfiguration(input={}) {
     location,radius_miles:integer(input.radius_miles,1,100,25),industries,titles:cleanList(input.titles,30).map(v=>v.slice(0,80)),
     // How the four scores combine into priority: the advisor's formula, not code.
     score_weights:scoreWeights(input.score_weights),qualification_target:ADVICE_TARGET,
-    playbook:findPlaybook(input.playbook)?.id||'',plan_filter:planFilter(input.plan_filter)};
+    playbook:findPlaybook(input.playbook)?.id||'',plan_filter:planFilter(input.plan_filter),
+    daily_timezone:timeZone(input.daily_timezone)};
 }
 function planFilter(input={}) {
   const kinds=cleanList(input?.kinds,2);
@@ -216,7 +248,12 @@ export async function assessInventory(ids,assess,{clock=()=>performance.now(),bu
 // advisor's membership plan cannot cover a paid reservation, or null when it
 // can (prospect-jobs.mjs allowanceRefusal). It is the same monthly allowance
 // the contact lookups draw on.
-export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>new Date(),allowance=async()=>null}={}) {
+export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>new Date(),allowance=async()=>null,subscriptionActive=async()=>true,scheduledEligibility=NO_AUTHORITY}={}) {
+  // Whether a scheduled run may act for this account right now. Fails closed:
+  // with no authority wired in, or one that errors, nothing scheduled runs.
+  async function scheduledVerdict(uid) {
+    try{return await scheduledEligibility(uid)==='eligible'?'eligible':'ineligible';}catch{return 'unverified';}
+  }
   async function targetFor() { return ADVICE_TARGET; }
   // The advisor's own firm and affiliates, whose employees are never leads.
   // Keyed by the signed-in Firebase uid alone: not a billing membership, an
@@ -578,7 +615,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     }
     const saved=(await pool.query('SELECT * FROM lab_settings WHERE user_id=$1',[user.uid])).rows[0];
     const current=saved ? {...saved,configuration:{...parse(saved.configuration),qualification_target:ADVICE_TARGET}}
-      : {daily_enabled:false,daily_hour:13,daily_budget_micros:0,configuration:labConfiguration()};
+      : {daily_enabled:false,daily_hour:8,daily_budget_micros:0,configuration:labConfiguration({daily_timezone:'America/New_York'})};
     return {...current,configuration:{...current.configuration,compliance:complianceProfile(current.configuration.compliance)}};
   }
   async function enqueue(user,input={}) {
@@ -674,7 +711,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     return transaction(pool,async client=>{
       // One reservation at a time across replicas protects concurrent daily budgets.
       await client.query('SELECT pg_advisory_xact_lock(505007)');
-      const task=(await client.query(`SELECT t.*,r.user_id,r.user_email,r.budget_micros,r.configuration FROM lab_tasks t JOIN lab_runs r ON r.id=t.run_id
+      const task=(await client.query(`SELECT t.*,r.user_id,r.user_email,r.budget_micros,r.configuration,r.idempotency_key AS run_key FROM lab_tasks t JOIN lab_runs r ON r.id=t.run_id
         WHERE r.status IN ('queued','running') AND (t.status='pending' OR (t.status='running' AND t.lease_until<now()))
         ORDER BY r.created_at,t.id LIMIT 1 FOR UPDATE OF t,r SKIP LOCKED`)).rows[0];
       if(!task)return null;
@@ -682,6 +719,9 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       let skip='';
       if(task.attempts>0&&Number(task.reserved_micros)>0)skip='A paid request was interrupted. Its cost is retained; automatic paid retries are disabled.';
       else if(task.attempts>=2)skip='Source recovery attempts exhausted.';
+      // A scheduled run is re-checked when each task starts, so an account
+      // disabled or revoked after the run was queued does no further work.
+      else if(String(task.run_key||'').startsWith('daily:')&&await scheduledVerdict(task.user_id)!=='eligible')skip='Scheduled run stopped: this account could not be verified as active.';
       else if(quote===null)skip='This source is not configured.';
       else if(quote>0) {
         const settingsRow=(await client.query('SELECT daily_budget_micros FROM lab_settings WHERE user_id=$1',[task.user_id])).rows[0];
@@ -769,14 +809,47 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     await finishRun(task.run_id);return true;
   }
   async function scheduleDue() {
-    const date=now(),day=date.toISOString().slice(0,10);
-    const rows=(await pool.query('SELECT * FROM lab_settings WHERE daily_enabled=true AND daily_hour<=$1',[date.getUTCHours()])).rows;
+    // Each advisor's run is due from their chosen hour in their own time zone,
+    // once per local calendar day, and goes on the queue like any other run.
+    // The worker calls this every few minutes: the day's key makes a repeat a
+    // no-op, and one advisor's failure never holds up the others.
+    const date=now(),summary={queued:0,already:0,not_due:0,inactive:0,ineligible:0,unverified:0,refused:0,failed:0};
+    const rows=(await pool.query('SELECT * FROM lab_settings WHERE daily_enabled=true ORDER BY user_id')).rows;
     for(const row of rows) {
-      const user={uid:row.user_id,email:row.user_email},key=`daily:${day}`;
-      if((await pool.query('SELECT 1 FROM lab_runs WHERE user_id=$1 AND idempotency_key=$2',[user.uid,key])).rows.length)continue;
-      try{await enqueue(user,{...parse(row.configuration),daily_budget_micros:Number(row.daily_budget_micros),idempotency_key:key});}
-      catch(error){if(error.status===422)await pool.query("INSERT INTO lab_runs(id,user_id,user_email,kind,idempotency_key,status,message,completed_at) VALUES($1,$2,$3,'discovery',$4,'failed',$5,now()) ON CONFLICT(user_id,idempotency_key) DO NOTHING",[randomUUID(),user.uid,user.email,key,error.message]);else throw error;}
+      try {
+        let clock;try{clock=localClock(date,parse(row.configuration)?.daily_timezone);}catch{clock=localClock(date,'');}
+        if(clock.hour<Number(row.daily_hour)){summary.not_due++;continue;}
+        const user={uid:row.user_id,email:row.user_email},key=`daily:${clock.day}`;
+        if((await pool.query('SELECT 1 FROM lab_runs WHERE user_id=$1 AND idempotency_key=$2',[user.uid,key])).rows.length){summary.already++;continue;}
+        // A lapsed subscription gets no scheduled work, free or licensed. The
+        // schedule stays saved and resumes when the subscription does.
+        if(!await subscriptionActive(pool,user.uid)){summary.inactive++;continue;}
+        // The account itself must be verified as enabled by the identity
+        // authority. A paid-up subscription does not stand in for that, and a
+        // check that cannot be made counts as a no; it is tried again next pass.
+        const verdict=await scheduledVerdict(user.uid);
+        if(verdict!=='eligible'){summary[verdict]++;continue;}
+        // Scheduled runs use built-in sources only and can spend nothing: the
+        // advisor's licensed sources and budget apply to runs they start
+        // themselves. With no built-in source selected the run is refused for
+        // the day; it never falls back to a paid one.
+        const saved=parse(row.configuration)||{};
+        const builtIn=(Array.isArray(saved.sources)?saved.sources:['public_web','sec','warn']).filter(source=>SCHEDULED_SOURCES.includes(source)&&sources.quote(source)===0);
+        // An earlier run still on the queue is returned as a replay: today's
+        // is then tried again on a later pass, never queued twice.
+        try{
+          if(!builtIn.length)throw fail(422,'Daily run skipped: no built-in source is selected. Licensed search runs only when you start a run yourself.');
+          const run=await enqueue(user,{...saved,sources:builtIn,daily_budget_micros:0,idempotency_key:key});run.replayed?summary.already++:summary.queued++;
+        }
+        catch(error){if(error.status!==422)throw error;summary.refused++;await pool.query("INSERT INTO lab_runs(id,user_id,user_email,kind,idempotency_key,status,message,completed_at) VALUES($1,$2,$3,'discovery',$4,'failed',$5,now()) ON CONFLICT(user_id,idempotency_key) DO NOTHING",[randomUUID(),user.uid,user.email,key,error.message]);}
+      } catch(error) {
+        // Left without a run row, so the next pass retries this advisor.
+        summary.failed++;
+      }
     }
+    // Counts only: no account identifier in the routine log.
+    if(summary.failed||summary.unverified)console.error(JSON.stringify({event:'daily_schedule_incomplete',failed:summary.failed,unverified:summary.unverified}));
+    return summary;
   }
   async function runs(user) {return (await pool.query(`SELECT r.*, (SELECT count(*)::int FROM lab_tasks WHERE run_id=r.id) AS tasks,
     (SELECT count(*)::int FROM lab_tasks WHERE run_id=r.id AND status NOT IN ('pending','running')) AS finished_tasks,
