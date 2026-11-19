@@ -24,7 +24,13 @@ export const ZOOMINFO_ALIASES = {
  direct_do_not_call:['Direct Phone Do Not Call','Direct Phone DoNotCall','Direct Do Not Call'], mobile_do_not_call:['Mobile Phone Do Not Call','Mobile Phone DoNotCall','Mobile Do Not Call'],
 };
 // Historical workbook context is unverified source text, not qualification or contact permission.
-const IMPORT_NOTE_HEADERS = {'Full Name':'full_name','Location':'location','401(k) Rollover Signal':'rollover_context'};
+const IMPORT_NOTE_HEADERS = {
+ 'Full Name':'full_name','Location':'location','401(k) Rollover Signal':'rollover_context',
+ // Workbook workflow text is historical provenance, never current authority or a task.
+ 'Assigned FA':'historical_assigned_fa','Status':'historical_status',
+ 'Follow-Up Date':'historical_follow_up_date','Date Added':'historical_date_added',
+ 'Source File':'historical_source_file','Agent Queue Status':'historical_agent_queue_status',
+};
 for(const [header,key] of Object.entries(IMPORT_NOTE_HEADERS))CONTACT_COLUMNS.set(columnKey(header),'import_note_'+key);
 const nameReviewMessage='Full Name needs review: add separately reviewed First Name and Last Name columns; names are not split automatically.';
 function importedNotes(mapped){
