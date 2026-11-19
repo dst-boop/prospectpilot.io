@@ -78,7 +78,8 @@ try {
  }
  assert.ok(manualRequests.length>0);
  assert.ok(manualRequests.every(r=>new URL(r.url).origin===config.origin&&r.method==='GET'&&['/audience','/audience.css','/audience-client.js','/audience-guide.mjs','/audience-catalog.mjs','/staging-ui.css','/staging-ui.js','/favicon.ico'].includes(r.path)),JSON.stringify(manualRequests));
- assert.ok(!allRequests.some(r=>/providers|\/jobs|\/api\/lab\/runs/.test(r.path)),'no provider/discovery dispatch');
+ const researchRequests=allRequests.filter(r=>/providers|\/jobs|\/api\/lab\/runs/.test(r.path));
+ assert.ok(researchRequests.every(r=>r.method==='GET'&&r.path==='/api/lab/runs'),'only read-only research history is allowed outside the manual segment: '+JSON.stringify(researchRequests));
  assert.ok(!allRequests.some(r=>r.method==='POST'&&r.path==='/api/prospect/import'),'no commit submission');
  assert.deepEqual(external,[]);assert.deepEqual(errors,[]);
  console.log(JSON.stringify({verified:true,scope:'handler-rendered fictional first-use UI; desktop/mobile manual plan, copy/download, unchanged fixture file preview with zero contacts',auth:'synthetic adapter and cookie, not real Google/IAP',storage:'local PGlite, not native PostgreSQL or live Cloud SQL',network:'browser intercepted requests only; not general network isolation'}));
