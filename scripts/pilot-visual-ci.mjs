@@ -52,7 +52,7 @@ try {
   assert.equal(await page.locator('#uploadLink').getAttribute('href'),'/prospect?import=1');
   assert.match(await page.locator('#plan').innerText(),/Preview the file first; that preview does not save contacts/);
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
-  await page.screenshot({path:'/tmp/first-use-plan-'+width+'.png',fullPage:true});
+  await page.screenshot({path:'/tmp/pilot-first-use-plan-'+width+'.png',fullPage:true});
   manualPhase=false;
  }
  assert.ok(manualRequests.length>0);
@@ -81,7 +81,7 @@ try {
  await page.setViewportSize({width:390,height:844});await page.screenshot({path:'/tmp/pilot-mobile.png',fullPage:true});
  // Exercise the sponsor-state dialog on mobile and desktop with synthetic auth.
  await page.evaluate(()=>{document.getElementById('states').value='NY';});
- await page.locator('#researchSettings').click();
+ if(!await page.locator('#researchTools').evaluate(el=>el.open)) await page.locator('#researchTools > summary').click();
  assert.equal(await page.locator('#researchTools').evaluate(el=>el.open),true);
  await page.locator('#findProspects').click();
  await page.locator('input[name=playbook][value=former_employees]').check();
@@ -110,7 +110,7 @@ try {
  await page.screenshot({path:'/tmp/pilot-desktop-sponsor-states.png',fullPage:true});
  await page.locator('[data-close=playbookDialog]').click();
  assert.equal(discoveryRequests.length,0,'Closing must not launch work');
- await page.locator('#researchSettings').click();
+ if(!await page.locator('#researchTools').evaluate(el=>el.open)) await page.locator('#researchTools > summary').click();
  assert.equal(await page.locator('#researchTools').evaluate(el=>el.open),true);
  await page.locator('#findProspects').click();
  assert.equal(await page.locator('#playbookStates').inputValue(),'NY','Reopening restores the saved proposal');
