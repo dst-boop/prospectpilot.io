@@ -150,3 +150,11 @@ test('unverified imported context is visible, source-attributed and escaped with
 });
 
 for(const operation of ['correction','conflict'])test(`${operation} historical hold does not claim changes were saved`,async()=>{const c=client(),opened=c.open('A');c.pending[0].resolve(record('A'));await opened;const done=operation==='correction'?c.elements.get('correctionForm').onsubmit({preventDefault(){},submitter:{disabled:false},target:{}}):c.elements.get('conflict').onclick();c.pending[1].resolve({id:'A',changed:false,held_for_historical_review:true});await done;assert.equal(c.pending.length,2,'held changes must not reload as if saved');assert.match(c.elements.get('contactError').innerHTML,/Changes were not applied/);assert.match(c.elements.get('contactError').innerHTML,/href="\/lab#historicalReviews"/);assert.deepEqual(c.notices,['Changes not applied. Historical identity review is required.']);});
+
+test('historical assignment and queue context is escaped and explicitly non-operational',async()=>{
+ const escape=value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+ const c=client(escape),opened=c.open('A'),data=record('A');
+ data.contact.imported_notes=['historical_assigned_fa','historical_status','historical_agent_queue_status','historical_source_file'].map(kind=>({kind,text:'<img src=x onerror=alert(1)>',source:'<old workbook>',status:'unverified'}));data.contact.source_history[0].imported_notes=data.contact.imported_notes;
+ c.pending[0].resolve(data);await opened;const html=c.elements.get('contactHistoryBody').innerHTML;
+ assert.match(html,/historical status/);assert.match(html,/historical agent queue status/);assert.match(html,/do not set current ownership, queue status or follow-up tasks/);assert.match(html,/&lt;old workbook&gt;/);assert.doesNotMatch(html,/<img/);assert.equal(c.pending.length,1,'viewing provenance triggers no reassignment or task request');
+});
