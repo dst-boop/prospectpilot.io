@@ -99,7 +99,7 @@ test('paid lookup budget is reserved before calls and never silently retried aft
   }finally{await db.close();}
 });
 test('source failures remain gaps; expired free tasks recover and daily settings schedule once',async()=>{
-  const {db,lab,user}=await fixture({sources:{quote:()=>0,readiness:{},run:async()=>{throw Error('network');}}});try{
+  const {db,lab,user}=await fixture({sources:{quote:()=>0,readiness:{},run:async()=>{throw Error('network');}},scheduledEligibility:async()=>'eligible'});try{
     await lab.settings(user,{daily_enabled:true,daily_hour:0,configuration:{employers:['Example Manufacturing'],sources:['public_web']}});await lab.scheduleDue();await lab.scheduleDue();assert.equal((await db.query('SELECT * FROM lab_runs')).rows.length,1);
     await db.exec("UPDATE lab_tasks SET status='running',lease_until=now()-interval '5 minutes',attempts=1");await lab.tick();assert.equal((await db.query('SELECT status FROM lab_runs')).rows[0].status,'completed_with_gaps');assert.equal((await db.query('SELECT status FROM lab_tasks')).rows[0].status,'failed');
   }finally{await db.close();}

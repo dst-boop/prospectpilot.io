@@ -2,14 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
-import {createResearchLab,localClock,SCHEDULED_SOURCES} from '../research-lab.mjs';
+import {createResearchLab,localClock,SCHEDULED_SOURCES,accountEligibility} from '../research-lab.mjs';
 const parseConfig=value=>typeof value==='string'?JSON.parse(value):value;
 
 // The daily run: each advisor's own hour in their own time zone, once per
 // local day, on the existing queue. Sources are stubs with a zero quote, so
 // nothing is fetched and nothing is charged. All names are fictional.
 const migrations=['006-research-lab','017-forget','034-historical-identities','012-plan-catalog-summary','007-quality-v2','008-prospect-workspace','013-advisor-workflow','014-outreach-cadence','015-dial-budget','016-inbound-contact','021-lab-companies','022-identity-reviews'];
-async function scheduled(at,{inactive=new Set(),fault=()=>false,quote=()=>0,allowance=async()=>null}={}) {
+// `eligibility` stands in for the identity authority; pass null to leave none wired.
+async function scheduled(at,{inactive=new Set(),fault=()=>false,quote=()=>0,allowance=async()=>null,eligibility=async()=>'eligible'}={}) {
   const db=new PGlite();
   await db.exec(readFileSync(new URL('../generated/schema.sql',import.meta.url),'utf8'));
   for(const name of migrations)await db.exec(readFileSync(new URL(`../migrations/${name}.sql`,import.meta.url),'utf8'));
@@ -17,7 +18,7 @@ async function scheduled(at,{inactive=new Set(),fault=()=>false,quote=()=>0,allo
   const query=(sql,values)=>{if(fault(sql,values))return Promise.reject(Error('connection reset'));return db.query(sql,values);};
   const pool={query,connect:async()=>({query,release(){}})};
   const clock={at},calls=[];
-  const lab=createResearchLab({pool,now:()=>new Date(clock.at),subscriptionActive:async(_,uid)=>!inactive.has(uid),allowance,
+  const lab=createResearchLab({pool,now:()=>new Date(clock.at),subscriptionActive:async(_,uid)=>!inactive.has(uid),allowance,...(eligibility?{scheduledEligibility:eligibility}:{}),
     sources:{readiness:{},quote,run:async(source,employer)=>{calls.push([source,employer.company]);return {status:'completed',candidates:[]};}}});
   const runs=async uid=>(await db.query('SELECT idempotency_key FROM lab_runs WHERE user_id=$1 ORDER BY idempotency_key',[uid])).rows.map(r=>r.idempotency_key);
   return {lab,clock,runs,inactive,calls,db};
@@ -47,7 +48,7 @@ test('8 a.m. stays 8 a.m. local across the daylight-saving changes',async()=>{
 test('each advisor gets one run per local day at their own hour',async()=>{
   const {lab,clock,runs}=await scheduled('2026-12-01T12:30:00Z');
   await lab.settings(...advisor('east','America/New_York'));await lab.settings(...advisor('west','America/Los_Angeles'));
-  assert.deepEqual(await lab.scheduleDue(),{queued:0,already:0,not_due:2,inactive:0,refused:0,failed:0},'7:30 Eastern in winter is too early for both');
+  assert.deepEqual(await lab.scheduleDue(),{queued:0,already:0,not_due:2,inactive:0,ineligible:0,unverified:0,refused:0,failed:0},'7:30 Eastern in winter is too early for both');
   clock.at='2026-12-01T13:05:00Z';
   assert.deepEqual([(await lab.scheduleDue()).queued,(await lab.scheduleDue()).already],[1,1],'the worker\'s next pass is a no-op');
   assert.deepEqual([await runs('east'),await runs('west')],[['daily:2026-12-01'],[]],'8:05 Eastern is 5:05 Pacific');
@@ -68,7 +69,7 @@ test('a failed pass is retried without a duplicate, and does not hold up other a
   const [first,lines]=await silently(()=>lab.scheduleDue());
   assert.deepEqual([first.failed,first.queued],[1,1]);
   assert.deepEqual([await runs('blip'),await runs('steady')],[[],['daily:2026-12-01']]);
-  assert.deepEqual(lines.map(l=>JSON.parse(l)),[{event:'daily_schedule_failed',user_id:'blip',status:null}],'ids and counts only in the log');
+  assert.deepEqual(lines.map(l=>JSON.parse(l)),[{event:'daily_schedule_incomplete',failed:1,unverified:0}],'counts only: no account identifier in the log');
   failing=false;
   assert.deepEqual([(await lab.scheduleDue()).queued,(await lab.scheduleDue()).queued],[1,0]);
   assert.deepEqual(await runs('blip'),['daily:2026-12-01']);
@@ -89,7 +90,7 @@ test('an inactive advisor gets no scheduled run until they are active again',asy
   await lab.settings(...advisor('lapsed','America/New_York'));await lab.settings(...advisor('paying','America/New_York'));
   // Switched off by the advisor: the saved hour and zone stay, nothing runs.
   await lab.settings({uid:'paused',email:'paused@example.com'},{daily_enabled:false,daily_hour:8,configuration:{...daily,daily_timezone:'America/New_York'}});
-  assert.deepEqual(await lab.scheduleDue(),{queued:1,already:0,not_due:0,inactive:1,refused:0,failed:0});
+  assert.deepEqual(await lab.scheduleDue(),{queued:1,already:0,not_due:0,inactive:1,ineligible:0,unverified:0,refused:0,failed:0});
   assert.deepEqual([await runs('lapsed'),await runs('paused'),await runs('paying')],[[],[],['daily:2026-12-01']],'no failed row is written for a lapsed advisor');
   while(await lab.tick());
   assert.ok(calls.length>0&&calls.every(([,company])=>company==='Example Manufacturing'));
@@ -146,4 +147,64 @@ test('a scheduled run uses built-in sources only and can never spend',async()=>{
   const manual=await scheduled('2026-12-01T15:00:00Z',{quote});
   const started=await manual.lab.enqueue({uid:'manual',email:'manual@example.com'},{employers:['Example Manufacturing'],sources:['web_search'],daily_budget_micros:10000000});
   assert.deepEqual(parseConfig(started.configuration).sources,['web_search']);
+});
+
+test('with no identity authority wired in, nothing is scheduled',async()=>{
+  const {lab,runs}=await scheduled('2026-12-01T15:00:00Z',{eligibility:null});
+  await lab.settings(...advisor('east','America/New_York'));
+  const [summary,lines]=await silently(()=>lab.scheduleDue());
+  assert.deepEqual([summary.queued,summary.unverified],[0,1]);assert.deepEqual(await runs('east'),[]);
+  assert.deepEqual(lines.map(l=>JSON.parse(l)),[{event:'daily_schedule_incomplete',failed:0,unverified:1}]);
+  assert.ok(!lines.join('').includes('east'),'no account identifier in the log');
+});
+
+test('a paid-up subscription does not stand in for an active account',async()=>{
+  const state={disabled:'ineligible',revoked:'ineligible',fine:'eligible'};
+  const {lab,runs,inactive}=await scheduled('2026-12-01T15:00:00Z',{eligibility:async uid=>state[uid]});
+  for(const uid of Object.keys(state))await lab.settings(...advisor(uid,'America/New_York'));
+  assert.equal(inactive.size,0,'all three subscriptions are active');
+  const summary=await lab.scheduleDue();
+  assert.deepEqual([summary.queued,summary.ineligible],[1,2]);
+  assert.deepEqual([await runs('disabled'),await runs('revoked'),await runs('fine')],[[],[],['daily:2026-12-01']]);
+  // Restored the same day: the next pass queues it, once.
+  state.disabled='eligible';
+  assert.equal((await lab.scheduleDue()).queued,1);assert.deepEqual(await runs('disabled'),['daily:2026-12-01']);
+});
+
+test('an eligibility check that is unavailable or malformed means no run, and is retried',async()=>{
+  let mode='down';
+  const {lab,runs}=await scheduled('2026-12-01T15:00:00Z',{eligibility:async()=>{if(mode==='down')throw Error('directory unavailable');return mode==='odd'?{ok:true}:'eligible';}});
+  await lab.settings(...advisor('east','America/New_York'));
+  const [down]=await silently(()=>lab.scheduleDue());
+  assert.deepEqual([down.queued,down.unverified,await runs('east')],[0,1,[]]);
+  mode='odd';assert.equal((await lab.scheduleDue()).ineligible,1,'only the exact answer "eligible" counts');assert.deepEqual(await runs('east'),[]);
+  mode='up';assert.equal((await lab.scheduleDue()).queued,1);assert.deepEqual(await runs('east'),['daily:2026-12-01']);
+});
+
+test('an account revoked after its run was queued does no further work',async()=>{
+  for(const after of ['ineligible','down']) {
+    let state='eligible';
+    const {lab,runs,calls,db}=await scheduled('2026-12-01T15:00:00Z',{eligibility:async()=>{if(state==='down')throw Error('directory unavailable');return state;}});
+    await lab.settings(...advisor('east','America/New_York'));
+    assert.equal((await lab.scheduleDue()).queued,1);assert.deepEqual(await runs('east'),['daily:2026-12-01']);
+    state=after;
+    while(await lab.tick());
+    assert.equal(calls.length,0,`no source is called once the account is ${after}`);
+    const tasks=(await db.query('SELECT status,result FROM lab_tasks')).rows;
+    assert.ok(tasks.length>0&&tasks.every(t=>t.status==='skipped'&&/could not be verified as active/.test(JSON.stringify(t.result))));
+  }
+  // A run the advisor started themselves is not subject to the scheduled gate:
+  // it was authorized by their signed-in, revocation-checked request.
+  const manual=await scheduled('2026-12-01T15:00:00Z',{eligibility:async()=>'ineligible'});
+  await manual.lab.enqueue({uid:'manual',email:'manual@example.com'},daily);
+  while(await manual.lab.tick());
+  assert.ok(manual.calls.length>0);
+});
+
+test('the account adapter accepts only an enabled, verified account record',async()=>{
+  const records={ok:{uid:'ok',disabled:false,emailVerified:true},off:{uid:'off',disabled:true,emailVerified:true},unverified:{uid:'unverified',disabled:false,emailVerified:false},
+    other:{uid:'someone-else',disabled:false,emailVerified:true},partial:{uid:'partial',disabled:false}};
+  const check=accountEligibility(async uid=>{if(uid==='gone')throw Object.assign(Error('not found'),{code:'auth/user-not-found'});return records[uid];});
+  assert.deepEqual([await check('ok'),await check('off'),await check('unverified')],['eligible','ineligible','ineligible']);
+  for(const uid of ['other','partial','gone','missing'])await assert.rejects(check(uid));
 });
