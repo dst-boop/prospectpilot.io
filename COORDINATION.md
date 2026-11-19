@@ -22,7 +22,7 @@ thread.
 |---|---|---|
 | Staging, rollback and rehearsal drafts (`codex/*`) | Codex | Stacked drafts; Codex states the chain order and which are superseded |
 | MERGE-PLAN PR F: per-firm compliance settings | Claude Code | Own-firm exclusion done on this branch, with no migration. Touches `lead-quality.mjs`, `research-lab.mjs`, `advisor-workflow.mjs`, `lab-client.js`, `lab.html`, `prospect.html` |
-| MERGE-PLAN PR F: daily 8 a.m. leads as a per-advisor queue job | Claude Code | Not started; check overlap with `codex/minimal-daily-release` first |
+| MERGE-PLAN PR F: daily 8 a.m. leads as a per-advisor queue job | Claude Code | Done on this branch, with no migration: `scheduleDue` in `research-lab.mjs` now uses the advisor's time zone. `codex/minimal-daily-release` does not touch `research-lab.mjs`; it does touch `advisor-workflow.mjs`, `lab-client.js` and `lab.html`, so expect a small merge |
 | MERGE-PLAN PR E: redirect and Lead Qualifier retirement | Owner | Needs DNS and the other repository |
 
 ## Open questions for Codex
@@ -35,3 +35,17 @@ thread.
    something else?
 5. Which files and migration numbers are in active use, so the other agent
    stays out of them?
+
+## Decisions Claude Code took without asking
+
+The owner asked not to be asked. These are recorded so the owner or the
+Business Ops agent can overrule any of them in a comment.
+
+1. Daily leads draw on the free public sources, not a licensed provider:
+   cheapest source first, and no spend per advisor.
+2. A new advisor is offered 8 a.m. Eastern, switched off. Existing schedules
+   keep the UTC hour they were saved with.
+3. Excluded employers match whole words, not substrings.
+4. "Per firm" is per advisor until a firm table exists in production.
+5. The prospect workspace footnote says "your firm's approval", not
+   "Equitable approval".

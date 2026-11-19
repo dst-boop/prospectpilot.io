@@ -24,6 +24,21 @@ export function mapResearchRow(raw) {
     former_employers:pick('Former Employers','Previous Company','Previous Employer')||raw.former_employers,
     signals:pick('401(k) Rollover Signal','401(k) Rollover Opportunity','Life Event Signal','Signals')||raw.signals};
 }
+// The advisor's own time zone for the daily run. Empty keeps the original
+// meaning of daily_hour, a UTC hour, so a schedule saved before this existed
+// does not move.
+function timeZone(value) {
+  const zone=String(value??'').trim().slice(0,64);
+  if(!zone)return '';
+  try{new Intl.DateTimeFormat('en-US',{timeZone:zone});}catch{throw fail(422,'Choose a supported time zone.');}
+  return zone;
+}
+// The calendar day and hour it is for an advisor, following daylight saving.
+export function localClock(date,zone) {
+  if(!zone)return {day:date.toISOString().slice(0,10),hour:date.getUTCHours()};
+  const parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',hourCycle:'h23'}).formatToParts(date).map(p=>[p.type,p.value]));
+  return {day:`${parts.year}-${parts.month}-${parts.day}`,hour:Number(parts.hour)};
+}
 export function labConfiguration(input={}) {
   if(input.qualification_target!==undefined&&!['legacy','rollover_100k'].includes(input.qualification_target))throw fail(422,'Choose a supported qualification target.');
   const states=cleanList(input.states,51).map(v=>v.toUpperCase());
@@ -40,7 +55,8 @@ export function labConfiguration(input={}) {
     // How the four scores combine into priority: the advisor's formula, not code.
     score_weights:scoreWeights(input.score_weights),qualification_target:input.qualification_target||'legacy',
     // Set by a rollover playbook: which plans' employers to research first.
-    playbook:findPlaybook(input.playbook)?.id||'',plan_filter:planFilter(input.plan_filter),minimum_age:integer(input.minimum_age,0,100,0)};
+    playbook:findPlaybook(input.playbook)?.id||'',plan_filter:planFilter(input.plan_filter),minimum_age:integer(input.minimum_age,0,100,0),
+    daily_timezone:timeZone(input.daily_timezone)};
 }
 function planFilter(input={}) {
   const kinds=cleanList(input?.kinds,2);
@@ -482,7 +498,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       await pool.query(`INSERT INTO lab_settings(user_id,user_email,daily_enabled,daily_hour,daily_budget_micros,configuration)
         VALUES($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT(user_id) DO UPDATE SET user_email=EXCLUDED.user_email,daily_enabled=EXCLUDED.daily_enabled,daily_hour=EXCLUDED.daily_hour,daily_budget_micros=EXCLUDED.daily_budget_micros,configuration=EXCLUDED.configuration,updated_at=now()`,[user.uid,user.email,input.daily_enabled===true,hour,config.daily_budget_micros,JSON.stringify(config)]);
     }
-    const row=(await pool.query('SELECT * FROM lab_settings WHERE user_id=$1',[user.uid])).rows[0]||{daily_enabled:false,daily_hour:13,daily_budget_micros:0,configuration:labConfiguration()};
+    const row=(await pool.query('SELECT * FROM lab_settings WHERE user_id=$1',[user.uid])).rows[0]||{daily_enabled:false,daily_hour:8,daily_budget_micros:0,configuration:labConfiguration({daily_timezone:'America/New_York'})};
     const configuration=parse(row.configuration)||{};
     return {...row,configuration:{...configuration,compliance:complianceProfile(configuration.compliance)}};
   }
@@ -672,10 +688,14 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     await finishRun(task.run_id);return true;
   }
   async function scheduleDue() {
-    const date=now(),day=date.toISOString().slice(0,10);
-    const rows=(await pool.query('SELECT * FROM lab_settings WHERE daily_enabled=true AND daily_hour<=$1',[date.getUTCHours()])).rows;
+    // Each advisor's run is due from their chosen hour in their own time zone,
+    // once per local calendar day. It goes on the queue like any other run.
+    const date=now();
+    const rows=(await pool.query('SELECT * FROM lab_settings WHERE daily_enabled=true')).rows;
     for(const row of rows) {
-      const user={uid:row.user_id,email:row.user_email},key=`daily:${day}`;
+      let clock;try{clock=localClock(date,parse(row.configuration)?.daily_timezone);}catch{clock=localClock(date,'');}
+      if(clock.hour<Number(row.daily_hour))continue;
+      const user={uid:row.user_id,email:row.user_email},key=`daily:${clock.day}`;
       if((await pool.query('SELECT 1 FROM lab_runs WHERE user_id=$1 AND idempotency_key=$2',[user.uid,key])).rows.length)continue;
       try{await enqueue(user,{...parse(row.configuration),daily_budget_micros:Number(row.daily_budget_micros),idempotency_key:key});}
       catch(error){if(error.status===422)await pool.query("INSERT INTO lab_runs(id,user_id,user_email,kind,idempotency_key,status,message,completed_at) VALUES($1,$2,$3,'discovery',$4,'failed',$5,now()) ON CONFLICT(user_id,idempotency_key) DO NOTHING",[randomUUID(),user.uid,user.email,key,error.message]);else throw error;}
