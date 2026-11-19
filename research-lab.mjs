@@ -2,7 +2,7 @@ import {captureIdentityEvidence,transferIdentityEvidence,holdHistoricalArrival,h
 import {createAdvisorWorkflow,withDirectoryRestrictions} from './advisor-workflow.mjs';
 import {randomUUID} from 'node:crypto';
 import {normalizeLead, mergeLead, isUsableStoredLead} from './generated/worker.mjs';
-import {assessLead, candidateKeys, leadIdentity, validateObservation, nameKey, US_STATES, researchCSV, hash, qualificationVersion, sourceStrength, fieldKey, leadScores, scoreWeights, complianceProfile, excludedEmployer, DEFAULT_COMPLIANCE} from './lead-quality.mjs';
+import {assessLead, candidateKeys, leadIdentity, validateObservation, nameKey, US_STATES, researchCSV, hash, qualificationVersion, sourceStrength, fieldKey, leadScores, scoreWeights, complianceProfile, excludedEmployer, effectiveExclusions, DEFAULT_COMPLIANCE} from './lead-quality.mjs';
 export {sourceStrength};
 import {matchPlans, selectEmployers, catalogSummary, planResearchTargets} from './plan-catalog.mjs';
 import {applyPlaybook, findPlaybook, playbookChoices} from './rollover-playbooks.mjs';
@@ -567,7 +567,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       if(supplied.compliance!==undefined) {
         const profile=complianceProfile(supplied.compliance);
         if(profile===DEFAULT_COMPLIANCE)throw fail(422,'Name your firm to save compliance settings.');
-        if(profile.excluded_employers.some(name=>nameKey(name).length<3))throw fail(422,'Use at least three letters for each excluded employer.');
+        if(effectiveExclusions(profile).some(name=>nameKey(name).length<3))throw fail(422,'Use at least three letters for your firm and each excluded employer.');
         config.compliance=profile;
       } else {
         const kept=parse((await pool.query('SELECT configuration FROM lab_settings WHERE user_id=$1',[user.uid])).rows[0]?.configuration)?.compliance;

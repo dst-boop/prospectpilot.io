@@ -198,9 +198,10 @@ function assessAdviceDecision(lead, observations, {now, plans}) {
 }
 
 // Whose employees an advisor may not prospect: their own firm and its
-// affiliates. This is a setting per advisor (lab_settings.configuration.
-// compliance), not code. An advisor who has never saved one keeps the original
-// Equitable rule, so no existing exclusion is lifted by default.
+// affiliates. This is one advisor's exclusion profile, keyed by their uid in
+// lab_settings.configuration.compliance. It is not shared firm policy and
+// grants no firm authority. An advisor who has never saved one keeps the
+// original Equitable rule, so no existing exclusion is lifted by default.
 export const DEFAULT_COMPLIANCE = Object.freeze({firm_name: 'Equitable Advisors', excluded_employers: Object.freeze(['Equitable'])});
 export function complianceProfile(input) {
   const text = v => clean(v).replace(/\s+/g, ' ').slice(0, 120);
@@ -210,11 +211,14 @@ export function complianceProfile(input) {
   const names = (Array.isArray(input.excluded_employers) ? input.excluded_employers : []).map(text).filter(v => nameKey(v));
   return {firm_name: text(input.firm_name), excluded_employers: [...new Map(names.reverse().map(v => [nameKey(v), v])).values()].reverse().slice(0, 50)};
 }
+// The names in force: the advisor's own firm always, then any affiliates. The
+// own-firm exclusion never depends on the optional affiliate list.
+export const effectiveExclusions = (compliance = DEFAULT_COMPLIANCE) => [compliance?.firm_name, ...(compliance?.excluded_employers || [])].filter(name => nameKey(name));
 // Whole words, so "Equitable Holdings" is excluded and "Axalta" is not caught
 // by "AXA". Returns the configured name that matched, or ''.
 export function excludedEmployer(company, compliance = DEFAULT_COMPLIANCE) {
   const key = ` ${nameKey(company)} `;
-  return (compliance?.excluded_employers || []).find(name => { const k = nameKey(name); return k && key.includes(` ${k} `); }) || '';
+  return effectiveExclusions(compliance).find(name => key.includes(` ${nameKey(name)} `)) || '';
 }
 export function assessLead(lead, observations = [], {now = new Date(), plans = [], target = 'legacy', compliance = DEFAULT_COMPLIANCE} = {}) {
   if (target === ADVICE_TARGET) return assessAdviceDecision(lead, observations, {now, plans});
