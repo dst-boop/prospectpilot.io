@@ -108,7 +108,7 @@ export function dailyWorklistSummary(items,at=new Date()) {
     needs_contact_review:due.length-held.length-reviewed.length,on_hold:held.length};
 }
 
-export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visibleSQL,now=()=>new Date(),targetFor=async()=> 'legacy'}) {
+export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visibleSQL,now=()=>new Date(),targetFor=async()=> 'legacy',complianceFor=async()=>undefined}) {
   // The advisor's own details, so a drafted message signs itself rather than
   // leaving the advisor to paste their name into every touch.
   async function profile(user) {
@@ -200,7 +200,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
   async function detail(user,id) {
     const {lead}=await accessible(user,id);
     const rows=(await pool.query('SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows;
-    const quality=assessLead(lead,rows.map(r=>parse(r.payload)),{now:now(),target:await targetFor(user)});
+    const quality=assessLead(lead,rows.map(r=>parse(r.payload)),{now:now(),target:await targetFor(user),compliance:await complianceFor(user)});
     const cadence=await cadenceFor(user,id,lead,quality,pool,await dialsToday(user));
     const action=nextAction(lead,quality,now(),cadence),brief=prospectBrief(lead,quality,rows.map(r=>parse(r.payload)),now());
     return {action,cadence,brief,conversation_guidance:conversationGuidance(action,quality,cadence),
@@ -243,9 +243,9 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
     const weights=(await pool.query('SELECT configuration FROM lab_settings WHERE user_id=$1',[user.uid])).rows[0]?.configuration?.score_weights;
     // Directory restrictions are applied before anything is assessed or paced,
     // so a phone that became do-not-call in the directory is refused here too.
-    const target=await targetFor(user);
+    const target=await targetFor(user),compliance=await complianceFor(user);
     const assessedAt=now();
-    const all=rows.map(r=>{const lead=withDirectoryRestrictions({...parse(r.payload),id:r.id},r.linked_contacts),quality=assessLead(lead,observations.get(r.id)||[],{now:assessedAt,target});
+    const all=rows.map(r=>{const lead=withDirectoryRestrictions({...parse(r.payload),id:r.id},r.linked_contacts),quality=assessLead(lead,observations.get(r.id)||[],{now:assessedAt,target,compliance});
       const cadence=cadenceState({activities:history.get(r.id)||[],lead,quality,rest:resting.get(r.id)||null,now:assessedAt,dials});
       const s=leadScores(lead,quality,{now:assessedAt,weights});
       const scores={priority:s.priority,qualification:s.qualification.score,opportunity:s.opportunity.score,confidence:s.confidence.score,contactability:s.contactability.score};
@@ -286,7 +286,7 @@ export function createAdvisorWorkflow({pool,accessible,evaluate,transaction,visi
 
       // Pacing is checked against the record as it stands, before this touch is
       // written, so a refusal reaches the advisor while it can still matter.
-      const quality=assessLead(lead,(await client.query('SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows.map(r=>parse(r.payload)),{now:at,target:await targetFor(user,client)});
+      const quality=assessLead(lead,(await client.query('SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows.map(r=>parse(r.payload)),{now:at,target:await targetFor(user,client),compliance:await complianceFor(user,client)});
       const before=await cadenceFor(user,id,lead,quality,client,null,at);
       // Attendance is an outcome of something. Without this, Meeting held on an
       // untouched prospect would mark them Met, restart their touch budget and

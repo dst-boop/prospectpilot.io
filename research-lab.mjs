@@ -1,7 +1,7 @@
 import {createAdvisorWorkflow,withDirectoryRestrictions} from './advisor-workflow.mjs';
 import {randomUUID} from 'node:crypto';
 import {normalizeLead, mergeLead, isUsableStoredLead} from './generated/worker.mjs';
-import {assessLead, candidateKeys, leadIdentity, validateObservation, nameKey, US_STATES, researchCSV, hash, qualificationVersion, sourceStrength, fieldKey, leadScores, scoreWeights} from './lead-quality.mjs';
+import {assessLead, candidateKeys, leadIdentity, validateObservation, nameKey, US_STATES, researchCSV, hash, qualificationVersion, sourceStrength, fieldKey, leadScores, scoreWeights, complianceProfile, excludedEmployer} from './lead-quality.mjs';
 export {sourceStrength};
 import {matchPlans, selectEmployers, catalogSummary} from './plan-catalog.mjs';
 import {applyPlaybook, findPlaybook, playbookChoices, belowAgeFloor} from './rollover-playbooks.mjs';
@@ -24,6 +24,21 @@ export function mapResearchRow(raw) {
     former_employers:pick('Former Employers','Previous Company','Previous Employer')||raw.former_employers,
     signals:pick('401(k) Rollover Signal','401(k) Rollover Opportunity','Life Event Signal','Signals')||raw.signals};
 }
+// The advisor's own time zone for the daily run. Empty keeps the original
+// meaning of daily_hour, a UTC hour, so a schedule saved before this existed
+// does not move.
+function timeZone(value) {
+  const zone=String(value??'').trim().slice(0,64);
+  if(!zone)return '';
+  try{new Intl.DateTimeFormat('en-US',{timeZone:zone});}catch{throw fail(422,'Choose a supported time zone.');}
+  return zone;
+}
+// The calendar day and hour it is for an advisor, following daylight saving.
+export function localClock(date,zone) {
+  if(!zone)return {day:date.toISOString().slice(0,10),hour:date.getUTCHours()};
+  const parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',hourCycle:'h23'}).formatToParts(date).map(p=>[p.type,p.value]));
+  return {day:`${parts.year}-${parts.month}-${parts.day}`,hour:Number(parts.hour)};
+}
 export function labConfiguration(input={}) {
   if(input.qualification_target!==undefined&&!['legacy','rollover_100k'].includes(input.qualification_target))throw fail(422,'Choose a supported qualification target.');
   const states=cleanList(input.states,51).map(v=>v.toUpperCase());
@@ -40,7 +55,8 @@ export function labConfiguration(input={}) {
     // How the four scores combine into priority: the advisor's formula, not code.
     score_weights:scoreWeights(input.score_weights),qualification_target:input.qualification_target||'legacy',
     // Set by a rollover playbook: which plans' employers to research first.
-    playbook:findPlaybook(input.playbook)?.id||'',plan_filter:planFilter(input.plan_filter),minimum_age:integer(input.minimum_age,0,100,0)};
+    playbook:findPlaybook(input.playbook)?.id||'',plan_filter:planFilter(input.plan_filter),minimum_age:integer(input.minimum_age,0,100,0),
+    daily_timezone:timeZone(input.daily_timezone)};
 }
 function planFilter(input={}) {
   const kinds=cleanList(input?.kinds,2);
@@ -111,7 +127,7 @@ export function runFunnel({tasks=[],companies=[],statuses={}}={}) {
     {key:'pages_read',label:'Pages read',count:pages,lost:tally(pageLosses),note:'Losses count companies, once per reason.'},
     {key:'people_found',label:'People found',count:kept+offTarget+belowAge},
     {key:'people_kept',label:'Matched the titles',count:kept,lost:tally([['Other titles, not kept',offTarget],['Reported age below the search, not kept',belowAge]])},
-    {key:'people_saved',label:'Saved to your records',count:saved,detail:`${Math.min(added,saved)} new · ${onFile} already on file`,lost:tally([['Missing a full name, Equitable, or previously deleted',rejected],['Matched more than one record · held in Possible duplicates',ambiguous],['Already held by another advisor',heldElsewhere]])},
+    {key:'people_saved',label:'Saved to your records',count:saved,detail:`${Math.min(added,saved)} new · ${onFile} already on file`,lost:tally([['Missing a full name, at an excluded employer, or previously deleted',rejected],['Matched more than one record · held in Possible duplicates',ambiguous],['Already held by another advisor',heldElsewhere]])},
     {key:'promising',label:'Promising or better',count:promising,lost:tally([['Excluded by a qualification check',status('excluded')],['Conflicting identifiers to resolve',status('identity_review')],['Evidence still needed',status('incomplete')+status('unassessed')]])},
     {key:'qualified',label:'All required checks confirmed',count:status('verified'),lost:tally([['Promising, evidence still to review',status('promising')]])}]};
 }
@@ -218,6 +234,10 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     const config=parse((await client.query('SELECT configuration FROM lab_settings WHERE user_id=$1',[user.uid])).rows[0]?.configuration)||{};
     return config.qualification_target==='rollover_100k'?'rollover_100k':'legacy';
   }
+  // The advisor's own firm and affiliates, whose employees are never leads.
+  async function complianceFor(user,client=pool) {
+    return complianceProfile(parse((await client.query('SELECT configuration FROM lab_settings WHERE user_id=$1',[user.uid])).rows[0]?.configuration)?.compliance);
+  }
   async function accessible(user,id,client=pool,lock=false) {
     const row=(await client.query(`SELECT discovery_leads.*,(SELECT jsonb_agg(pc.payload) FROM advisor_contact_links acl JOIN prospect_contacts pc ON pc.id=acl.contact_id AND pc.user_id=acl.user_id WHERE acl.lead_id=discovery_leads.id AND acl.user_id=discovery_leads.owner_user_id) AS linked_contacts FROM discovery_leads WHERE ${visibleSQL} AND id=$3${lock?' FOR UPDATE':''}`,[TEAM,user.uid,id])).rows[0];
     if(!row)throw fail(404,'Lead not found or unavailable to this account.');
@@ -225,7 +245,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
   }
   async function observations(user,id,client=pool) {return (await client.query('SELECT payload FROM lab_observations WHERE lead_id=$1 AND user_id=$2',[id,user.uid])).rows.map(r=>parse(r.payload));}
   async function evaluate(user,lead,client=pool) {
-    const quality=assessLead(lead,await observations(user,lead.id,client),{now:now(),plans:await matchPlans(client,lead),target:await targetFor(user,client)});
+    const quality=assessLead(lead,await observations(user,lead.id,client),{now:now(),plans:await matchPlans(client,lead),target:await targetFor(user,client),compliance:await complianceFor(user,client)});
     await client.query(`INSERT INTO lab_qualification(lead_id,user_id,status,score,identity_signature,first_verified_at,rule_version)
       VALUES($1,$2,$3,$4,$5,CASE WHEN $3='verified' THEN $6::timestamptz ELSE NULL END,$7)
       ON CONFLICT(lead_id,user_id) DO UPDATE SET status=EXCLUDED.status,score=EXCLUDED.score,identity_signature=EXCLUDED.identity_signature,
@@ -257,7 +277,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     });
   }
   async function list(user,{offset=0,limit=50,status='',search='',compact=false}={}) {
-    const target=await targetFor(user);
+    const target=await targetFor(user),compliance=await complianceFor(user);
     offset=integer(offset,0,1000000,0);limit=integer(limit,1,100,50);
     if(status&&!['verified','promising','incomplete','excluded','identity_review','unassessed'].includes(status))throw fail(422,'Invalid quality filter.');
     if(![true,false,'true','false'].includes(compact))throw fail(422,'Invalid compact result setting.');
@@ -273,7 +293,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     const records=ids.length?(await pool.query('SELECT lead_id,payload FROM lab_observations WHERE user_id=$1 AND lead_id=ANY($2::text[])',[user.uid,ids])).rows:[];
     // Live assessment prevents an expired or edited record from displaying an old verified badge.
     const leads=rows.map(row=>{
-      const lead={...parse(row.payload),id:row.id},quality=assessLead(lead,records.filter(o=>o.lead_id===row.id).map(o=>parse(o.payload)),{now:now(),target});
+      const lead={...parse(row.payload),id:row.id},quality=assessLead(lead,records.filter(o=>o.lead_id===row.id).map(o=>parse(o.payload)),{now:now(),target,compliance});
       if(compact===true||compact==='true')return {
         lead:Object.fromEntries(['id','first_name','last_name','current_title','company'].map(k=>[k,lead[k]])),
         quality:{status:quality.status,score:quality.score,gaps:quality.gaps,age_band:quality.age_band,gates:Object.fromEntries(Object.entries(quality.gates).map(([k,g])=>[k,{state:g.state,reason:g.reason}]))}
@@ -284,7 +304,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
   }
   // Suggestions reuse saved records only; shared employment is not a social edge.
   async function relatedPeople(user,id) {
-    const target=await targetFor(user);
+    const target=await targetFor(user),compliance=await complianceFor(user);
     const {lead:seed}=await accessible(user,id);
     const key=v=>String(v||'').trim().toLowerCase().replace(/\s+/g,' ');
     const company=key(seed.company),role=key(seed.current_title);
@@ -296,7 +316,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     const people=[];
     for(const row of rows.slice(0,100)) {
       const {lead}=await accessible(user,row.id);
-      const quality=assessLead(lead,await observations(user,row.id),{now:now(),target});
+      const quality=assessLead(lead,await observations(user,row.id),{now:now(),target,compliance});
       if(['excluded','identity_review'].includes(quality.status)||/^(not a fit|client)$/i.test(lead.follow_up_status||''))continue;
       const reasons=[];
       if(company&&key(lead.company)===company)reasons.push('Same reported employer');
@@ -321,9 +341,10 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     const admin=(await client.query("SELECT 1 FROM discovery_users WHERE user_id=$1 AND role='admin'",[user.uid])).rows.length>0;
     const writable=row=>ownsLead(row,user.uid)||admin;
     let added=0,duplicates=0,rejected=0,ambiguous=0,probable=0;
+    const compliance=await complianceFor(user,client);
     for(const raw of candidates.slice(0,5000)) {
       const lead=normalizeLead(mapResearchRow(raw),{source:raw.source_names?.[0]||source,owner_email:user.email});
-      if(!lead.first_name||!lead.last_name||!isUsableStoredLead(lead)||nameKey(lead.company).includes('equitable')) {rejected++;continue;}
+      if(!lead.first_name||!lead.last_name||!isUsableStoredLead(lead)||excludedEmployer(lead.company,compliance)) {rejected++;continue;}
       const keys=candidateKeys(lead);if(!keys.length){rejected++;continue;}
       // A person this user deleted stays deleted, whether a CSV or a research
       // run finds them again.
@@ -463,10 +484,23 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     if(input) {
       const supplied=input.configuration||input;
       const config=labConfiguration({...supplied,qualification_target:supplied.qualification_target??await targetFor(user)}),hour=integer(input.daily_hour,0,23,13);
+      // Saving other settings never drops the firm exclusions: they change
+      // only when a compliance profile is sent, and it must name the firm.
+      if(supplied.compliance!==undefined) {
+        const profile=complianceProfile(supplied.compliance);
+        if(!supplied.compliance||typeof supplied.compliance!=='object'||!profile.firm_name)throw fail(422,'Name your firm to save compliance settings.');
+        if(profile.excluded_employers.some(name=>nameKey(name).length<3))throw fail(422,'Use at least three letters for each excluded employer.');
+        config.compliance=profile;
+      } else {
+        const saved=parse((await pool.query('SELECT configuration FROM lab_settings WHERE user_id=$1',[user.uid])).rows[0]?.configuration)?.compliance;
+        if(saved)config.compliance=complianceProfile(saved);
+      }
       await pool.query(`INSERT INTO lab_settings(user_id,user_email,daily_enabled,daily_hour,daily_budget_micros,configuration)
         VALUES($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT(user_id) DO UPDATE SET user_email=EXCLUDED.user_email,daily_enabled=EXCLUDED.daily_enabled,daily_hour=EXCLUDED.daily_hour,daily_budget_micros=EXCLUDED.daily_budget_micros,configuration=EXCLUDED.configuration,updated_at=now()`,[user.uid,user.email,input.daily_enabled===true,hour,config.daily_budget_micros,JSON.stringify(config)]);
     }
-    return (await pool.query('SELECT * FROM lab_settings WHERE user_id=$1',[user.uid])).rows[0]||{daily_enabled:false,daily_hour:13,daily_budget_micros:0,configuration:labConfiguration()};
+    const row=(await pool.query('SELECT * FROM lab_settings WHERE user_id=$1',[user.uid])).rows[0]||{daily_enabled:false,daily_hour:8,daily_budget_micros:0,configuration:labConfiguration({daily_timezone:'America/New_York'})};
+    const configuration=parse(row.configuration)||{};
+    return {...row,configuration:{...configuration,compliance:complianceProfile(configuration.compliance)}};
   }
   async function enqueue(user,input={}) {
     const config=labConfiguration(input.kind==='inventory'?input:applyPlaybook(input)),kind=input.kind==='inventory'?'inventory':'discovery';
@@ -495,7 +529,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
         const saved=(await pool.query(`SELECT payload FROM discovery_leads WHERE ${visibleSQL} ORDER BY updated_at DESC LIMIT 2000`,[TEAM,user.uid])).rows;
         employers=[...new Map(saved.map(r=>parse(r.payload)).filter(l=>l.company&&(!config.states.length||config.states.includes(l.state))).map(l=>[nameKey(l.company),{company:l.company,website:l.company_website||'',city:'',state:''}])).values()];
       }
-      employers=employers.filter(e=>!nameKey(e.company).includes('equitable')).slice(0,config.max_companies);
+      {const compliance=await complianceFor(user);employers=employers.filter(e=>!excludedEmployer(e.company,compliance)).slice(0,config.max_companies);}
       if(!employers.length&&!config.location)throw fail(422,'Add a place and business type, an employer, import a lead list, or load the DOL plan catalog to start discovery.');
     }
     let run;
@@ -586,7 +620,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
   // are passed over, so a daily campaign moves through the area instead of
   // repeating its first page of results.
   async function expandMarket(client,task,user,config,result) {
-    const companies=(result.companies||[]).filter(c=>c?.name&&!nameKey(c.name).includes('equitable'));
+    const compliance=await complianceFor(user,client),companies=(result.companies||[]).filter(c=>c?.name&&!excludedEmployer(c.name,compliance));
     // A company counts as researched only when one of its source tasks actually
     // ran; one skipped for budget or never reached stays in the rotation.
     const recent=new Set((await client.query(`SELECT DISTINCT t.payload->>'company_key' AS company_key FROM lab_tasks t JOIN lab_runs r ON r.id=t.run_id
@@ -654,10 +688,14 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     await finishRun(task.run_id);return true;
   }
   async function scheduleDue() {
-    const date=now(),day=date.toISOString().slice(0,10);
-    const rows=(await pool.query('SELECT * FROM lab_settings WHERE daily_enabled=true AND daily_hour<=$1',[date.getUTCHours()])).rows;
+    // Each advisor's run is due from their chosen hour in their own time zone,
+    // once per local calendar day. It goes on the queue like any other run.
+    const date=now();
+    const rows=(await pool.query('SELECT * FROM lab_settings WHERE daily_enabled=true')).rows;
     for(const row of rows) {
-      const user={uid:row.user_id,email:row.user_email},key=`daily:${day}`;
+      let clock;try{clock=localClock(date,parse(row.configuration)?.daily_timezone);}catch{clock=localClock(date,'');}
+      if(clock.hour<Number(row.daily_hour))continue;
+      const user={uid:row.user_id,email:row.user_email},key=`daily:${clock.day}`;
       if((await pool.query('SELECT 1 FROM lab_runs WHERE user_id=$1 AND idempotency_key=$2',[user.uid,key])).rows.length)continue;
       try{await enqueue(user,{...parse(row.configuration),daily_budget_micros:Number(row.daily_budget_micros),idempotency_key:key});}
       catch(error){if(error.status===422)await pool.query("INSERT INTO lab_runs(id,user_id,user_email,kind,idempotency_key,status,message,completed_at) VALUES($1,$2,$3,'discovery',$4,'failed',$5,now()) ON CONFLICT(user_id,idempotency_key) DO NOTHING",[randomUUID(),user.uid,user.email,key,error.message]);else throw error;}
@@ -670,7 +708,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     (SELECT COALESCE(jsonb_agg(jsonb_build_object('source',t.source,'company',t.payload->>'company','status',t.status,'errors',COALESCE(t.result->'errors','[]'::jsonb)) ORDER BY t.id),'[]'::jsonb) FROM lab_tasks t WHERE t.run_id=r.id) AS source_results
     FROM lab_runs r WHERE user_id=$1 ORDER BY created_at DESC LIMIT 30`,[user.uid])).rows;}
   async function runDetail(user,id) {
-    const target=await targetFor(user);
+    const target=await targetFor(user),compliance=await complianceFor(user);
     const run=(await pool.query('SELECT * FROM lab_runs WHERE id=$1 AND user_id=$2',[id,user.uid])).rows[0];if(!run)throw fail(404,'Research run not found.');
     const tasks=(await pool.query('SELECT source,payload,status,result,started_at,completed_at,reserved_micros FROM lab_tasks WHERE run_id=$1 ORDER BY started_at NULLS LAST,id',[id])).rows;
     const companies=(await pool.query('SELECT name,website,location,distance_miles,industries,source,source_url,queued,skip_reason FROM lab_companies WHERE run_id=$1 ORDER BY queued DESC,distance_miles NULLS LAST,name',[id])).rows;
@@ -688,7 +726,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     return {saved:true};
   }
   async function metrics(user,days=14) {
-    const target=await targetFor(user);
+    const target=await targetFor(user),compliance=await complianceFor(user);
     days=integer(days,1,90,14);
     // Revalidate previously verified rows against live identity and expiry before reporting totals.
     let cursor='';
@@ -698,7 +736,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       if(!rows.length)break;
       const ids=rows.map(r=>r.id),obs=(await pool.query('SELECT lead_id,payload FROM lab_observations WHERE user_id=$1 AND lead_id=ANY($2::text[])',[user.uid,ids])).rows;
       // Preserve timestamp precision and only downgrade the exact assessment we read.
-      for(const row of rows){const quality=assessLead({...parse(row.payload),id:row.id},obs.filter(o=>o.lead_id===row.id).map(o=>parse(o.payload)),{now:now(),target});if(quality.status!=='verified')await pool.query('UPDATE lab_qualification SET status=$1,score=$2,evaluated_at=now() WHERE lead_id=$3 AND user_id=$4 AND evaluated_at=$5::timestamptz AND status=\'verified\'',[quality.status,quality.score,row.id,user.uid,row.assessment_version]);}
+      for(const row of rows){const quality=assessLead({...parse(row.payload),id:row.id},obs.filter(o=>o.lead_id===row.id).map(o=>parse(o.payload)),{now:now(),target,compliance});if(quality.status!=='verified')await pool.query('UPDATE lab_qualification SET status=$1,score=$2,evaluated_at=now() WHERE lead_id=$3 AND user_id=$4 AND evaluated_at=$5::timestamptz AND status=\'verified\'',[quality.status,quality.score,row.id,user.uid,row.assessment_version]);}
       cursor=ids.at(-1);
     }
     const daily=(await pool.query(`WITH days AS (SELECT generate_series((now() AT TIME ZONE 'UTC')::date-($2::int-1),(now() AT TIME ZONE 'UTC')::date,'1 day'::interval)::date AS day),
@@ -770,7 +808,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       return {run,result,linked,restriction_links,suppressed:contacts.length-permitted.length,lead_ids:await handoffIds()};
     });
   }
-  const advisor=createAdvisorWorkflow({pool,accessible,evaluate,transaction,visibleSQL,now,targetFor});
+  const advisor=createAdvisorWorkflow({pool,accessible,evaluate,transaction,visibleSQL,now,targetFor,complianceFor});
   async function route(request,user) {
     const url=new URL(request.url),path=url.pathname.replace(/\/$/,'');
     const body=async()=>{try{return await request.json();}catch{throw fail(422,'Invalid JSON request.');}};
