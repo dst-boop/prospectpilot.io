@@ -528,6 +528,7 @@ $('activityForm').onsubmit=async e=>{e.preventDefault();if(!current||!currentWor
   if(result.saved){const continueNext=version===leadDetailVersion&&$('continueNext').checked;if(['not_interested','do_not_contact','became_client'].includes(outcome)){workSelected.delete(id);selectionLabel();}if(version===leadDetailVersion){activityDraftBaseline=null;$('detail').close();}activitySaving=false;notice('Outcome saved. Your follow-up and worklist are updated.');await refresh(false);if(continueNext&&!$('detail').open){const next=[...document.querySelectorAll('[data-work-open]')].find(b=>b.dataset.workOpen!==id);if(next)next.click();}}
 }catch(err){if(version===leadDetailVersion){if(err.status===409)activityConflict(current.lead.id,version);else $('activityError').textContent=err.message;}else notice(err.message,true);}finally{activitySaving=false;$('activityEntryFields').disabled=false;$('saveActivity').disabled=false;}};
 $('quickImport').onclick=()=>location.assign('/prospect?import=1');
+$('buildSearchPlan').onclick=()=>location.assign('/audience');
 // Find new prospects starts from a rollover playbook: pick who, say where, go.
 // The full discovery form stays one click away for a custom search.
 let playbooks=null;
