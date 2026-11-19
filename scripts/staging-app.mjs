@@ -2,7 +2,7 @@ import {testerPage,testerProspectScript,testerLabScript} from './staging-tester-
 import {fictionalCSV,fixtureDownloads,allowedStagingCSV} from './staging-fixtures.mjs';
 export {fictionalCSV} from './staging-fixtures.mjs';
 import {stagingLogoutPage,stagingLogoutScript} from './staging-logout.mjs';
-import {stagingPage,stagingProspectScript,stagingUIScript,stagingUIStyle} from './staging-ui.mjs';
+import {stagingPage,stagingAudienceScript,stagingProspectScript,stagingUIScript,stagingUIStyle} from './staging-ui.mjs';
 import {readFileSync} from 'node:fs';
 import {createHandler} from '../handler.mjs';
 import {createResearchLab} from '../research-lab.mjs';
@@ -30,7 +30,7 @@ export function createAuthenticatedStaging({pool,auth,config,loginScript,clock=D
  loginHtml,loginScript,siteStyle:read('site.css'),brandMark:read('brand.svg'),
  labPage:pilotCopy(page('lab.html')),labScript:read('lab-client.js'),labStyle:read('lab.css'),
  prospectPage:pilotCopy(page('prospect.html')).replace('<option value="zoominfo">ZoomInfo export — no API required</option>','').replace('<option value="generic">','<option value="generic" selected>'),prospectScript:stagingProspectScript(read('prospect-client.js')),prospectStyle:read('prospect.css'),prospectJobsScript:read('prospect-jobs-client.js'),
- audienceAssets:{'/audience':pilotCopy(page('audience.html')),'/audience-client.js':read('audience-client.js'),'/audience-catalog.mjs':read('audience-catalog.mjs'),'/audience.css':read('audience.css')}});
+ audienceAssets:{'/audience':pilotCopy(page('audience.html')),'/audience-client.js':stagingAudienceScript(read('audience-client.js')),'/audience-catalog.mjs':read('audience-catalog.mjs'),'/audience.css':read('audience.css')}});
  const refused=(detail,status=403)=>Response.json({detail},{status,headers:{'Cache-Control':'no-store'}});
  return async request=>{
   const url=new URL(request.url);let testerView=false;
