@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
-import {createResearchLab,localClock} from '../research-lab.mjs';
+import {createResearchLab,localClock,SCHEDULED_SOURCES} from '../research-lab.mjs';
+const parseConfig=value=>typeof value==='string'?JSON.parse(value):value;
 
 // The daily run: each advisor's own hour in their own time zone, once per
 // local day, on the existing queue. Sources are stubs with a zero quote, so
@@ -114,21 +115,35 @@ test('a run that cannot start is recorded once for the day, not on every pass',a
   assert.equal((await db.query("SELECT status FROM lab_runs WHERE user_id='empty'")).rows[0].status,'failed');
 });
 
-test('a licensed daily run is held to the plan allowance and the advisor\'s daily budget',async()=>{
-  const licensed={daily_enabled:true,daily_hour:8,configuration:{employers:['Example Manufacturing'],sources:['web_search'],daily_timezone:'America/New_York',daily_budget_micros:10000}};
+test('a scheduled run uses built-in sources only and can never spend',async()=>{
   const quote=source=>source==='web_search'?5000:0;
-  // Within both limits: queued, and nothing is spent by scheduling it.
-  const ok=await scheduled('2026-12-01T15:00:00Z',{quote});
-  await ok.lab.settings({uid:'funded',email:'funded@example.com'},licensed);
-  assert.equal((await ok.lab.scheduleDue()).queued,1);
-  assert.equal(Number((await ok.db.query('SELECT count(*) AS n FROM lab_costs')).rows[0].n),0);
-  // The plan allowance is used up: refused once for the day with the reason.
-  const spent=await scheduled('2026-12-01T15:00:00Z',{quote,allowance:async()=>'Your plan\'s monthly allowance for paid lookups is used up.'});
-  await spent.lab.settings({uid:'spent',email:'spent@example.com'},licensed);
-  assert.equal((await spent.lab.scheduleDue()).refused,1);assert.equal((await spent.lab.scheduleDue()).already,1);
-  assert.match((await spent.db.query("SELECT message FROM lab_runs WHERE user_id='spent'")).rows[0].message,/allowance/);
-  // A daily budget below one query: refused, never queued.
-  const tight=await scheduled('2026-12-01T15:00:00Z',{quote});
-  await tight.lab.settings({uid:'tight',email:'tight@example.com'},{...licensed,configuration:{...licensed.configuration,daily_budget_micros:1000}});
-  assert.equal((await tight.lab.scheduleDue()).refused,1);
+  const paid=(sources)=>({daily_enabled:true,daily_hour:8,configuration:{employers:['Example Manufacturing'],sources,daily_timezone:'America/New_York',daily_budget_micros:10000000}});
+  assert.deepEqual([...SCHEDULED_SOURCES],['public_web','sec','warn']);
+  // A paid source selected with a positive budget and a willing plan: the
+  // scheduled run drops it, runs the built-in source, and reserves nothing.
+  const mixed=await scheduled('2026-12-01T15:00:00Z',{quote});
+  await mixed.lab.settings({uid:'mixed',email:'mixed@example.com'},paid(['web_search','public_web']));
+  assert.equal((await mixed.lab.scheduleDue()).queued,1);
+  const run=(await mixed.db.query("SELECT configuration,budget_micros FROM lab_runs WHERE user_id='mixed'")).rows[0];
+  assert.deepEqual([run.configuration.sources,Number(run.budget_micros)],[['public_web'],0]);
+  while(await mixed.lab.tick());
+  assert.deepEqual([...new Set(mixed.calls.map(([source])=>source))],['public_web'],'licensed search is never called');
+  assert.equal(Number((await mixed.db.query('SELECT count(*) AS n FROM lab_costs')).rows[0].n),0,'no reservation and no charge');
+  assert.equal(Number((await mixed.db.query("SELECT daily_budget_micros AS n FROM lab_settings WHERE user_id='mixed'")).rows[0].n),10000000,'the advisor\'s own budget for manual runs is untouched');
+  // Only a paid source selected: refused once for the day, never run on it.
+  const only=await scheduled('2026-12-01T15:00:00Z',{quote});
+  await only.lab.settings({uid:'paid-only',email:'paid-only@example.com'},paid(['web_search']));
+  assert.equal((await only.lab.scheduleDue()).refused,1);assert.equal((await only.lab.scheduleDue()).already,1);
+  const refused=(await only.db.query("SELECT status,message FROM lab_runs WHERE user_id='paid-only'")).rows;
+  assert.equal(refused.length,1);assert.equal(refused[0].status,'failed');assert.match(refused[0].message,/no built-in source/);
+  while(await only.lab.tick());
+  assert.deepEqual([only.calls.length,Number((await only.db.query('SELECT count(*) AS n FROM lab_costs')).rows[0].n)],[0,0]);
+  // A built-in source that has been given a price is not treated as built-in.
+  const priced=await scheduled('2026-12-01T15:00:00Z',{quote:()=>2000});
+  await priced.lab.settings({uid:'priced',email:'priced@example.com'},paid(['public_web']));
+  assert.equal((await priced.lab.scheduleDue()).refused,1);
+  // A run the advisor starts themselves still honours their licensed selection.
+  const manual=await scheduled('2026-12-01T15:00:00Z',{quote});
+  const started=await manual.lab.enqueue({uid:'manual',email:'manual@example.com'},{employers:['Example Manufacturing'],sources:['web_search'],daily_budget_micros:10000000});
+  assert.deepEqual(parseConfig(started.configuration).sources,['web_search']);
 });

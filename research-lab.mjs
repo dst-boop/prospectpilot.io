@@ -2,7 +2,7 @@ import {captureIdentityEvidence,transferIdentityEvidence,holdHistoricalArrival,h
 import {createAdvisorWorkflow,withDirectoryRestrictions} from './advisor-workflow.mjs';
 import {randomUUID} from 'node:crypto';
 import {normalizeLead, mergeLead, isUsableStoredLead} from './generated/worker.mjs';
-import {assessLead, candidateKeys, leadIdentity, validateObservation, nameKey, US_STATES, researchCSV, hash, qualificationVersion, sourceStrength, fieldKey, leadScores, scoreWeights, complianceProfile, excludedEmployer, DEFAULT_COMPLIANCE} from './lead-quality.mjs';
+import {assessLead, candidateKeys, leadIdentity, validateObservation, nameKey, US_STATES, researchCSV, hash, qualificationVersion, sourceStrength, fieldKey, leadScores, scoreWeights, complianceProfile, excludedEmployer, effectiveExclusions, DEFAULT_COMPLIANCE} from './lead-quality.mjs';
 export {sourceStrength};
 import {matchPlans, selectEmployers, catalogSummary, planResearchTargets} from './plan-catalog.mjs';
 import {applyPlaybook, findPlaybook, playbookChoices} from './rollover-playbooks.mjs';
@@ -37,6 +37,9 @@ function timeZone(value) {
   try{new Intl.DateTimeFormat('en-US',{timeZone:zone});}catch{throw fail(422,'Choose a supported time zone.');}
   return zone;
 }
+// The sources a scheduled run may use: the built-in free ones. Licensed search
+// is never on this list.
+export const SCHEDULED_SOURCES=Object.freeze(['public_web','sec','warn']);
 // The calendar day and hour it is for an advisor, following daylight saving.
 export function localClock(date,zone) {
   if(!zone)return {day:date.toISOString().slice(0,10),hour:date.getUTCHours()};
@@ -583,7 +586,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       if(supplied.compliance!==undefined) {
         const profile=complianceProfile(supplied.compliance);
         if(profile===DEFAULT_COMPLIANCE)throw fail(422,'Name your firm to save compliance settings.');
-        if(profile.excluded_employers.some(name=>nameKey(name).length<3))throw fail(422,'Use at least three letters for each excluded employer.');
+        if(effectiveExclusions(profile).some(name=>nameKey(name).length<3))throw fail(422,'Use at least three letters for your firm and each excluded employer.');
         config.compliance=profile;
       } else {
         const kept=parse((await pool.query('SELECT configuration FROM lab_settings WHERE user_id=$1',[user.uid])).rows[0]?.configuration)?.compliance;
@@ -800,9 +803,18 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
         // A lapsed subscription gets no scheduled work, free or licensed. The
         // schedule stays saved and resumes when the subscription does.
         if(!await subscriptionActive(pool,user.uid)){summary.inactive++;continue;}
+        // Scheduled runs use built-in sources only and can spend nothing: the
+        // advisor's licensed sources and budget apply to runs they start
+        // themselves. With no built-in source selected the run is refused for
+        // the day; it never falls back to a paid one.
+        const saved=parse(row.configuration)||{};
+        const builtIn=(Array.isArray(saved.sources)?saved.sources:['public_web','sec','warn']).filter(source=>SCHEDULED_SOURCES.includes(source)&&sources.quote(source)===0);
         // An earlier run still on the queue is returned as a replay: today's
         // is then tried again on a later pass, never queued twice.
-        try{const run=await enqueue(user,{...parse(row.configuration),daily_budget_micros:Number(row.daily_budget_micros),idempotency_key:key});run.replayed?summary.already++:summary.queued++;}
+        try{
+          if(!builtIn.length)throw fail(422,'Daily run skipped: no built-in source is selected. Licensed search runs only when you start a run yourself.');
+          const run=await enqueue(user,{...saved,sources:builtIn,daily_budget_micros:0,idempotency_key:key});run.replayed?summary.already++:summary.queued++;
+        }
         catch(error){if(error.status!==422)throw error;summary.refused++;await pool.query("INSERT INTO lab_runs(id,user_id,user_email,kind,idempotency_key,status,message,completed_at) VALUES($1,$2,$3,'discovery',$4,'failed',$5,now()) ON CONFLICT(user_id,idempotency_key) DO NOTHING",[randomUUID(),user.uid,user.email,key,error.message]);}
       } catch(error) {
         // Left without a run row, so the next pass retries this advisor.

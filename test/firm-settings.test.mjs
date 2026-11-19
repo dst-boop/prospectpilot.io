@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
 import {createResearchLab} from '../research-lab.mjs';
-import {assessLead,leadScores,complianceProfile,excludedEmployer,DEFAULT_COMPLIANCE} from '../lead-quality.mjs';
+import {assessLead,leadScores,complianceProfile,excludedEmployer,effectiveExclusions,DEFAULT_COMPLIANCE} from '../lead-quality.mjs';
 
 // The advisor's own firm and its affiliates are a setting per advisor, not
 // code. An advisor who has saved nothing keeps the original Equitable rule.
@@ -53,6 +53,7 @@ test('settings are per advisor, validated, and survive saving other settings',as
   assert.deepEqual((await lab.settings(a)).configuration.compliance,DEFAULT_COMPLIANCE,'the default is shown before anything is saved');
   await assert.rejects(lab.settings(a,{configuration:{compliance:{firm_name:'',excluded_employers:['Northwind']}}}),{status:422});
   await assert.rejects(lab.settings(a,{configuration:{compliance:{firm_name:'Northwind Advisors',excluded_employers:['ab']}}}),{status:422});
+  await assert.rejects(lab.settings(a,{configuration:{compliance:{firm_name:'NW',excluded_employers:[]}}}),{status:422});
   await assert.rejects(lab.settings(a,{configuration:{compliance:null}}),{status:422});
   await assert.rejects(lab.settings(a,{configuration:{compliance:[]}}),{status:422});
   assert.deepEqual((await lab.settings(a,{configuration:{compliance:firm}})).configuration.compliance,firm);
@@ -82,3 +83,22 @@ test('imports reject people at the advisor\'s excluded employers, not at another
   assert.equal(theirs.result.rejected,1,'the default profile still excludes the Equitable employee');
 });
 
+
+test('the own firm is excluded even with no affiliates listed',async()=>{
+  const solo={firm_name:'Fabrikam Wealth',excluded_employers:[]};
+  assert.deepEqual(effectiveExclusions(solo),['Fabrikam Wealth']);
+  assert.deepEqual(effectiveExclusions(DEFAULT_COMPLIANCE),['Equitable Advisors','Equitable']);
+  assert.equal(excludedEmployer('Fabrikam Wealth LLC',solo),'Fabrikam Wealth');
+  assert.equal(excludedEmployer('Fabrikam Tools',solo),'','an unrelated employer that shares a word is not excluded');
+  assert.equal(assessLead({...lead,company:'Fabrikam Wealth'},[],{now,compliance:solo}).status,'excluded');
+  assert.notEqual(assessLead({...lead,company:'Northwind Mutual'},[],{now,compliance:solo}).status,'excluded');
+  // Through the saved setting: advisor A's firm is rejected on import with zero
+  // affiliates; advisor B, who saved nothing, keeps the default and is unaffected.
+  const {lab}=await fixture(),a={uid:'advisor-a',email:'a@example.com'},b={uid:'advisor-b',email:'b@example.com'};
+  assert.deepEqual((await lab.settings(a,{configuration:{compliance:solo}})).configuration.compliance,solo);
+  const csv=suffix=>'First Name,Last Name,Company,Title,Email,Country\n'+[['Jamie','Example','Fabrikam Wealth'],['Robin','Sample','Equitable Holdings'],['Casey','Placeholder','Northwind Mutual']]
+    .map(([first,last,company])=>`${first},${last},${company},Director,${first.toLowerCase()}${suffix}@synthetic.example,US`).join('\n');
+  assert.equal((await lab.importCSV(a,{source:'Test file',csv:csv('')})).result.rejected,1,'only A\'s own firm is rejected for A');
+  assert.equal((await lab.importCSV(b,{source:'Test file',csv:csv('.b')})).result.rejected,1,'B still rejects only the Equitable employee');
+  assert.deepEqual((await lab.settings(b)).configuration.compliance,DEFAULT_COMPLIANCE);
+});
