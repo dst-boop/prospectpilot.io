@@ -91,14 +91,16 @@ test('a completed checkout puts the advisor on the plan they paid for, once',()=
   assert.ok(logs.every(l=>!l.includes('advisor@example.com')),'webhook logs carry ids, not emails');
 }));
 
-test('plan changes, lapses and cancellation follow the subscription; lapsed plans pause paid lookups',()=>fixture(async({deliver,row,stripe,jobs,search})=>{
+test('plan changes, lapses and cancellation follow the subscription; lapsed plans pause paid lookups',()=>fixture(async({deliver,row,stripe,jobs,search,db})=>{
   await deliver(completed());
   stripe.set(subscription({items:{data:[{price:{id:'price_pro'},current_period_end:1790000000}]}}));
   await deliver(updated('evt_2'));
   assert.equal((await row()).plan,'pro');
   assert.equal((await search()).status,'completed');
+  assert.equal(await jobs.subscriptionActive(db,advisor.uid),true);assert.equal(await jobs.subscriptionActive(db,'never-subscribed'),true,'no row and hand-assigned rows have no status');
   stripe.set(subscription({status:'past_due',items:{data:[{price:{id:'price_pro'}}]}}));
   await deliver(updated('evt_3'));
+  assert.equal(await jobs.subscriptionActive(db,advisor.uid),false,'scheduled work pauses with a lapsed subscription');
   const plan=(await jobs.summary(advisor)).plan;
   assert.equal(plan.status,'past_due');assert.equal(plan.monthly_allowance_micros,0);
   const paused=await search();
