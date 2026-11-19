@@ -199,8 +199,9 @@ function assessAdviceDecision(lead, observations, {now, plans}) {
 
 // Whose employees an advisor may not prospect: their own firm and its
 // affiliates. This is one advisor's exclusion profile, keyed by their uid in
-// lab_settings.configuration.compliance. It is not shared firm policy and
-// grants no firm authority. An advisor who has never saved one keeps the
+// lab_settings.configuration.compliance. It is an employer filter, not
+// compliance clearance: it is not shared firm policy and grants no firm
+// authority. An advisor who has never saved one keeps the
 // original Equitable rule, so no existing exclusion is lifted by default.
 export const DEFAULT_COMPLIANCE = Object.freeze({firm_name: 'Equitable Advisors', excluded_employers: Object.freeze(['Equitable'])});
 export function complianceProfile(input) {
