@@ -98,9 +98,14 @@ test('within a worklist group the advisor\'s formula decides the order',async()=
       await db.exec(readFileSync(new URL('../'+file,import.meta.url),'utf8'));
     const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
     const lab=createResearchLab({pool,now:()=>now,sources:{readiness:{}}}),user={uid:'owner',email:'owner@example.com'};
-    // Reachable but weakly sourced, against well sourced but unreachable.
+    // A reviewed route and a title conflict, versus stronger consistent professional evidence.
     await lab.importCSV(user,{source:'Web search',csv:'First Name,Last Name,Company,Email,Phone,State,Country\nAlex,Reach,Alpha Co,alex@alpha.example,+12125550100,NY,US'});
     await lab.importCSV(user,{source:'ZoomInfo CSV',csv:'First Name,Last Name,Company,LinkedIn URL,State,Country\nBlair,Sourced,Beta Co,https://www.linkedin.com/in/blair-sourced,NY,US'});
+    const alex=(await lab.list(user,{search:'Alex'})).leads[0];
+    await lab.review(user,alex.lead.id,{field:'contact',value:{channel:'email',address:'alex@alpha.example',identity_confirmed:true,outreach_basis:'firm_cleared'},
+      verdict:'confirmed',source:'Synthetic identity proof',note:'Synthetic direct route.',observed_at:now.toISOString(),identity_signature:alex.quality.identity_signature});
+    await db.query("UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{field_values}',COALESCE(payload::jsonb->'field_values','{}'::jsonb)||$2::jsonb)::text WHERE id=$1",
+      [alex.lead.id,JSON.stringify({current_title:[{value:'Associate'},{value:'Director'}]})]);
     const order=async weights=>{await lab.settings(user,{configuration:{score_weights:weights}});return (await lab.advisor.worklist(user,{view:'all'})).items.map(i=>i.lead.first_name);};
     assert.deepEqual(await order({qualification:0,opportunity:0,confidence:0,contactability:1}),['Alex','Blair']);
     assert.deepEqual(await order({qualification:0,opportunity:0,confidence:1,contactability:0}),['Blair','Alex']);

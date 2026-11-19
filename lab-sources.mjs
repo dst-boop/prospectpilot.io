@@ -2,6 +2,7 @@ import {publicGet, createCachedGet} from './native-research.mjs';
 import {parsePublicWebPage,discoverMarketCompanies} from './generated/worker.mjs';
 import {nameKey, publicURL, linkedinURL} from './lead-quality.mjs';
 import {robotsAllowed} from './robots-policy.mjs';
+import {findPlaybook} from './rollover-playbooks.mjs';
 
 const plain = html => String(html).replace(/<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>/gi,' ').replace(/<[^>]+>/g,' ').replace(/&nbsp;|&#160;/g,' ').replace(/&amp;/g,'&').replace(/\s+/g,' ').trim();
 const blockedHost = host => /(^|\.)(linkedin\.com|facebook\.com|instagram\.com|fastpeoplesearch\.com|familytreenow\.com|whitepages\.com|fec\.gov)$/.test(host);
@@ -102,6 +103,7 @@ export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicr
   }
   async function run(source, employer) {
     const signal=AbortSignal.timeout(70000), errors=[], candidates=[], documents=[];
+    const newsTerms=findPlaybook(employer.discovery_focus)?.configuration.news_terms;
     if (source==='warn') {
       if (!warn) return {status:'unavailable',candidates:[],errors:['WARN is not configured.']};
       const result=await warn.research({company:employer.company,city:employer.city,state:employer.state,location:[employer.city,employer.state].filter(Boolean).join(', ')});
@@ -209,11 +211,12 @@ export function createLabSources({get=publicGet,warn,searchKey='',searchCostMicr
     // the free public news index is the next route: up to three articles that
     // name the company, each robots-checked like any other page.
     let articlesRead=0;
-    if(fallbacks&&source!=='web_search'&&!candidates.length&&!signal.aborted) {
+    if(fallbacks&&source!=='web_search'&&(!candidates.length||newsTerms?.length)&&!signal.aborted) {
       used.push('news');
       try {
         const phrase=employer.company.replace(/[^\p{L}\p{N}& ]/gu,' ').replace(/\s+/g,' ').trim();
-        const data=phrase.length>=3?await json('https://api.gdeltproject.org/api/v2/doc/doc?'+new URLSearchParams({query:`"${phrase}" (owner OR president OR founder OR CEO OR "vice president") sourcelang:english`,mode:'artlist',format:'json',maxrecords:'10',timespan:'3months'}),signal,2000000):{articles:[]};
+        const terms=newsTerms?.map(word=>`"${word}"`).join(' OR ')||'owner OR president OR founder OR CEO OR "vice president"';
+        const data=phrase.length>=3?await json('https://api.gdeltproject.org/api/v2/doc/doc?'+new URLSearchParams({query:`"${phrase}" (${terms}) sourcelang:english`,mode:'artlist',format:'json',maxrecords:'10',timespan:'3months'}),signal,2000000):{articles:[]};
         const articles=[...new Set((Array.isArray(data.articles)?data.articles:[]).map(a=>publicURL(a?.url)).filter(Boolean))];
         let fromNews=0;
         for(const url of articles){

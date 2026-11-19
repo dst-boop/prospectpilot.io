@@ -5,7 +5,7 @@ import {PGlite} from '@electric-sql/pglite';
 import {createProspectWorkspace} from '../prospect-workspace.mjs';
 import {normalizeContact,parseContactCSV,phoneReadiness,preparationStep} from '../prospect-data-quality.mjs';
 const user={uid:'zoominfo-owner'},other={uid:'other'};
-async function fixture(fn){const db=new PGlite();try{await db.exec(readFileSync(new URL('../migrations/008-prospect-workspace.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/020-list-sharing.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/017-forget.sql',import.meta.url),'utf8'));const app=createProspectWorkspace({pool:{query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})}});await fn(app,db);}finally{await db.close();}}
+async function fixture(fn){const db=new PGlite();try{await db.exec(readFileSync(new URL('../migrations/008-prospect-workspace.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/020-list-sharing.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/017-forget.sql',import.meta.url),'utf8'));await db.exec(readFileSync(new URL('../migrations/034-historical-identities.sql',import.meta.url),'utf8'));const app=createProspectWorkspace({pool:{query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})}});await fn(app,db);}finally{await db.close();}}
 const header='First Name,Last Name,Company Name,ZoomInfo Contact ID,ZoomInfo Company ID,Contact Accuracy Score,Contact Accuracy Grade,Job Start Date,Valid Date,Last Updated Date,Direct Phone Number,Mobile phone,Direct Phone Do Not Call,Mobile Phone Do Not Call,Website,Previous Company Name';
 const line='Avery,Example,Example Co,-12345,67890,91,A+,"June 01, 2024",2026-01-01,2026-02-01,2125550100 ext 3,2125550199,false,true,https://example.com,Former Co';
 const input={csv:header+'\n'+line,format:'zoominfo'};
@@ -35,9 +35,9 @@ test('same phone in both channels cannot bypass a direct restriction',()=>{
  const c={phone:'+12125550123',mobile_phone:'+12125550123',phone_restrictions:{direct:true,mobile:false}};assert.equal(phoneReadiness(c).primary_blocked,true);assert.equal(phoneReadiness(c).mobile_blocked,true);
  assert.equal(preparationStep({...c,suppressed:true}).code,'suppressed');assert.equal(preparationStep({zoominfo:{previous_company:'Former'}}).code,'job_change');
 });
-test('an unsupported restricted direct number does not block a distinct unrestricted mobile fallback',()=>{
+test('a restricted direct claim conservatively holds a mobile fallback even when raw appears distinct',()=>{
  const c=normalizeContact({'First Name':'Avery','Last Name':'Example','Company':'Example Co','Direct Phone Number':'2125550100 ext 3','Mobile Phone':'2125550199','Direct Phone Do Not Call':'true','Mobile Phone Do Not Call':'false'},'fixture',{importing:true});
- assert.equal(c.phone_origin,'mobile');assert.equal(phoneReadiness(c).primary_blocked,false);assert.equal(phoneReadiness(c).mobile_blocked,false);
+ assert.equal(c.phone_origin,'mobile');assert.equal(phoneReadiness(c).primary_blocked,true);assert.equal(phoneReadiness(c).mobile_blocked,true);assert.equal(phoneReadiness(c).restriction_review,true);
 });
 test('first provider ID association cannot silently merge a weak namesake match',()=>fixture(async app=>{
  const csv='First Name,Last Name,Company\nAvery,Example,Example Co';await app.importCSV(user,{csv});

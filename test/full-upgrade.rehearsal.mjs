@@ -71,7 +71,7 @@ for (const backend of ['pglite','postgres']) {
   const configured = Boolean(process.env.STAGING_DATABASE_URL || process.env.POSTGRES_TEST_URL);
   const skip = backend === 'postgres' && !configured && process.env.UPGRADE_REQUIRE_POSTGRES !== '1'
     ? 'Real PostgreSQL16 requires the explicit disposable loopback test database.' : false;
-  test(`full upgrade ${backend}: pinned 029 -> 030–032 -> PR100 application rollback`, {skip, timeout: 180000}, async t => {
+  test(`full upgrade ${backend}: pinned 029 -> 030–033 -> PR100 application rollback`, {skip, timeout: 180000}, async t => {
     assert.notEqual(process.env.NODE_ENV, 'production');
     const config = validateStagingDatabaseUrl(process.env);
     const network = installSyntheticNetworkGuard();
@@ -94,7 +94,8 @@ for (const backend of ['pglite','postgres']) {
       };
       await verifyKeys(db, fixture);
       await expectSQLFailure(db, "INSERT INTO lab_observations(lead_id,user_id,field,payload) VALUES('legacy-lead',$1,'personal_event','{}')", [owner.uid], '23514');
-      for (const failureAt of ['030','031','032']) {
+      await expectSQLFailure(db, "INSERT INTO lab_observations(lead_id,user_id,field,payload) VALUES('legacy-lead',$1,'planning_decision','{}')", [owner.uid], '23514');
+      for (const failureAt of ['030','031','032','033']) {
         const injected = {connect: async () => ({query: async (sql, values) => {
           const result = await db.query(sql, values);
           if (sql.startsWith('INSERT INTO prospectpilot_migrations') && values?.[0] === failureAt) await db.query('SELECT * FROM deliberately_missing_upgrade_relation');
@@ -105,10 +106,10 @@ for (const backend of ['pglite','postgres']) {
         assert.deepEqual(await schemaSnapshot(db), structure, `DDL/history rollback after ${failureAt}`);
         assert.equal(await count(db,'prospectpilot_migrations'),29);
       }
-      t.diagnostic('Injected failures after each of 030, 031 and 032 restore all baseline data, schema and migration history.');
+      t.diagnostic('Injected failures after each migration from 030 through 033 restore the baseline data, schema and ledger.');
       await migrate(db.pool);
       await assertLegacyIntact();
-      assert.equal(await count(db,'prospectpilot_migrations'),32);
+      assert.equal(await count(db,'prospectpilot_migrations'),33);
       const upgradedStructure = await schemaSnapshot(db);
       assert.deepEqual(upgradedStructure.indexes.filter(row => structure.tables.some(table => table.tablename === row.tablename)),structure.indexes);
       assert.deepEqual(upgradedStructure.constraints.filter(row => structure.tables.some(table => table.tablename === row.table_name) && row.conname !== 'lab_observations_field_check'), structure.constraints.filter(row => row.conname !== 'lab_observations_field_check'));
@@ -119,6 +120,7 @@ for (const backend of ['pglite','postgres']) {
       assert.deepEqual(await schemaSnapshot(db), upgradedStructure);
       await expectSQLFailure(db, "INSERT INTO lab_observations(lead_id,user_id,field,payload) VALUES('legacy-lead',$1,'inferred_relationship','{}')", [owner.uid], '23514');
       await db.query("INSERT INTO lab_observations(lead_id,user_id,field,payload) VALUES('legacy-lead',$1,'personal_event','{\"source\":\"synthetic\",\"reviewed\":false}')", [owner.uid]);
+      await db.query("INSERT INTO lab_observations(lead_id,user_id,field,payload) VALUES('legacy-lead',$1,'planning_decision','{\"source\":\"synthetic\"}')", [owner.uid]);
       await db.query("INSERT INTO prospect_autopilot_runs(id,user_id,list_id,steps,approved_micros) VALUES('new-run',$1,$2,'[]',0)", [owner.uid,fixture.list.id]);
       await expectSQLFailure(db, "INSERT INTO prospect_autopilot_runs(id,user_id,list_id,steps,approved_micros,status) VALUES('duplicate-run',$1,$2,'[]',0,'paused')", [owner.uid,fixture.list.id], '23505', 'prospect_autopilot_one_live');
       for (const [column,value] of [['cursor',-1],['approved_micros',-1],['status','unknown']]) await expectSQLFailure(db, `UPDATE prospect_autopilot_runs SET ${column}=$1 WHERE id='new-run'`, [value], '23514');
@@ -153,7 +155,7 @@ for (const backend of ['pglite','postgres']) {
       t.diagnostic('Legacy rows/unique keys, 030 evidence check, 031 live-run constraints, 032 FK/owner keys and owner/list privacy pass.');
       const beforeRollback = await tableSnapshot(db);
       await rollback.migrate(db.pool);
-      assert.deepEqual(await tableSnapshot(db),beforeRollback,'Application rollback retains 030–032 data and migration records');
+      assert.deepEqual(await tableSnapshot(db),beforeRollback,'Application rollback retains 030–033 data and migration records');
       assert.deepEqual(await schemaSnapshot(db),upgradedStructure);
       const oldApp = rollback.createProspectWorkspace({pool:db.pool});
       assert.equal(oldApp.captureNetworking,undefined);

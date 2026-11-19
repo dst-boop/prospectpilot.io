@@ -23,6 +23,18 @@ export const ZOOMINFO_ALIASES = {
  job_start_date:['Job Start Date'], last_job_change_date:['Last Job Change Date'], previous_company:['Previous Company Name'], department:['Department'],
  direct_do_not_call:['Direct Phone Do Not Call','Direct Phone DoNotCall','Direct Do Not Call'], mobile_do_not_call:['Mobile Phone Do Not Call','Mobile Phone DoNotCall','Mobile Do Not Call'],
 };
+// Historical workbook context is unverified source text, not qualification or contact permission.
+const IMPORT_NOTE_HEADERS = {'Full Name':'full_name','Location':'location','401(k) Rollover Signal':'rollover_context'};
+for(const [header,key] of Object.entries(IMPORT_NOTE_HEADERS))CONTACT_COLUMNS.set(columnKey(header),'import_note_'+key);
+const nameReviewMessage='Full Name needs review: add separately reviewed First Name and Last Name columns; names are not split automatically.';
+function importedNotes(mapped){
+ return Object.values(IMPORT_NOTE_HEADERS).flatMap(kind=>{
+  const text=String(mapped['import_note_'+kind]??'').normalize('NFKC').trim();
+  if(!text)return [];
+  if(text.length>1000||/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text))throw fail('Imported '+kind.replaceAll('_',' ')+' note must be at most 1,000 characters without unsupported control characters.');
+  return [{kind,text,status:'unverified'}];
+ });
+}
 for(const [key,aliases] of Object.entries(ZOOMINFO_ALIASES))for(const alias of [...aliases,'zoominfo_'+key])CONTACT_COLUMNS.set(columnKey(alias),'zoominfo_'+key);
 // Why this person is on today's list: the daily-leads delivery carries the
 // trigger with its date and source, so the review shows why, not just who.
@@ -100,6 +112,7 @@ export function normalizeContact(raw, source, {importing=false}={}) {
     const target = CONTACT_COLUMNS.get(columnKey(key));
     if (target) mapped[target] = value;
   }
+  if(importing&&mapped.import_note_full_name&&(!mapped.first_name||!mapped.last_name))throw fail(nameReviewMessage);
   const contact = Object.fromEntries(Object.keys(CONTACT_ALIASES).map(key => [key, importing&&['phone','mobile_phone'].includes(key)?String(mapped[key]??'').normalize('NFKC').trim():cleanField(mapped[key], key)]));
   if (![contact.first_name, contact.last_name].every(value => /\p{L}/u.test(value))) throw fail('First and last name must each contain a letter.');
   contact.email = contactEmail(contact.email);
@@ -114,6 +127,7 @@ export function normalizeContact(raw, source, {importing=false}={}) {
   contact.phone_origin=contact.phone?'direct':contact.mobile_phone?'mobile':'';
   if(!contact.phone)contact.phone=contact.mobile_phone;
   if(importing){
+   const notes=importedNotes(mapped);if(notes.length)contact.imported_notes=notes;
    const {data,warnings}=providerMetadata(mapped);contact.zoominfo=data;contact.import_warnings=warnings;
    contact.phone_import={};for(const [key,value,normalized] of [['direct',rawPhone,contactPhone(rawPhone,contact.country)],['mobile',rawMobile,contact.mobile_phone]])if(value&&!optionalBlank(value))contact.phone_import[key]={raw:value,status:normalized?'normalized':'needs_review'};
    contact.phone_restrictions={direct:data.direct_do_not_call??null,mobile:data.mobile_do_not_call??null};
@@ -177,7 +191,7 @@ export function parseContactCSV(input) {
   if (headers.some(header => header.length>200)) throw fail('CSV headers must be no longer than 200 characters.');
   const known = headers.map(header => CONTACT_COLUMNS.get(columnKey(header))).filter(Boolean);
   if (new Set(known).size !== known.length || new Set(headers.map(columnKey)).size !== headers.length) throw fail('Duplicate CSV columns.');
-  if (!known.includes('first_name') || !known.includes('last_name')) throw fail('Include First Name and Last Name columns.');
+  if (!known.includes('first_name') || !known.includes('last_name')) throw fail(known.includes('import_note_full_name')?nameReviewMessage:'Include First Name and Last Name columns.');
   return {headers, records, mapped_columns: known, ignored_columns: headers.filter(header => !CONTACT_COLUMNS.has(columnKey(header)))};
 }
 
@@ -187,9 +201,11 @@ export const sourceFreshnessCutoff = (now = new Date()) => new Date(Number(now) 
 
 export function phoneReadiness(c){
  const direct=c.phone_restrictions?.direct??null,mobile=c.phone_restrictions?.mobile??null;
- // Old records may have a mobile copied into the primary phone field.
- const fallback=c.phone_origin==='mobile',sameDirectMobile=!fallback&&!!c.mobile_phone&&c.phone===c.mobile_phone;
- return {primary_blocked:c.suppressed===true||(fallback?mobile===true:direct===true||sameDirectMobile&&mobile===true),mobile_blocked:c.suppressed===true||mobile===true||sameDirectMobile&&direct===true,direct_do_not_call:direct,mobile_do_not_call:mobile};
+ const fallback=c.phone_origin==='mobile',same=!!c.phone&&c.phone===c.mobile_phone;
+ // A cumulative direct restriction is not reliably bound to the latest raw field.
+ // Bounded history cannot prove a fallback number was never the restricted direct route.
+ const restriction_review=fallback&&direct===true;
+ return {primary_blocked:c.suppressed===true||direct===true||(fallback?mobile===true:same&&mobile===true),mobile_blocked:c.suppressed===true||mobile===true||same&&direct===true,direct_do_not_call:direct,mobile_do_not_call:mobile,restriction_review};
 }
 
 export function preparationStep(c){
@@ -204,6 +220,8 @@ export function preparationStep(c){
 
 export function contactQuality(contact, now = new Date()) {
   const issues = [];
+  if(contact.imported_notes?.some(note=>note.kind==='rollover_context'))issues.push({code:'unverified_import_note',message:'Imported rollover context is unverified source text, not evidence of plan ownership, assets, eligibility or permission to contact.'});
+  if(phoneReadiness(contact).restriction_review)issues.push({code:'phone_restriction_review',message:'An explicit direct-phone restriction has uncertain number linkage. The mobile fallback is held until the restricted route can be distinguished.'});
   for(const [route,phone] of Object.entries(contact.phone_import||{}))if(phone.status==='needs_review')issues.push({code:'phone_review',message:`Imported ${route} phone needs review; original value retained and excluded from active phone fields.`});
   for(const message of contact.import_warnings||[])issues.push({code:'provider_metadata_review',message});
   for(const route of ['direct','mobile'])if(contact.phone_restrictions?.[route]===true)issues.push({code:'do_not_call',message:`${route==='direct'?'Direct':'Mobile'} phone has a do-not-call flag. It is omitted from contact exports.`});

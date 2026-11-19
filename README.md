@@ -252,11 +252,9 @@ cadence field a release carrying new pacing rules verified identically to the
 one it replaced, because every other version string on the endpoint had been
 live since before pacing shipped and only the opaque release identifier moved.
 
-**A verified quality lead must meet all five reviewed criteria:** age 45–73 inclusive, US residence, retained retirement assets with an eligible distribution or IRA transfer, an identified phone/email/LinkedIn contact route, and a disclosed net-worth lower bound of at least $250,000 excluding the home and net of liabilities.
+**An advice lead qualifies after three reviews.** Confirm a specific planning decision with the person, review US residence, and document a direct contact route cleared for the intended outreach. Start by responding to advice requests and accepted introductions. Put due commitments, near-term decisions, and current public context in the worklist according to the [advice-decision policy](ADVICE-DECISION-POLICY.md).
 
-Financial criteria require participant disclosure or an authorized financial document, with research consent recorded. Employer plan assets, job titles, graduation years, property values and WARN notices do not establish an individual's wealth or retirement holdings. The 0–100 score measures evidence completeness, not a probability of wealth, transfer eligibility, or investment suitability.
-
-Traditional/contributory, rollover, and Roth IRAs support reviewed trustee-to-trustee transfers to matching tax-type destinations. Employer plans retain the existing distribution routes and in-service permission check. Unknown, stale, conflicting or suppressed records do not qualify. Age evidence uses whole attained years and accounts conservatively for possible birthdays; a 73-year-old needs current-day evidence to remain confirmed.
+For a transfer, record participant disclosure or an authorized document and review the account type and distribution rules. Use a matching destination for IRA trustee-to-trustee transfers and verify plan permission before an in-service distribution. This is separate from qualifying for a planning conversation. Migration **033** enables recording planning-decision evidence.
 
 ## Isolated signed-in staging smoke
 

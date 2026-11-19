@@ -1,5 +1,5 @@
-// "Delete this person" — one action that removes a person and everything the
-// app learned about them, wherever this user holds it: the contact directory
+// "Delete this person" removes the associated records this user holds:
+// the contact directory
 // record, the Research Lab lead it is linked to, their observations,
 // qualification, advisor activity, rest periods, call records, research jobs,
 // the inputs and results of provider tasks about them, and their name in
@@ -13,14 +13,19 @@
 //  - the lead ledger (lead_acquisitions) keeps the lead's date and source and
 //    its charges keep pointing at it, so cost per lead does not change after
 //    the fact; its link to the contact or lab lead becomes NULL;
-//  - a tombstone of HASHED identity keys, so an import or a research run
-//    cannot quietly bring the person back. Hashes, not keys: the deletion
-//    record must not itself be a copy of the person.
+//  - tombstones of HASHED known identity keys, checked on future imports and
+//    research writes. Older or changed identifiers may not be recognized.
+//    Hashes, not raw keys: minimize the retained identity information.
+// Old import reports whose associations were already discarded may retain
+// personal details; current stable report references improve future cleanup.
+// This operation is not a guarantee of complete erasure or reimport prevention.
 //
 // Ported from Lead Qualifier's /api/leads/forget (dst-boop/lead-qualifier,
 // ADR and LEARNINGS "There was no way to delete one person").
 import {createHash,createHmac} from 'node:crypto';
 import {candidateKeys,hash} from './lead-quality.mjs';
+import {previousIdentitySecrets} from './identity-keyring.mjs';
+import {retireIdentityEvidence} from './historical-identities.mjs';
 import {normalizeContact} from './prospect-data-quality.mjs';
 
 export const LEAD_TEAM='wealth-management';
@@ -46,7 +51,7 @@ export const tombstone=(uid,key)=>secret()?createHmac('sha256',secret()).update(
 export async function forgottenKeys(client,uid,keys){
   const unique=[...new Set(keys.filter(Boolean))];
   if(!uid||!unique.length)return new Set();
-  const forms=unique.map(key=>[...new Set([tombstone(uid,key),legacyTombstone(uid,key)])]);
+  const forms=unique.map(key=>[...new Set([tombstone(uid,key),legacyTombstone(uid,key),...previousIdentitySecrets().map(secret=>createHmac('sha256',secret).update(`prospectpilot-forget-v2\0${uid}\0${key}`).digest('hex'))])]);
   const hit=new Set((await client.query('SELECT key_hash FROM prospect_forgotten WHERE user_id=$1 AND key_hash=ANY($2::text[])',[uid,forms.flat()])).rows.map(row=>row.key_hash));
   return new Set(unique.filter((key,i)=>forms[i].some(hash=>hit.has(hash))));
 }
@@ -103,6 +108,9 @@ export async function forgetPerson(client,user,{contactId='',leadId=''},{contact
   for(const uid of holders)if(holderKeys(uid).length)
     await client.query('INSERT INTO prospect_forgotten(user_id,key_hash) SELECT $1,unnest($2::text[]) ON CONFLICT DO NOTHING',[uid,holderKeys(uid).map(key=>tombstone(uid,key))]);
 
+  for(const row of contacts.values())await retireIdentityEvidence(client,user.uid,'contact',row.id,parse(row.payload));
+  for(const row of leads.values())if(row.owner_user_id)await retireIdentityEvidence(client,row.owner_user_id,'lead',row.id,parse(row.payload),{additionalHolders:[user.uid]});
+
   if(contactIds.length){
     // Queued work about them is cancelled; finished work keeps its row (the
     // charge ledger references it) but loses the person's details.
@@ -111,11 +119,19 @@ export async function forgetPerson(client,user,{contactId='',leadId=''},{contact
   // Import reports list each row by name. The contact's source history says
   // which import and row it came from, which survives a later name correction
   // and cannot catch a namesake; those rows lose the name and issues.
+  // Stable report-row references outlive bounded display history. Match only
+  // this owner's contact IDs; never scrub a namesake by display name. Retain
+  // the provenance fallback below for reports created before references existed.
+  if(contactIds.length)await client.query(`UPDATE prospect_imports SET result=jsonb_set(result,'{rows}',
+    (SELECT jsonb_agg(CASE WHEN r->>'contact_id'=ANY($2::text[]) THEN r-'name'-'issues'-'contact_id' ELSE r END ORDER BY i)
+     FROM jsonb_array_elements(result->'rows') WITH ORDINALITY AS t(r,i)))
+    WHERE user_id=$1 AND jsonb_typeof(result->'rows')='array'
+    AND EXISTS(SELECT 1 FROM jsonb_array_elements(result->'rows') r WHERE r->>'contact_id'=ANY($2::text[]))`,[user.uid,contactIds]);
   const provenance=new Map();
   for(const row of contacts.values())for(const event of parse(row.payload).source_history||[])
     if(event?.import_id&&Number.isSafeInteger(event.row))provenance.set(event.import_id,[...(provenance.get(event.import_id)||[]),event.row]);
   for(const [importId,rows] of provenance)
-    await client.query(`UPDATE prospect_imports SET result=jsonb_set(result,'{rows}',(SELECT COALESCE(jsonb_agg(CASE WHEN (r->>'row')::int=ANY($3::int[]) THEN r-'name'-'issues' ELSE r END ORDER BY i),'[]'::jsonb) FROM jsonb_array_elements(result->'rows') WITH ORDINALITY AS t(r,i))) WHERE user_id=$1 AND id=$2 AND jsonb_typeof(result->'rows')='array'`,[user.uid,importId,rows]);
+    await client.query(`UPDATE prospect_imports SET result=jsonb_set(result,'{rows}',(SELECT COALESCE(jsonb_agg(CASE WHEN (r->>'row')::int=ANY($3::int[]) THEN r-'name'-'issues'-'contact_id' ELSE r END ORDER BY i),'[]'::jsonb) FROM jsonb_array_elements(result->'rows') WITH ORDINALITY AS t(r,i))) WHERE user_id=$1 AND id=$2 AND jsonb_typeof(result->'rows')='array'`,[user.uid,importId,rows]);
   // Identity reviews: an arrival held for review carries the person's
   // details, so it goes for everyone now blocking them; a review loses a
   // deleted record, and one left comparing against nothing goes too. A

@@ -28,7 +28,7 @@ async function fixture(clock = () => now) {
   const db = new PGlite();
   for (const file of ['generated/schema.sql', 'migrations/006-research-lab.sql', 'migrations/007-quality-v2.sql',
     'migrations/008-prospect-workspace.sql', 'migrations/012-plan-catalog-summary.sql',
-    'migrations/013-advisor-workflow.sql', 'migrations/014-outreach-cadence.sql', 'migrations/015-dial-budget.sql', 'migrations/016-inbound-contact.sql','migrations/017-forget.sql','migrations/022-identity-reviews.sql'])
+    'migrations/013-advisor-workflow.sql', 'migrations/014-outreach-cadence.sql', 'migrations/015-dial-budget.sql', 'migrations/016-inbound-contact.sql','migrations/017-forget.sql','migrations/034-historical-identities.sql','migrations/022-identity-reviews.sql','migrations/033-planning-decisions.sql'])
     await db.exec(readFileSync(new URL('../' + file, import.meta.url), 'utf8'));
   const pool = {query: (...a) => db.query(...a), connect: async () => ({query: (...a) => db.query(...a), release() {}})};
   const user = {uid: 'owner', email: 'owner@example.com'};
@@ -39,8 +39,9 @@ async function fixture(clock = () => now) {
 }
 async function reviewBasics(lab, user, id) {
   const d = await lab.detail(user, id);
-  for (const [field, value] of Object.entries({age: {min: 62, max: 62}, residence: {country: 'US', scope: 'residence'},
-    contact: {channel: 'email', address: 'jamie@example.com', identity_confirmed: true}}))
+  for (const [field, value] of Object.entries({residence: {country: 'US', scope: 'residence', state: 'NY'},
+    planning_decision: {origin: 'inbound_request', topic: 'workplace_plan', identity_confirmed: true, prospect_confirmed: true},
+    contact: {channel: 'email', address: 'jamie@example.com', identity_confirmed: true, outreach_basis: 'person_requested'}}))
     await lab.review(user, id, {field, value, verdict: 'confirmed', source: 'Synthetic authorized fixture',
       note: 'Synthetic evidence only.', observed_at: now.toISOString(), identity_signature: d.quality.identity_signature});
 }
@@ -202,26 +203,27 @@ test('service levels count business days, and the offered days skip the weekend'
   assert.equal(sequencePlan('nonsense').id, 'priority', 'an unknown sequence falls back rather than throwing');
 });
 
-test('the workflow records the channel, schedules the next step itself, and refuses a seventh touch', async () => {
+test('the workflow keeps a reviewed channel, spaces a retry, and refuses a seventh touch', async () => {
   const {db, lab, user, id} = await fixture();
   try {
     await reviewBasics(lab, user, id);
     let detail = await lab.advisor.detail(user, id);
-    assert.equal(detail.cadence.status, 'ready');
+    assert.equal(detail.cadence.status, 'engaged');
     assert.equal(detail.draft.channel, 'email');
-    assert.match(detail.draft.body, /Harbor Steel/);
+    assert.match(detail.draft.body, /Thank you for reaching out/);
 
-    // An unanswered touch does not ask the advisor for a date.
+    // An unanswered approach sets a review time on the current route.
     const first = await lab.advisor.save(user, id, {outcome: 'no_answer', channel: 'email',
       signature: detail.action.signature, idempotency_key: 'touch-1'});
     assert.ok(first.scheduled, 'the application scheduled the next step');
     assert.equal(first.scheduled.slice(0, 10), '2026-09-25');
     const saved = (await db.query('SELECT channel,step FROM advisor_activities WHERE lead_id=$1', [id])).rows[0];
-    assert.deepEqual(saved, {channel: 'email', step: 'opener'});
+    assert.deepEqual(saved, {channel: 'email', step: null});
 
     detail = await lab.advisor.detail(user, id);
-    assert.equal(detail.cadence.progress.completed, 1);
-    assert.equal(detail.cadence.step.id, 'connect');
+    assert.equal(detail.action.bucket, 'scheduled');
+    assert.equal(detail.cadence.step, null);
+    assert.equal(detail.draft, null);
 
     // Fill the budget; the sixth touch opens the rest period.
     for (let n = 2; n <= MAX_TOUCHES; n++) {
@@ -285,6 +287,7 @@ test('the advisor profile signs the drafts and is scoped to its owner', async ()
     const saved = await lab.advisor.saveProfile(user, {display_name: 'Dana Whitfield', firm: 'Example Advisors',
       phone: '516-555-0142', metro: 'Long Island', ignored: 'x'});
     assert.equal(saved.name, 'Dana Whitfield');
+    await reviewBasics(lab,user,id);
     const detail = await lab.advisor.detail(user, id);
     assert.match(detail.draft.body, /Dana Whitfield/);
     assert.deepEqual(detail.draft.needs, []);
@@ -451,24 +454,20 @@ test('the voicemail claims an earlier email only when one was logged', () => {
     'a touch logged without a step cannot claim the email was sent');
 });
 
-test('the workflow hands the draft only the steps the log shows happened', async () => {
-  const {db, lab, user, id} = await fixture();
-  try {
-    await reviewBasics(lab, user, id);
-    await lab.advisor.saveProfile(user, {display_name: 'Dana Whitfield', firm: 'Example Advisors', phone: '516-555-0142'});
-    let detail = await lab.advisor.detail(user, id);
-    assert.deepEqual(detail.cadence.progress.done, []);
-    await lab.advisor.save(user, id, {outcome: 'no_answer', channel: 'email',
-      signature: detail.action.signature, idempotency_key: 'opener-sent'});
-    detail = await lab.advisor.detail(user, id);
-    assert.deepEqual(detail.cadence.progress.done, ['opener']);
-    // Step two is the connection note; drive to the call and check its script.
-    await lab.advisor.save(user, id, {outcome: 'no_answer', channel: 'linkedin',
-      signature: detail.action.signature, idempotency_key: 'connect-sent'});
-    detail = await lab.advisor.detail(user, id);
-    assert.equal(detail.cadence.step.id, 'call-1');
-    assert.match(detail.draft.body, /I sent you a note earlier this week/);
-  } finally { await db.close(); }
+test('a recorded inbound reply uses the reviewed route without fabricating prior touches',async()=>{
+  const {db,lab,user,id}=await fixture();
+  try{
+    await reviewBasics(lab,user,id);
+    let detail=await lab.advisor.detail(user,id);
+    assert.equal(detail.draft.channel,'email');
+    assert.doesNotMatch(detail.draft.body,/sent you a note|Harbor Steel/);
+    await lab.advisor.save(user,id,{outcome:'connected',direction:'inbound',channel:'email',
+      signature:detail.action.signature,idempotency_key:'reply'});
+    detail=await lab.advisor.detail(user,id);
+    assert.equal(detail.cadence.touches.count,0);
+    assert.equal(detail.draft.channel,'email');
+    assert.doesNotMatch(detail.draft.body,/sent you a note|Harbor Steel/);
+  }finally{await db.close();}
 });
 
 // --- meeting outcomes ----------------------------------------------------------
@@ -591,7 +590,7 @@ test('a directory do-not-call blocks pacing, and pacing cannot override it', asy
     const linked = (await db.query('SELECT lead_id FROM advisor_contact_links WHERE contact_id=$1', ['contact'])).rows[0].lead_id;
     await reviewBasics(lab, user, linked);
     let d = await lab.advisor.detail(user, linked);
-    assert.equal(d.cadence.status, 'ready');
+    assert.equal(d.cadence.status, 'engaged');
     assert.ok(d.draft, 'a draft exists while contact is permitted');
 
     // The directory marks the number do-not-call after the sequence started.
@@ -791,21 +790,13 @@ test('a due follow-up on hold does not head the list of things you can do', asyn
   const {db, lab, user, id} = await fixture();
   try {
     await reviewBasics(lab, user, id);
-    // Walk to the phone step. Each unanswered touch sets follow_up_date, so by
-    // the call the saved date has arrived and the due branch would otherwise win.
-    for (const [n, channel] of [[1, 'email'], [2, 'linkedin']]) {
-      const d = await lab.advisor.detail(user, id);
-      await lab.advisor.save(user, id, {outcome: 'no_answer', channel,
-        signature: d.action.signature, idempotency_key: 'step-' + n});
-    }
-    // Backdate the sequence so day 4 has genuinely arrived. The saved follow-up
-    // date is the step's own due date, so in practice the two agree — the point
-    // of the finding is that the saved date was being read first.
-    await db.query(`UPDATE advisor_activities SET created_at='2026-09-20T10:00:00Z' WHERE idempotency_key='step-1'`);
-    await db.query(`UPDATE advisor_activities SET created_at='2026-09-21T10:00:00Z' WHERE idempotency_key='step-2'`);
-    await db.query(`UPDATE discovery_leads SET payload=jsonb_set(payload::jsonb,'{follow_up_date}','"2026-09-23T10:00:00Z"')::text WHERE id=$1`, [id]);
-    let d = await lab.advisor.detail(user, id);
-    assert.equal(d.cadence.step.channel, 'phone');
+    const {quality}=await lab.detail(user,id);
+    await lab.review(user,id,{field:'contact',value:{channel:'phone',address:'5165550142',identity_confirmed:true,outreach_basis:'person_requested'},
+      verdict:'confirmed',source:'Synthetic fixture',note:'Requested call in synthetic evidence.',observed_at:now.toISOString(),identity_signature:quality.identity_signature});
+    await db.query("UPDATE discovery_leads SET payload=(payload::jsonb || $2::jsonb)::text WHERE id=$1",
+      [id,JSON.stringify({follow_up_status:'Follow-up',follow_up_date:'2026-09-23T10:00:00Z'})]);
+    let d=await lab.advisor.detail(user,id);
+    assert.equal(d.action.contact.channel,'phone');
     assert.equal(d.action.bucket, 'due');
     assert.equal(d.action.rank, 0, 'with budget left the call is ordinary due work');
 

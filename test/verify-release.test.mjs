@@ -73,7 +73,7 @@ test('a build serving the wrong rules fails on the fields, not the identifier',a
   assert.deepEqual(failed(report), ['version']);
   const detail = report.checks.find(c => c.id === 'version').detail;
   assert.match(detail, /advisor_workspace_version: expected advisor-workflow-1/);
-  assert.match(detail, /quality_version: expected retirement-evidence-3/);
+  assert.match(detail, /quality_version: expected advice-decision-1/);
 });
 
 test('an API answering without a session fails, however ordinary the response looks',async()=>{
@@ -226,7 +226,7 @@ test('a version body that is valid JSON but not an object fails rather than matc
 });
 
 test('the public verifier retains the release script cadence version gate', async () => {
-  assert.equal(EXPECTED.cadence_version, 'outreach-cadence-1');
+  assert.equal(EXPECTED.cadence_version, 'outreach-cadence-2');
   for (const cadence_version of [undefined, 'outreach-cadence-old']) {
     const report = await run(service({'GET /version': res =>
       res.writeHead(200, {'content-type': 'application/json', 'cache-control': 'no-store'})

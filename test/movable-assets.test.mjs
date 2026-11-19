@@ -47,57 +47,38 @@ test('movable-assets migration preserves legacy observations',async()=>{
   } finally {await db.close();}
 });
 
-test('saved rollover target is consistent across reviews, worklist, filters and exports',async()=>{
+test('retirement transfer evidence remains available under the advice-decision rule',async()=>{
   const db=new PGlite();
   try {
-    for(const file of readFileSync(new URL('../migrate.mjs',import.meta.url),'utf8').match(/'(generated\/schema\.sql|migrations\/[^']+\.sql)'/g).map(s=>s.slice(1,-1))) await db.exec(readFileSync(new URL('../'+file,import.meta.url),'utf8'));
+    for(const file of readFileSync(new URL('../migrate.mjs',import.meta.url),'utf8').match(/'(generated\/schema\.sql|migrations\/[^']+\.sql)'/g).map(s=>s.slice(1,-1))) {
+      await db.exec(readFileSync(new URL('../'+file,import.meta.url),'utf8'));
+    }
     const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
     const lab=createResearchLab({pool,now:()=>now,sources:{readiness:{}}}),user={uid:'owner',email:'owner@example.com'};
+    const settings=await lab.settings(user,{daily_enabled:true,configuration:{qualification_target:'rollover_100k',daily_budget_micros:123}});
+    assert.equal(settings.configuration.qualification_target,'advice_decision');
+    assert.equal(Number(settings.daily_budget_micros),123);
     await lab.importCSV(user,{csv:'First Name,Last Name,Company,Email,Country\nExample,Prospect,Example Co,example@example.com,US'});
     const id=(await db.query('SELECT id FROM discovery_leads')).rows[0].id;
-    const current=await lab.detail(user,id);
-    const save=async(field,value)=>lab.review(user,id,{...review(field,value),identity_signature:current.quality.identity_signature});
-    for(const row of [...base(),review('age',{min:60,max:60}),review('net_worth',{lower_bound_usd:1000000,excludes_home:true,net_of_liabilities:true,evidence_basis:'participant_disclosure',consent_confirmed:true})]) await save(row.field,row.value);
-    assert.equal((await lab.detail(user,id)).quality.status,'verified');
-    await lab.settings(user,{configuration:{qualification_target:'rollover_100k'}});
-    assert.equal((await lab.list(user,{status:'verified'})).total,0,'old verified rule cannot populate the new verified filter');
-    assert.equal((await lab.detail(user,id)).quality.gates.movable_assets.state,'unknown');
-    assert.equal((await lab.advisor.detail(user,id)).action.field,'movable_assets','next action opens the missing criterion directly');
-    await save('movable_assets',amount);
-    await save('age',{min:80,max:80});
-    const result=await lab.detail(user,id);
-    assert.equal(result.quality.status,'verified');assert.equal(result.quality.target,'rollover_100k');
-    assert.equal(result.scores.qualification.score,100);
-    assert.equal((await lab.advisor.detail(user,id)).action.bucket,'ready');
-    const work=(await lab.advisor.worklist(user,{view:'all'})).items.find(item=>item.lead.id===id);
-    assert.equal(work.quality.target,'rollover_100k');assert.equal(work.action.bucket,'ready');
-    assert.match(researchCSV([result]),/"rollover_100k","confirmed"/);
-    const exported=await lab.route(new Request('https://app.example/api/lab/export',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ids:[id]})}),user);
-    assert.match(await exported.text(),/"rollover_100k","confirmed"/);
+    const identity_signature=(await lab.detail(user,id)).quality.identity_signature;
+    const save=(field,value)=>lab.review(user,id,{...review(field,value),identity_signature});
+    await save('residence',{country:'US',scope:'residence'});
+    await save('contact',{channel:'email',address:'example@example.com',identity_confirmed:true,outreach_basis:'person_requested'});
+    await save('movable_assets',{...amount,lower_bound_usd:25000});
+    let result=await lab.detail(user,id);
+    assert.equal(result.quality.gates.retirement.evidence.field,'movable_assets');
+    assert.notEqual(result.quality.status,'verified');
+    await save('planning_decision',{topic:'workplace_plan',origin:'inbound_request',identity_confirmed:true,prospect_confirmed:true});
+    result=await lab.detail(user,id);
+    assert.equal(result.quality.status,'verified');
+    assert.deepEqual(result.quality.required_fields,['planning_decision','residence','contact']);
+    assert.match(researchCSV([result]),/"advice_decision"/);
+    assert.doesNotMatch(researchCSV([result]),/25000|Net Worth/);
     assert.equal((await lab.list(user,{status:'verified'})).total,1);
-    await lab.metrics(user);
-    const stored=(await db.query('SELECT rule_version FROM lab_qualification')).rows[0];
-    assert.equal(stored.rule_version,'retirement-movable-3');
-    await lab.settings(user,{configuration:{score_weights:{qualification:5}}});
-    assert.equal((await lab.settings(user)).configuration.qualification_target,'rollover_100k','unrelated settings preserve the target');
-    assert.equal((await lab.settings({uid:'other',email:'other@example.com'})).configuration.qualification_target,'legacy','settings are per advisor');
-    await lab.importCSV(user,{csv:'First Name,Last Name,Company,Email,Country\nSynthetic,Combined,Example Co,combined@example.com,US'});
-    const combinedId=(await db.query("SELECT id FROM discovery_leads WHERE payload::jsonb->>'email'='combined@example.com'")).rows[0].id;
-    const combinedIdentity=(await lab.detail(user,combinedId)).quality.identity_signature;
-    for(const row of [review('residence',{country:'US',scope:'residence'}),review('contact',{channel:'email',address:'combined@example.com',identity_confirmed:true})]) await lab.review(user,combinedId,{...row,identity_signature:combinedIdentity});
-    assert.equal((await lab.advisor.detail(user,combinedId)).action.field,'movable_assets','next prospect chooses combined financial review');
-    await lab.review(user,combinedId,{...review('movable_assets',{...amount,account_type:'simple_ira',route:'trustee_transfer',destination_type:'traditional_ira',tax_treatment:'traditional',first_contribution_on:'2024-10-02'}),identity_signature:combinedIdentity});
-    const combined=await lab.detail(user,combinedId);
-    assert.equal(combined.quality.status,'verified');
-    assert.equal(combined.quality.gates.retirement.evidence.field,'movable_assets');
-    assert.equal(combined.quality.gates.movable_assets.evidence.value.first_contribution_on,'2024-10-02');
-    assert.equal((await lab.advisor.detail(user,combinedId)).action.bucket,'ready');
-    const observations=(await db.query('SELECT field FROM lab_observations WHERE lead_id=$1',[combinedId])).rows;
-    assert.equal(observations.filter(o=>o.field==='retirement').length,0,'no duplicated or fabricated observation stored');
-
+    assert.equal((await lab.advisor.worklist(user,{view:'ready'})).items[0].action.label,'Respond to the advice request');
+    assert.equal((await db.query("SELECT count(*)::int AS n FROM lab_observations WHERE field='retirement'")).rows[0].n,0);
   }finally{await db.close();}
 });
-
 
 test('one complete amount review supplies transfer evidence only without a separate review',()=>{
   const context=base().filter(o=>o.field!=='retirement'), disclosed=review('movable_assets',amount);
