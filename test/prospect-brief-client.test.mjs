@@ -23,7 +23,9 @@ test('advisor brief shows actual queue reason, dated citations and evidence dist
   assert.match(section.innerHTML,/Why this is on your worklist.*Verify contact ownership.*Review ownership/);
   for(const label of ['Reviewed facts','Reported professional context','Interpretation, not a fact','Unknowns and holds','Source date: Unknown','Observed: Unknown','Reviewed: Unknown','source link not recorded','Nothing has been sent'])assert.ok(section.innerHTML.includes(label),label);
   assert.doesNotMatch(section.innerHTML,/mailto:|tel:|Send now/);
-  assert.equal(section.children.length,1);section.children[0].onclick();assert.deepEqual(c.reviews,['personal_event']);
+  assert.deepEqual(section.children.map(e=>e.textContent),['Record a planning decision','Review a public event']);
+  section.children.forEach(e=>e.onclick());
+  assert.deepEqual(c.reviews,['planning_decision','personal_event']);
 });
 test('terminal worklists show their hold rather than inviting a personal-event review or conversation',()=>{
   for(const bucket of ['closed','clients']){

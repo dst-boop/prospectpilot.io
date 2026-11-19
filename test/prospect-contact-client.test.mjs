@@ -3,19 +3,19 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
 
-function client(){
- const elements=new Map(),pending=[];
+function client(escape=String){
+ const elements=new Map(),pending=[],notices=[];
  const create=id=>{const value={textContent:'',innerHTML:'',disabled:false,open:false,value:'Reviewed source',dataset:{},
   insertAdjacentHTML(position,html){this.innerHTML+=html;},append(element){this.lastChild=element;},scrollIntoView(){this.scrolled=true;},focus(){this.focused=true;},querySelectorAll(){return [elements.get('firstField')];},querySelector(){return elements.get('firstField');},showModal(){this.open=true;},addEventListener(event,fn){this[event+'Handler']=fn;},close(){this.open=false;this.closeHandler?.();}};elements.set(id,value);return value;};
  for(const id of ['contactTitle','contactBody','contactError','toggleSuppression','deletePerson','closeContact','correctionForm','conflictReason0','contactHistory','contactHistoryBody','editContact','reviewContactConflicts','contactConflicts','correctionPanel','firstField','retryContact'])create(id);
  const conflict=create('conflict');conflict.dataset={conflict:'0',decision:'keep'};
- const context=vm.createContext({selected:new Set(),$:id=>elements.get(id),esc:String,notice(){},load:async()=>{},
+ const context=vm.createContext({selected:new Set(),$:id=>elements.get(id),esc:escape,notice(message){notices.push(message);},load:async()=>{},
   FormData:class{constructor(){return [['first_name','A'],['last_name','Example'],['reason','Reviewed source']];}},
   document:{body:{insertAdjacentHTML(){create('contactDialog');}},querySelectorAll:()=>[conflict]},
   api:(url,body,method)=>new Promise((resolve,reject)=>pending.push({url,body,method,resolve,reject}))});
  const source=readFileSync(new URL('../prospect-client.js',import.meta.url),'utf8');
  vm.runInContext(source.slice(source.indexOf('let contactViewVersion=0;'),source.indexOf("$('importFormat').onchange")),context);
- return {elements,pending,open:id=>vm.runInContext(`showContact(${JSON.stringify(id)})`,context)};
+ return {elements,pending,notices,open:id=>vm.runInContext(`showContact(${JSON.stringify(id)})`,context)};
 }
 const record=name=>({contact:{first_name:name,last_name:'Example',edit_revision:name,source_history:[{source:'Fixture',proposed_values:{title:'Manager'}}]},lists:[]});
 
@@ -85,7 +85,10 @@ test('delete this person takes a second click, then deletes and closes the dialo
  const remove=c.elements.get('deletePerson');
  await remove.onclick();
  assert.equal(c.pending.length,1,'the first click only arms the button');
- assert.match(c.elements.get('contactError').textContent,/do-not-call block keeps the number/);
+ assert.match(c.elements.get('contactError').textContent,/Existing do-not-call blocks/);
+ assert.match(c.elements.get('contactError').textContent,/Older import reports may retain details/);
+ assert.match(c.elements.get('contactError').textContent,/may not recognize older or changed identifiers/);
+ assert.doesNotMatch(c.elements.get('contactError').textContent,/will not be imported again|Nothing about this person remains/);
  const done=remove.onclick();
  assert.equal(c.pending[1].url,'contacts/A');assert.equal(c.pending[1].method,'DELETE');
  c.pending[1].resolve({deleted:true,contacts:1,leads:1});await done;
@@ -137,3 +140,13 @@ test('trimmed conflict source decisions remain visible from the correction snaps
   assert.ok(html.includes(decision==='accept'?'Accepted source values':'Kept current values'));
  }
 });
+
+test('unverified imported context is visible, source-attributed and escaped without granting permission',async()=>{
+ const escape=value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+ const c=client(escape),opened=c.open('A');
+ const data=record('A');data.contact.imported_notes=[{kind:'rollover_context',text:'<img src=x onerror=alert(1)>',status:'unverified',source:'Synthetic source'}];data.contact.source_history[0].imported_notes=data.contact.imported_notes;
+ c.pending[0].resolve(data);await opened;
+ const html=c.elements.get('contactHistoryBody').innerHTML;assert.match(html,/Retained unverified import context/);assert.match(html,/Unverified imported notes/);assert.match(html,/Synthetic source/);assert.match(html,/Not evidence of plan ownership/);assert.match(html,/&lt;img/);assert.doesNotMatch(html,/<img/);
+});
+
+for(const operation of ['correction','conflict'])test(`${operation} historical hold does not claim changes were saved`,async()=>{const c=client(),opened=c.open('A');c.pending[0].resolve(record('A'));await opened;const done=operation==='correction'?c.elements.get('correctionForm').onsubmit({preventDefault(){},submitter:{disabled:false},target:{}}):c.elements.get('conflict').onclick();c.pending[1].resolve({id:'A',changed:false,held_for_historical_review:true});await done;assert.equal(c.pending.length,2,'held changes must not reload as if saved');assert.match(c.elements.get('contactError').innerHTML,/Changes were not applied/);assert.match(c.elements.get('contactError').innerHTML,/href="\/lab#historicalReviews"/);assert.deepEqual(c.notices,['Changes not applied. Historical identity review is required.']);});

@@ -1,3 +1,4 @@
+import {captureIdentityEvidence,captureIdentityBatch,holdHistoricalArrival,historicalCandidateHash,historicalMatchesMany} from './historical-identities.mjs';
 import {randomUUID} from 'node:crypto';
 import {normalizeNetworkingCapture} from './networking-capture.mjs';
 import {createDomainChecker} from './prospect-domain-check.mjs';
@@ -87,7 +88,7 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
    const owner={uid:list.user_id};
    if(suffix==='contacts')return app.search(owner,{...Object.fromEntries(new URL(request.url).searchParams),list_id:id});
    let input;if(method!=='GET'){try{input=await request.json();}catch{throw fail(422,'Invalid JSON.');}if(!input||typeof input!=='object'||Array.isArray(input))throw fail(422,'Provide a request object.');}
-   if(['import','import/preview'].includes(suffix))return app.importCSV(owner,{...input,list_id:id},{preview:suffix.endsWith('/preview')});
+   if(['import','import/preview'].includes(suffix)){const result=await app.importCSV(owner,{...input,list_id:id},{preview:suffix.endsWith('/preview')});return list.role==='owner'?result:{...result,rows:result.rows.map(({historical_review_id,...row})=>row)};}
    if(suffix==='export')return app.exportCSV(owner,input);
    if(suffix==='members')return app.membership(owner,id,input,method==='DELETE');
    const result=await app.route(new Request('https://internal/api/prospect/'+suffix,{method,...(input?{body:JSON.stringify(input)}:{})}),owner);
@@ -143,7 +144,7 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
     WHERE n.user_id=$1 ORDER BY n.created_at DESC,n.id DESC LIMIT 21`,[user.uid])).rows;
   return {captures:rows.slice(0,20),has_more:rows.length>20,limit:20};
  }
- async function importCSV(user,input,{preview=false,networking=null}={}){
+ async function importCSV(user,input,{preview=false,networking=null,historicalApproval=null}={}){
   if(!input||typeof input!=='object'||Array.isArray(input))throw fail(422,'Provide a CSV import object.');
   const format=input.format||'generic';if(!['generic','zoominfo'].includes(format))throw fail(422,'Choose a supported CSV format.');
   const parsed=parseContactCSV(input.csv),{headers,records}=parsed;
@@ -153,16 +154,18 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
   const observed=input.source_observed_at||'';
   if(observed&&(!/^\d{4}-\d{2}-\d{2}$/.test(observed)||!Number.isFinite(Date.parse(observed))||new Date(observed).toISOString().slice(0,10)!==observed||observed>new Date().toISOString().slice(0,10)))throw fail(422,'Use a valid source date, no later than today.');
   const fingerprint=hash((scope?'contact-list-import-v1\0'+scope.actor+'\0':'contact-import-v2\0')+input.csv+'\0'+source+'\0'+text(input.list_id)+(format==='zoominfo'?'\0zoominfo':'')+(sourceURL||observed?'\0'+sourceURL+'\0'+observed:'')+(networking?'\0networking\0'+JSON.stringify(networking):''));
+  const networkingFingerprint=networking&&historicalApproval?.networkingFingerprint||fingerprint;
+  const importFingerprint=historicalApproval?hash(fingerprint+'\0historical-review\0'+historicalApproval.id):fingerprint;
   return tx(pool,async c=>{
    if(input.list_id)await listAccess(c,user,input.list_id,'owner','UPDATE');
    await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`prospect:${user.uid}`]);
    if(networking){
     const prior=(await c.query('SELECT fingerprint,result FROM prospect_networking_captures WHERE user_id=$1 AND request_key=$2',[user.uid,networking.request_key])).rows[0];
-    if(prior){if(prior.fingerprint!==fingerprint)throw fail(409,'This capture was already saved with different details. Start a new capture for another interaction.');return {...prior.result,replayed:true};}
+    if(prior){if(prior.fingerprint!==networkingFingerprint)throw fail(409,'This capture was already saved with different details. Start a new capture for another interaction.');return {...prior.result,replayed:true};}
    }
    // Networking replays require the live private ledger above. A generic import
    // result can outlive its deleted contact and must not claim it is still saved.
-   const previous=(await c.query('SELECT result FROM prospect_imports WHERE user_id=$1 AND fingerprint=$2',[user.uid,fingerprint])).rows[0];
+   const previous=(await c.query('SELECT result FROM prospect_imports WHERE user_id=$1 AND fingerprint=$2',[user.uid,importFingerprint])).rows[0];
    if(previous){if(networking&&previous.result.capture)throw fail(409,'This connection is no longer saved. Refresh recent captures before starting a new capture.');return {...previous.result,replayed:true,preview};}
    const result={id:randomUUID(),added:0,duplicates:0,conflicts:0,field_reviews:0,rejected:0,errors:[],rows:[],preview,replayed:false,total:records.length,mapped_columns:parsed.mapped_columns,ignored_columns:parsed.ignored_columns};
    const prepared=records.map(({cells,row})=>{
@@ -171,7 +174,7 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
      const contact=normalizeContact(Object.fromEntries(headers.map((h,i)=>[h,cells[i]])),source,{importing:true});
      if(format==='zoominfo')contact.source_kind='zoominfo_csv';
      const keys=identities(contact);if(!keys.length)throw fail(422,'Include company, individual work email or LinkedIn URL.');
-     return {row,contact,keys:identityLookupKeys(contact)};
+     return {row,contact,keys:identityLookupKeys(contact),reviewCSV:[headers,cells].map(values=>values.map(value=>'\"'+String(value).replaceAll('\"','\"\"')+'\"').join(',')).join('\n')};
     }catch(error){return {row,error:error.message};}
    });
    // A person this user deleted stays deleted: their row is refused, and says why.
@@ -196,10 +199,13 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
     result.rows.push({row,status,message,...review,...networking?{}:{name:contact?`${contact.first_name} ${contact.last_name}`:'',issues:contact?contactQuality(contact).issues:[]}});
     if(['rejected','conflict'].includes(status)&&result.errors.length<50)result.errors.push({row,message});
    };
+   const historicalMatchSet=await historicalMatchesMany(c,user.uid,prepared.filter(r=>!r.error).map(r=>r.contact));
    const now=new Date().toISOString(),usage=[];
    for(const record of prepared){
     if(record.error){result.rejected++;report(record.row,'rejected',record.error);continue;}
     const {contact,keys}=record;
+    const historical=await holdHistoricalArrival(c,user.uid,'contact',contact,{input:{...Object.fromEntries(['source','format','list_id','source_url','source_observed_at'].filter(k=>input[k]!==undefined).map(k=>[k,input[k]])),csv:record.reviewCSV},networking,...networking?{networking_fingerprint:networkingFingerprint}:{}},{preview,approvedCandidateHash:historicalApproval?.candidateHash,knownMatches:historicalMatchSet});
+    if(historical){const privateMatch=scope&&scope.role!=='owner';if(privateMatch)result.rejected++;else result.conflicts++;report(record.row,privateMatch?'rejected':'identity_review',privateMatch?'Contact unavailable for this list. Ask the owner to review the import.':'A prior identifier needs owner review in Research Lab before saving. It may belong to a different person.',contact,historical.id?{historical_review_id:historical.id}:{});continue;}
     const signal=contact.signal;delete contact.signal;
     // Enrichment credits the delivery says this row cost on the advisor's own
     // ZoomInfo subscription, recorded once per lead and delivery day.
@@ -208,7 +214,8 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
     if(matches.length>1){result.conflicts++;report(record.row,'conflict','Identifiers match more than one existing contact. Review the identity before importing.',contact);continue;}
     let id=matches[0]?.id||randomUUID();
     if(signal?.credits>0)usage.at(-1).contact_id=id;
-    const evidence={...(scope?{actor_uid:scope.actor}:{}),source,kind:contact.source_kind,import_id:result.id,row:record.row,imported_at:now,observed_at:observed||null,url:sourceURL||null,zoominfo:contact.zoominfo,phone_import:contact.phone_import,phone_restrictions:contact.phone_restrictions,import_warnings:contact.import_warnings};
+    if(contact.imported_notes)contact.imported_notes=contact.imported_notes.map(note=>({...note,source,import_id:result.id,row:record.row,imported_at:now,observed_at:observed||null,url:sourceURL||null}));
+    const evidence={...(scope?{actor_uid:scope.actor}:{}),source,kind:contact.source_kind,import_id:result.id,row:record.row,imported_at:now,observed_at:observed||null,url:sourceURL||null,zoominfo:contact.zoominfo,phone_import:contact.phone_import,phone_restrictions:contact.phone_restrictions,import_warnings:contact.import_warnings,...contact.imported_notes?.length?{imported_notes:contact.imported_notes}:{}};
     contact.source_observed_at=observed||null;contact.last_seen_at=now;
     if(matches.length){const old=matches[0].payload;
      if(old.zoominfo?.contact_id&&contact.zoominfo?.contact_id&&old.zoominfo.contact_id!==contact.zoominfo.contact_id){result.conflicts++;report(record.row,'conflict','Different ZoomInfo contact IDs matched an existing identifier. Review identity; existing record preserved.',contact);continue;}
@@ -222,6 +229,7 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
      if(networking){networkingContactId=id;result.duplicates++;result.contact_unchanged=true;report(record.row,'duplicate','Private interaction recorded; existing contact fields and source history are unchanged.',old);continue;}
      const merged={...old};for(const [k,v] of Object.entries(contact))if(!merged[k]&&v&&k!=='source_kind')merged[k]=v;
      merged.zoominfo={...contact.zoominfo,...old.zoominfo};
+     if(contact.imported_notes?.length)merged.imported_notes=[...(old.imported_notes||[]),...contact.imported_notes.filter(note=>!old.imported_notes?.some(prior=>prior.kind===note.kind))];
      // Each delivery keeps its own reason and review, under the list it came in:
      // a later delivery never rewrites or clears an earlier one.
      if(signal&&input.list_id)merged.deliveries={...(old.deliveries||{}),[input.list_id]:{...(old.deliveries?.[input.list_id]||{}),signal}};
@@ -229,6 +237,8 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
      merged.import_warnings=[...new Set([...(old.import_warnings||[]),...(contact.import_warnings||[])])];
      merged.phone_restrictions={};for(const route of ['direct','mobile'])merged.phone_restrictions[route]=old.phone_restrictions?.[route]===true||contact.phone_restrictions?.[route]===true?true:old.phone_restrictions?.[route]??contact.phone_restrictions?.[route]??null;
      if(!old.phone&&merged.phone)merged.phone_origin=contact.phone_origin;
+     // A later explicit direct claim for the retained number is no longer merely a mobile fallback.
+     if(contact.phone_origin==='direct'&&contact.phone===merged.phone)merged.phone_origin='direct';
      // Never overwrite verification or clear a suppression through a CSV import.
      merged.suppressed=old.suppressed||contact.suppressed;
      if(!old.email&&merged.email)merged.email_status='unverified';if(!old.phone&&merged.phone)merged.phone_status='unverified';
@@ -241,12 +251,12 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
      merged.source_observed_at=old.source_observed_at||null;
      changed.set(id,{id,payload:merged,identity_keys:identities(merged)});
      indexRow({id,payload:merged,identity_keys:identities(merged)});result.duplicates++;
-     report(record.row,'duplicate',differing.length?`Existing values preserved; source differs in: ${differing.join(', ')}.`:'Matched an existing contact; missing fields can be added without replacing verified data.',merged,differing.length?{review_fields:differing,...!preview?{contact_id:id}:{}}:{});
+     report(record.row,'duplicate',differing.length?`Existing values preserved; source differs in: ${differing.join(', ')}.`:'Matched an existing contact; missing fields can be added without replacing verified data.',merged,{...differing.length?{review_fields:differing}:{},...!preview?{contact_id:id}:{}});
     }else{
      if(signal&&input.list_id)contact.deliveries={[input.list_id]:{signal}};
      contact.source_history=[evidence];contact.field_sources=Object.fromEntries(parsed.mapped_columns.filter(key=>contact[key]).map(key=>[key,evidence]));if(contact.phone&&!contact.field_sources.phone&&contact.mobile_phone===contact.phone)contact.field_sources.phone=evidence;
      changed.set(id,{id,payload:contact,identity_keys:identities(contact)});
-     indexRow({id,payload:contact,identity_keys:identities(contact)});result.added++;report(record.row,'added','New contact; imported contact channels remain unverified.',contact);
+     indexRow({id,payload:contact,identity_keys:identities(contact)});result.added++;report(record.row,'added','New contact; imported contact channels remain unverified.',contact,!preview?{contact_id:id}:{});
     }
    }
    if(!preview){
@@ -256,11 +266,12 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
      SELECT value->>'id',$1,value->'payload',value->'identity_keys' FROM jsonb_array_elements($2::jsonb)
      ON CONFLICT(id) DO UPDATE SET payload=EXCLUDED.payload,identity_keys=EXCLUDED.identity_keys,updated_at=now()
      WHERE prospect_contacts.user_id=$1`,[user.uid,JSON.stringify(writes.slice(start,start+100))]);
+    await captureIdentityBatch(c,user.uid,'contact',writes);
     if(input.list_id&&writes.length)await c.query('INSERT INTO prospect_list_members(list_id,contact_id) SELECT $1,unnest($2::text[]) ON CONFLICT DO NOTHING',[input.list_id,writes.map(row=>row.id)]);
     if(networking&&(networkingContactId||writes.length===1)&&!result.conflicts&&!result.rejected){
      const capture_id=randomUUID(),contact_id=networkingContactId||writes[0].id;
      result.capture={id:capture_id,contact_id};
-     await c.query('INSERT INTO prospect_networking_captures(id,user_id,contact_id,request_key,fingerprint,payload,result) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb)',[capture_id,user.uid,contact_id,networking.request_key,fingerprint,JSON.stringify({...networking.entry,person:networking.person,recorded_by:user.uid}),JSON.stringify(result)]);
+     await c.query('INSERT INTO prospect_networking_captures(id,user_id,contact_id,request_key,fingerprint,payload,result) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb)',[capture_id,user.uid,contact_id,networking.request_key,networkingFingerprint,JSON.stringify({...networking.entry,person:networking.person,recorded_by:user.uid}),JSON.stringify(result)]);
     }
    }
    if(usage.length){
@@ -271,7 +282,7 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
       (u->>'units')::int,(u->>'date')::date,$2,a.id
      FROM jsonb_array_elements($3::jsonb) u LEFT JOIN lead_acquisitions a ON a.contact_id=u->>'contact_id' ON CONFLICT DO NOTHING`,[user.uid,result.id,JSON.stringify(usage.map(u=>({...u,contact_id:changed.has(u.contact_id)?u.contact_id:null})))]);
    }
-   if(!preview)await c.query('INSERT INTO prospect_imports(id,user_id,fingerprint,source,result) VALUES($1,$2,$3,$4,$5::jsonb)',[result.id,user.uid,fingerprint,source,JSON.stringify(result)]);return result;
+   if(!preview)await c.query('INSERT INTO prospect_imports(id,user_id,fingerprint,source,result) VALUES($1,$2,$3,$4,$5::jsonb)',[result.id,user.uid,importFingerprint,source,JSON.stringify(result)]);return result;
   });
  }
  async function correctContact(user,id,input){
@@ -308,6 +319,10 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
    if(changes.first_name||changes.last_name){next.email_status=next.email?'unverified':'missing';next.phone_status=next.phone?'unverified':'missing';}
    const history=[...(old.source_history||[])];if(event)history[input.resolve_history_index]=evidence.source_resolution;
    next.source_history=retainSourceHistory([...history,evidence]);
+   if((await forgottenKeys(c,user.uid,identityLookupKeys(next))).size)throw fail(409,'Current deletion restrictions apply to these identifiers.');
+   const held=await holdHistoricalArrival(c,user.uid,'contact',next,{existing_contact_id:id,source_revision:historicalCandidateHash(old),source:'Contact correction',changed_fields:Object.keys(changes)});
+   if(held)return {id,changed:false,held_for_historical_review:true};
+   await captureIdentityEvidence(c,user.uid,'contact',id,old,next);
    await c.query('UPDATE prospect_contacts SET payload=$1::jsonb,identity_keys=$2::jsonb,updated_at=now() WHERE id=$3 AND user_id=$4',[JSON.stringify(next),JSON.stringify(identities(next)),id,user.uid]);
    return {id,changed:true};
   });
@@ -317,7 +332,7 @@ export function createProspectWorkspace({pool,jobs,autopilot=null,checkDomain=cr
  // counts once it is kept and has both a mobile and an email.
  const DAILY_GOAL=50,PASS_REASONS=['not_a_fit','wrong_person','already_client','no_rollover_likely','other'];
  const reviewItem=(row,listId)=>{const p=row.payload,delivery=p.deliveries?.[listId]||{},review=delivery.review||null;return {id:row.id,revision:hash(JSON.stringify(p)),first_name:p.first_name,last_name:p.last_name,title:p.title||'',company:p.company||'',
-  location:[p.city,p.state].filter(Boolean).join(', '),email:p.email||'',mobile_phone:p.mobile_phone||'',linkedin_url:p.linkedin_url||'',mobile_do_not_call:p.phone_restrictions?.mobile===true,
+  location:[p.city,p.state].filter(Boolean).join(', '),email:p.email||'',mobile_phone:p.mobile_phone||'',linkedin_url:p.linkedin_url||'',mobile_do_not_call:p.phone_restrictions?.mobile===true,mobile_blocked:phoneReadiness(p).mobile_blocked,
   suppressed:p.suppressed===true,zoominfo_id:p.zoominfo?.contact_id||'',signal:delivery.signal||null,review,quality:review?.status==='kept'&&!!p.email&&!!p.mobile_phone&&p.suppressed!==true};};
  async function dailyReview(user,input={}){
   if(scope)throw fail(403,'Daily review is available on your own lists.');

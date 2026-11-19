@@ -1,13 +1,15 @@
+import {captureIdentityEvidence,transferIdentityEvidence,holdHistoricalArrival,historicalMatches,historicalCandidateHash,historicalIdentitySignature,scrubHistoricalReports} from './historical-identities.mjs';
 import {createAdvisorWorkflow,withDirectoryRestrictions} from './advisor-workflow.mjs';
 import {randomUUID} from 'node:crypto';
 import {normalizeLead, mergeLead, isUsableStoredLead} from './generated/worker.mjs';
 import {assessLead, candidateKeys, leadIdentity, validateObservation, nameKey, US_STATES, researchCSV, hash, qualificationVersion, sourceStrength, fieldKey, leadScores, scoreWeights} from './lead-quality.mjs';
 export {sourceStrength};
-import {matchPlans, selectEmployers, catalogSummary} from './plan-catalog.mjs';
-import {applyPlaybook, findPlaybook, playbookChoices, belowAgeFloor} from './rollover-playbooks.mjs';
+import {matchPlans, selectEmployers, catalogSummary, planResearchTargets} from './plan-catalog.mjs';
+import {applyPlaybook, findPlaybook, playbookChoices} from './rollover-playbooks.mjs';
+import {ADVICE_TARGET} from './opportunity-policy.mjs';
 import {SOURCE_CATALOG} from './source-catalog.mjs';
 import {LEAD_TEAM,LEAD_VISIBLE_SQL,ownsLead,forgetPerson,forgottenKeys} from './forget.mjs';
-import {identityLookupKeys} from './prospect-workspace.mjs';
+import {identityLookupKeys,contactIdentities,createProspectWorkspace} from './prospect-workspace.mjs';
 import {csvRows} from './warn.mjs';
 
 const TEAM=LEAD_TEAM;
@@ -16,6 +18,8 @@ const parse=value=>typeof value==='string'?JSON.parse(value):value;
 const integer=(value,min,max,fallback)=>{const n=Number(value??fallback);if(!Number.isSafeInteger(n)||n<min||n>max)throw fail(422,'A setting is outside its allowed range.');return n;};
 const publicWebsite=value=>{try{const url=new URL(String(value||''));return url.protocol==='https:'||url.protocol==='http:'?url.href.slice(0,500):'';}catch{return '';}};
 const cleanList=(values,max=100)=>[...new Set((Array.isArray(values)?values:[]).map(v=>String(v).trim().slice(0,200)).filter(Boolean))].slice(0,max);
+const linkedContacts=`(SELECT jsonb_agg(pc.payload) FROM advisor_contact_links acl JOIN prospect_contacts pc ON pc.id=acl.contact_id AND pc.user_id=acl.user_id
+  WHERE acl.lead_id=d.id AND acl.user_id=d.owner_user_id) AS linked_contacts`;
 export function mapResearchRow(raw) {
   const columns=new Map(Object.entries(raw).map(([k,v])=>[nameKey(k).replaceAll(' ',''),v]));
   const pick=(...keys)=>keys.map(k=>columns.get(nameKey(k).replaceAll(' ',''))).find(v=>v!==undefined&&v!=='');
@@ -25,7 +29,7 @@ export function mapResearchRow(raw) {
     signals:pick('401(k) Rollover Signal','401(k) Rollover Opportunity','Life Event Signal','Signals')||raw.signals};
 }
 export function labConfiguration(input={}) {
-  if(input.qualification_target!==undefined&&!['legacy','rollover_100k'].includes(input.qualification_target))throw fail(422,'Choose a supported qualification target.');
+  if(input.qualification_target!==undefined&&![ADVICE_TARGET,'legacy','rollover_100k'].includes(input.qualification_target))throw fail(422,'Choose a supported qualification target.');
   const states=cleanList(input.states,51).map(v=>v.toUpperCase());
   if(states.some(v=>!US_STATES.has(v)))throw fail(422,'Use two-letter US state codes.');
   const sources=cleanList(input.sources||['public_web','sec','warn'],4);
@@ -38,14 +42,13 @@ export function labConfiguration(input={}) {
     websites:(Array.isArray(input.websites)?input.websites:[]).slice(0,50).map(v=>String(v).trim().slice(0,500)),daily_budget_micros:integer(input.daily_budget_micros,0,100000000,0),
     location,radius_miles:integer(input.radius_miles,1,100,25),industries,titles:cleanList(input.titles,30).map(v=>v.slice(0,80)),
     // How the four scores combine into priority: the advisor's formula, not code.
-    score_weights:scoreWeights(input.score_weights),qualification_target:input.qualification_target||'legacy',
-    // Set by a rollover playbook: which plans' employers to research first.
-    playbook:findPlaybook(input.playbook)?.id||'',plan_filter:planFilter(input.plan_filter),minimum_age:integer(input.minimum_age,0,100,0)};
+    score_weights:scoreWeights(input.score_weights),qualification_target:ADVICE_TARGET,
+    playbook:findPlaybook(input.playbook)?.id||'',plan_filter:planFilter(input.plan_filter)};
 }
 function planFilter(input={}) {
   const kinds=cleanList(input?.kinds,2);
   if(kinds.some(v=>!['401k','403b'].includes(v)))throw fail(422,'Unsupported plan type.');
-  return {kinds,min_average:integer(input?.min_average,0,10000000,0),in_service:input?.in_service===true,order:input?.order==='former_employees'?'former_employees':''};
+  return {kinds,in_service:input?.in_service===true,order:['former_employees','former_employee_population'].includes(input?.order)?'former_employee_population':''};
 }
 // Title terms match whole words, with the common abbreviations read both ways,
 // so "VP" keeps a Vice President and "Owner" does not keep an Ownership Analyst.
@@ -214,10 +217,7 @@ export async function assessInventory(ids,assess,{clock=()=>performance.now(),bu
 // can (prospect-jobs.mjs allowanceRefusal). It is the same monthly allowance
 // the contact lookups draw on.
 export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>new Date(),allowance=async()=>null}={}) {
-  async function targetFor(user,client=pool) {
-    const config=parse((await client.query('SELECT configuration FROM lab_settings WHERE user_id=$1',[user.uid])).rows[0]?.configuration)||{};
-    return config.qualification_target==='rollover_100k'?'rollover_100k':'legacy';
-  }
+  async function targetFor() { return ADVICE_TARGET; }
   async function accessible(user,id,client=pool,lock=false) {
     const row=(await client.query(`SELECT discovery_leads.*,(SELECT jsonb_agg(pc.payload) FROM advisor_contact_links acl JOIN prospect_contacts pc ON pc.id=acl.contact_id AND pc.user_id=acl.user_id WHERE acl.lead_id=discovery_leads.id AND acl.user_id=discovery_leads.owner_user_id) AS linked_contacts FROM discovery_leads WHERE ${visibleSQL} AND id=$3${lock?' FOR UPDATE':''}`,[TEAM,user.uid,id])).rows[0];
     if(!row)throw fail(404,'Lead not found or unavailable to this account.');
@@ -250,7 +250,10 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       const {lead}=await accessible(user,id,client,true),identity=leadIdentity(lead);
       if(input.identity_signature!==identity)throw fail(409,'This lead changed. Reload it before saving evidence.');
       const observation=validateObservation(input,{userId:user.uid,identity,now:now()});
-      if(input.field==='personal_event'){const previous=(await observations(user,id,client)).find(o=>o.field==='personal_event');if(previous){const {previous_reviews,...entry}=previous;observation.previous_reviews=[entry,...(previous_reviews||[])];}}
+      if(['personal_event','planning_decision'].includes(input.field)){
+        const previous=(await observations(user,id,client)).find(o=>o.field===input.field);
+        if(previous){const {previous_reviews,...entry}=previous;const history=[entry,...(previous_reviews||[])];observation.previous_reviews=input.field==='planning_decision'?history.slice(0,10):history;}
+      }
       await client.query(`INSERT INTO lab_observations(lead_id,user_id,field,payload) VALUES($1,$2,$3,$4::jsonb)
         ON CONFLICT(lead_id,user_id,field) DO UPDATE SET payload=EXCLUDED.payload,updated_at=now()`,[id,user.uid,observation.field,JSON.stringify(observation)]);
       return {quality:await evaluate(user,lead,client)};
@@ -261,22 +264,23 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     offset=integer(offset,0,1000000,0);limit=integer(limit,1,100,50);
     if(status&&!['verified','promising','incomplete','excluded','identity_review','unassessed'].includes(status))throw fail(422,'Invalid quality filter.');
     if(![true,false,'true','false'].includes(compact))throw fail(422,'Invalid compact result setting.');
+    if(status==='verified')await refreshVerified(user,target);
     const needle=String(search).trim().replace(/\s+/g,' ').slice(0,100),params=[TEAM,user.uid,status,needle];
     const scope=`FROM discovery_leads d LEFT JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2 AND q.rule_version='${qualificationVersion(target)}'
       WHERE ${visibleSQL} AND ($3='' OR COALESCE(q.status,'unassessed')=$3)
       AND ($4='' OR strpos(lower(concat_ws(' ',d.payload::jsonb->>'first_name',d.payload::jsonb->>'last_name')),lower($4))>0
         OR strpos(lower(d.payload::jsonb->>'company'),lower($4))>0)`;
-    const rows=(await pool.query(`SELECT d.id,d.payload,q.status AS recorded_status,count(*) OVER()::int AS total ${scope}
+    const rows=(await pool.query(`SELECT d.id,d.payload,q.status AS recorded_status,count(*) OVER()::int AS total,${linkedContacts} ${scope}
       ORDER BY q.score DESC NULLS LAST,d.id LIMIT $5 OFFSET $6`,[...params,limit,offset])).rows;
     const total=rows[0]?.total??(offset>0?(await pool.query(`SELECT count(*)::int AS total ${scope}`,params)).rows[0].total:0);
     const ids=rows.map(r=>r.id);
     const records=ids.length?(await pool.query('SELECT lead_id,payload FROM lab_observations WHERE user_id=$1 AND lead_id=ANY($2::text[])',[user.uid,ids])).rows:[];
     // Live assessment prevents an expired or edited record from displaying an old verified badge.
     const leads=rows.map(row=>{
-      const lead={...parse(row.payload),id:row.id},quality=assessLead(lead,records.filter(o=>o.lead_id===row.id).map(o=>parse(o.payload)),{now:now(),target});
+      const lead=withDirectoryRestrictions({...parse(row.payload),id:row.id},row.linked_contacts),quality=assessLead(lead,records.filter(o=>o.lead_id===row.id).map(o=>parse(o.payload)),{now:now(),target});
       if(compact===true||compact==='true')return {
         lead:Object.fromEntries(['id','first_name','last_name','current_title','company'].map(k=>[k,lead[k]])),
-        quality:{status:quality.status,score:quality.score,gaps:quality.gaps,age_band:quality.age_band,gates:Object.fromEntries(Object.entries(quality.gates).map(([k,g])=>[k,{state:g.state,reason:g.reason}]))}
+        quality:{target:quality.target,required_fields:quality.required_fields,status:quality.status,score:quality.score,gaps:quality.gaps,age_band:quality.age_band,gates:Object.fromEntries(Object.entries(quality.gates).map(([k,g])=>[k,{state:g.state,reason:g.reason}]))}
       };
       return {lead,quality};
     });
@@ -328,6 +332,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       // A person this user deleted stays deleted, whether a CSV or a research
       // run finds them again.
       if((await forgottenKeys(client,user.uid,keys)).size){rejected++;continue;}
+      if(await holdHistoricalArrival(client,user.uid,'lead',lead,{run_id:run?.id||null,source,reported:reportedFields(raw,lead)})){ambiguous++;continue;}
       const matches=[...new Map(keys.flatMap(key=>index.get(key)||[]).map(r=>[r.id,r])).values()];
       // More than one record claims this arrival: hold it for the advisor
       // instead of guessing or dropping it.
@@ -337,6 +342,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
         const existing=matches[0];
         // An advisor cannot overwrite another advisor's record through import deduplication.
         if(!writable(existing)){duplicates++;continue;}
+        await captureIdentityEvidence(client,existing.owner_user_id,'lead',existing.id,parse(existing.payload));
         saved=mergeWithHistory(parse(existing.payload),lead,now().toISOString(),reportedFields(raw,lead));saved.id=existing.id;
         await client.query('UPDATE discovery_leads SET payload=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2',[JSON.stringify(saved),saved.id]);duplicates++;
       } else {
@@ -347,6 +353,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
         const namesakes=(people.get(personKey(saved))||[]).filter(writable);
         if(namesakes.length){probable++;await queueReview(client,user,run,'probable',{},candidateKeys(saved),namesakes.map(r=>r.id),saved.id);}
       }
+      await captureIdentityEvidence(client,matches[0]?.owner_user_id||user.uid,'lead',saved.id,saved,lead);
       const stored={id:saved.id,payload:JSON.stringify(saved),owner_user_id:user.uid,owner_email:user.email};
       for(const key of candidateKeys(saved))index.set(key,[stored]);
       if(isNew&&personKey(saved)){const key=personKey(saved);people.set(key,[...(people.get(key)||[]),stored]);}
@@ -397,6 +404,76 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       })};
     });
   }
+  async function historicalIdentityReviews(user){
+    const reviews=(await pool.query("SELECT id,destination,candidate,payload,created_at FROM prospect_historical_reviews WHERE user_id=$1 AND status='open' ORDER BY created_at DESC,id LIMIT 100",[user.uid])).rows;
+    const total=Number((await pool.query("SELECT count(*) AS n FROM prospect_historical_reviews WHERE user_id=$1 AND status='open'",[user.uid])).rows[0].n);
+    const contactIds=reviews.map(r=>r.payload.existing_contact_id).filter(Boolean),leadIds=reviews.map(r=>r.payload.existing_lead_id).filter(Boolean);
+    const currentContacts=new Map((await pool.query('SELECT id,payload FROM prospect_contacts WHERE user_id=$1 AND id=ANY($2::text[])',[user.uid,contactIds])).rows.map(r=>[r.id,r.payload]));
+    const currentLeads=new Map((await pool.query('SELECT id,payload FROM discovery_leads WHERE owner_user_id=$1 AND id=ANY($2::text[])',[user.uid,leadIds])).rows.map(r=>[r.id,parse(r.payload)]));
+    return {total,reviews:reviews.map(r=>({id:r.id,destination:r.destination,operation:r.payload.existing_contact_id?'update_contact':r.payload.existing_lead_id?'update_lead':'create',created_at:r.created_at,
+      source:r.payload.source||r.payload.input?.source||r.candidate.source||'',
+      existing_record:r.payload.existing_contact_id&&currentContacts.has(r.payload.existing_contact_id)?reviewSummary(r.payload.existing_contact_id,currentContacts.get(r.payload.existing_contact_id)):r.payload.existing_lead_id&&currentLeads.has(r.payload.existing_lead_id)?reviewSummary(r.payload.existing_lead_id,currentLeads.get(r.payload.existing_lead_id)):null,
+      arrival:reviewSummary(null,r.candidate),proposed_changes:Object.fromEntries((r.payload.changed_fields||[]).filter(k=>['first_name','last_name','company','company_domain','title','current_title','industry','seniority','email','linkedin_url','phone','business_phone','mobile_phone','city','state','country','suppressed','email_status','phone_status','estimated_age_range','estimated_net_worth'].includes(k)&&['string','number','boolean'].includes(typeof r.candidate[k])).map(k=>[k,r.candidate[k]]))}))};
+  }
+  async function resolveHistoricalIdentity(user,id,input={}){
+    if(!input||typeof input!=='object'||Array.isArray(input)||!['different_person','discard'].includes(input.decision)||Object.keys(input).some(k=>!['decision','reason','confirmed_distinct'].includes(k)))throw fail(422,'Choose an identity review decision.');
+    if(input.decision==='different_person'&&(input.confirmed_distinct!==true||typeof input.reason!=='string'||!input.reason.trim()||input.reason.length>1000))throw fail(422,'Confirm that you reviewed the source and provide a reason for treating this as a different person.');
+    return transaction(pool,async client=>{
+      await client.query('SELECT pg_advisory_xact_lock(505006)');
+      // Same list-before-owner order as directory imports; never invert it.
+      const pending=(await client.query('SELECT payload FROM prospect_historical_reviews WHERE id=$1 AND user_id=$2',[id,user.uid])).rows[0];
+      if(input.decision==='different_person'&&pending?.payload?.input?.list_id)await client.query('SELECT id FROM prospect_lists WHERE id=$1 AND user_id=$2 FOR UPDATE',[pending.payload.input.list_id,user.uid]);
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`prospect:${user.uid}`]);
+      const row=(await client.query('SELECT * FROM prospect_historical_reviews WHERE id=$1 AND user_id=$2 FOR UPDATE',[id,user.uid])).rows[0];
+      if(!row)throw fail(404,'Review not found.');
+      if(row.status!=='open')throw fail(409,'This review was already decided. Refresh the review list.');
+      let savedId=null;
+      if(input.decision==='different_person'){
+        const candidate=row.candidate;
+        await historicalMatches(client,user.uid,candidate);
+        const keys=row.destination==='contact'?identityLookupKeys(candidate):candidateKeys(candidate);
+        if((await forgottenKeys(client,user.uid,keys)).size)throw fail(409,'Current deletion restrictions still apply. This review cannot override them.');
+        if(row.destination==='contact'&&row.payload.existing_contact_id){
+          const target=row.payload.existing_contact_id;
+          const live=(await client.query('SELECT payload FROM prospect_contacts WHERE id=$1 AND user_id=$2 FOR UPDATE',[target,user.uid])).rows[0];
+          if(!live||historicalCandidateHash(live.payload)!==row.payload.source_revision)throw fail(409,'The contact changed. Discard this stale review and review its current values.');
+          if((await client.query('SELECT id FROM prospect_contacts WHERE user_id=$1 AND id<>$2 AND identity_keys ?| $3::text[]',[user.uid,target,keys])).rows.length)throw fail(409,'Another contact now matches these identifiers.');
+          await captureIdentityEvidence(client,user.uid,'contact',target,live.payload,candidate);
+          await client.query('UPDATE prospect_contacts SET payload=$1::jsonb,identity_keys=$2::jsonb,updated_at=now() WHERE id=$3 AND user_id=$4',[JSON.stringify(candidate),JSON.stringify(contactIdentities(candidate)),target,user.uid]);savedId=target;
+        }else if(row.destination==='lead'&&row.payload.existing_lead_id){
+          const target=row.payload.existing_lead_id;
+          const live=(await client.query('SELECT payload FROM discovery_leads WHERE id=$1 AND owner_user_id=$2 FOR UPDATE',[target,user.uid])).rows[0];
+          if(!live||historicalCandidateHash(parse(live.payload))!==row.payload.source_revision)throw fail(409,'The lead changed. Discard this stale review and review its current values.');
+          const others=(await client.query('SELECT payload FROM discovery_leads WHERE team=$1 AND id<>$2',[TEAM,target])).rows;
+          if(others.some(r=>candidateKeys(parse(r.payload)).some(k=>keys.includes(k))))throw fail(409,'Another record now matches these identifiers.');
+          await captureIdentityEvidence(client,user.uid,'lead',target,parse(live.payload),candidate);
+          await client.query('UPDATE discovery_leads SET payload=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2 AND owner_user_id=$3',[JSON.stringify(candidate),target,user.uid]);
+          await evaluate(user,candidate,client);savedId=target;
+        }else if(row.destination==='contact'){
+          if((await client.query('SELECT id FROM prospect_contacts WHERE user_id=$1 AND identity_keys ?| $2::text[]',[user.uid,keys])).rows.length)throw fail(409,'An existing contact now matches. Review that contact before deciding.');
+          const workspace=createProspectWorkspace({pool:{transactionClient:client,query:(...a)=>client.query(...a)}});
+          const result=await workspace.importCSV(user,row.payload.input,{networking:row.payload.networking||null,historicalApproval:{id:row.id,candidateHash:historicalCandidateHash(candidate),networkingFingerprint:row.payload.networking_fingerprint}});
+          if(result.added!==1||result.conflicts||result.rejected)throw fail(409,'The arrival changed or cannot be saved safely. Review the source again.');
+          savedId=result.rows.find(r=>r.contact_id)?.contact_id;
+          // Private networking imports intentionally omit person details in general reports.
+          savedId ||= result.capture?.contact_id;
+          if(!savedId)throw fail(409,'The reviewed contact could not be confirmed.');
+          await scrubHistoricalReports(client,user.uid,[id],savedId);
+        }else{
+          const existing=(await client.query('SELECT payload FROM discovery_leads WHERE team=$1',[TEAM])).rows;
+          if(existing.some(r=>candidateKeys(parse(r.payload)).some(k=>keys.includes(k))))throw fail(409,'Identifiers now match an existing record. Review it before deciding.');
+          const saved={...withFieldHistory(candidate,now().toISOString(),row.payload.reported||candidate),id:randomUUID()};
+          await client.query('INSERT INTO discovery_leads(id,team,owner_user_id,owner_email,payload) VALUES($1,$2,$3,$4,$5)',[saved.id,TEAM,user.uid,user.email||'',JSON.stringify(saved)]);
+          await captureIdentityEvidence(client,user.uid,'lead',saved.id,saved);
+          if(row.payload.run_id&&(await client.query('SELECT id FROM lab_runs WHERE id=$1 AND user_id=$2',[row.payload.run_id,user.uid])).rows.length)await client.query('INSERT INTO lab_run_leads(run_id,lead_id,is_new,source) VALUES($1,$2,true,$3) ON CONFLICT DO NOTHING',[row.payload.run_id,saved.id,row.payload.source||'Historical identity review']);
+          await evaluate(user,saved,client);savedId=saved.id;
+        }
+      }else await scrubHistoricalReports(client,user.uid,[id]);
+      const resolution=input.decision==='discard'?{decision:'discard'}:{decision:input.decision,reason:input.reason.trim(),result_id:savedId,identity_signature:historicalIdentitySignature(row.candidate)};
+      await client.query("UPDATE prospect_historical_reviews SET status=$1,candidate='{}',payload='{}',resolution=$2::jsonb,resolved_at=now() WHERE id=$3 AND user_id=$4",[input.decision==='discard'?'discarded':'resolved',JSON.stringify(resolution),id,user.uid]);
+      return {resolved:true,decision:input.decision,id:savedId,destination:row.destination};
+    });
+  }
   async function resolveIdentityReview(user,id,input={}) {
     const decision=String(input.decision||''),target=String(input.target_id||'');
     return transaction(pool,async client=>{
@@ -423,15 +500,25 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
         if(!lead)throw fail(409,'This arrival is no longer held.');
         // A person deleted since the arrival stays deleted.
         if((await forgottenKeys(client,user.uid,candidateKeys(lead))).size)throw fail(409,'This person was deleted from your records.');
+        const historical=await holdHistoricalArrival(client,user.uid,'lead',lead,{run_id:review.run_id,source:'Identity review'});
+        if(historical){
+          await client.query("UPDATE lab_identity_reviews SET status='discarded',candidate='{}',resolved_at=now() WHERE id=$1 AND user_id=$2",[id,user.uid]);
+          return {held_for_historical_review:true,review_id:historical.id};
+        }
         let saved;
         if(decision==='merge'){
           const row=await pickTarget();
           saved={...absorbRecord(parse(row.payload),lead,at),id:row.id};
+          if((await forgottenKeys(client,row.owner_user_id,candidateKeys(saved))).size)throw fail(409,'Current deletion restrictions apply to merged identifiers.');
+          const historical=await holdHistoricalArrival(client,row.owner_user_id,'lead',saved,{existing_lead_id:row.id,source_revision:historicalCandidateHash(parse(row.payload)),source:'Identity merge',changed_fields:Object.keys(saved).filter(k=>saved[k]!==parse(row.payload)[k])});
+          if(historical)return {held_for_historical_review:true,review_id:row.owner_user_id===user.uid?historical.id:null};
+          await captureIdentityEvidence(client,row.owner_user_id,'lead',row.id,parse(row.payload),saved,lead);
           await client.query('UPDATE discovery_leads SET payload=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2',[JSON.stringify(saved),saved.id]);status='merged';
         } else {
           saved={...lead,id:randomUUID()};
           await client.query('INSERT INTO discovery_leads(id,team,owner_user_id,owner_email,payload) VALUES($1,$2,$3,$4,$5)',[saved.id,TEAM,user.uid,user.email,JSON.stringify(saved)]);status='saved';
         }
+        if(decision==='save_new')await captureIdentityEvidence(client,user.uid,'lead',saved.id,saved);
         await link(saved.id);await evaluate(user,saved,client);leadId=saved.id;
       } else if(decision==='same'){
         const row=await pickTarget(),arrival=await load(review.lead_id);
@@ -445,12 +532,17 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
         if(Number(work.n)||(Array.isArray(arrived.research_records)&&arrived.research_records.length))
           throw fail(409,'The newer record already has evidence, research, calls, activity or a linked contact. Open both and combine them by hand.');
         const saved={...absorbRecord(parse(row.payload),arrived,at),id:row.id};
+        if((await forgottenKeys(client,row.owner_user_id,candidateKeys(saved))).size)throw fail(409,'Current deletion restrictions apply to merged identifiers.');
+        const historical=await holdHistoricalArrival(client,row.owner_user_id,'lead',saved,{existing_lead_id:row.id,source_revision:historicalCandidateHash(parse(row.payload)),source:'Identity merge',changed_fields:Object.keys(saved).filter(k=>saved[k]!==parse(row.payload)[k])});
+        if(historical)return {held_for_historical_review:true,review_id:row.owner_user_id===user.uid?historical.id:null};
+        await captureIdentityEvidence(client,row.owner_user_id,'lead',row.id,parse(row.payload),arrived,saved);
         await client.query('UPDATE discovery_leads SET payload=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2',[JSON.stringify(saved),saved.id]);
         await client.query('INSERT INTO lab_run_leads(run_id,lead_id,is_new,source) SELECT run_id,$2,false,source FROM lab_run_leads WHERE lead_id=$1 ON CONFLICT(run_id,lead_id) DO NOTHING',[arrival.id,saved.id]);
         // Other open reviews about the newer record now point at the kept one.
         await client.query('UPDATE lab_identity_reviews SET match_ids=ARRAY(SELECT DISTINCT CASE WHEN m=$1 THEN $2 ELSE m END FROM unnest(match_ids) m) WHERE $1=ANY(match_ids)',[arrival.id,saved.id]);
         await client.query('DELETE FROM lab_identity_reviews WHERE lead_id=$1 AND id<>$2',[arrival.id,review.id]);
         await client.query('UPDATE lab_identity_reviews SET lead_id=NULL WHERE id=$1',[review.id]);
+        await transferIdentityEvidence(client,arrival.owner_user_id,'lead',arrival.id,row.id,row.owner_user_id);
         await client.query('DELETE FROM discovery_leads WHERE id=$1',[arrival.id]);
         await evaluate(user,saved,client);status='merged';leadId=saved.id;
       } else status=decision==='separate'?'separate':'discarded';
@@ -466,7 +558,9 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       await pool.query(`INSERT INTO lab_settings(user_id,user_email,daily_enabled,daily_hour,daily_budget_micros,configuration)
         VALUES($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT(user_id) DO UPDATE SET user_email=EXCLUDED.user_email,daily_enabled=EXCLUDED.daily_enabled,daily_hour=EXCLUDED.daily_hour,daily_budget_micros=EXCLUDED.daily_budget_micros,configuration=EXCLUDED.configuration,updated_at=now()`,[user.uid,user.email,input.daily_enabled===true,hour,config.daily_budget_micros,JSON.stringify(config)]);
     }
-    return (await pool.query('SELECT * FROM lab_settings WHERE user_id=$1',[user.uid])).rows[0]||{daily_enabled:false,daily_hour:13,daily_budget_micros:0,configuration:labConfiguration()};
+    const saved=(await pool.query('SELECT * FROM lab_settings WHERE user_id=$1',[user.uid])).rows[0];
+    return saved ? {...saved,configuration:{...parse(saved.configuration),qualification_target:ADVICE_TARGET}}
+      : {daily_enabled:false,daily_hour:13,daily_budget_micros:0,configuration:labConfiguration()};
   }
   async function enqueue(user,input={}) {
     const config=labConfiguration(input.kind==='inventory'?input:applyPlaybook(input)),kind=input.kind==='inventory'?'inventory':'discovery';
@@ -484,13 +578,22 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       // A campaign by place finds its own companies in the worker; the plan
       // catalog and saved leads are the fallback only for a campaign without one.
       const plans=config.location?[]:await selectEmployers(pool,config,user.uid);
-      employers=plans.map(p=>({company:p.sponsor,city:p.city,state:p.state,plan_id:p.id}));
+      employers=planResearchTargets(plans);
       for(const [i,company] of config.employers.entries()) {
         const target=employers.find(e=>nameKey(e.company)===nameKey(company));
-        if(target)target.website=config.websites[i]||'';
-        else employers.push({company,website:config.websites[i]||'',state:config.states.length===1?config.states[0]:''});
+        if(target){if(target.plan_identity_review)target.requested_website=config.websites[i]||'';else target.website=config.websites[i]||'';}
+        else {
+          // Eligibility filters/limits must not erase known name ambiguity. This
+          // bounded evidence lookup is independent of the discovery filters.
+          const matches=await matchPlans(pool,{company});
+          const unresolved=matches.length>=30||matches.some(p=>!p.ein)||new Set(matches.map(p=>p.ein)).size>1;
+          if(unresolved)employers.push({company,city:'',state:'',requested_website:config.websites[i]||'',plan_identity_review:true,
+            plan_identity_notice:'No eligible sponsor filing was selected for this name. Catalog namesakes or incomplete identifiers still require entity review; no website, location or single filing was assigned.',
+            plan_candidates:matches.map(p=>({id:p.id,ein:p.ein||null,sponsor:p.sponsor,city:p.city||'',state:p.state||'',plan_year:p.plan_year,separated_future_benefits:p.separated_future_benefits??null})),plan_sponsor_keys:[]});
+          else employers.push({company,website:config.websites[i]||'',state:config.states.length===1?config.states[0]:''});
+        }
       }
-      if(!employers.length&&config.playbook&&!config.location)throw fail(422,`No employer plans matched “${findPlaybook(config.playbook).label}”${config.states.length?' in '+config.states.join(', '):''}. Add more states, or check that the DOL plan catalog is loaded.`);
+      if(!employers.length&&config.playbook&&!config.location)throw fail(422,`No employer plans matched “${findPlaybook(config.playbook).label}”${config.states.length?' with sponsor mailing addresses in '+config.states.join(', '):''}. Sponsor states are not worksite or residence locations. Leave states blank to search all sponsors, or check that the DOL plan catalog is loaded.`);
       if(!employers.length&&!config.location) {
         const saved=(await pool.query(`SELECT payload FROM discovery_leads WHERE ${visibleSQL} ORDER BY updated_at DESC LIMIT 2000`,[TEAM,user.uid])).rows;
         employers=[...new Map(saved.map(r=>parse(r.payload)).filter(l=>l.company&&(!config.states.length||config.states.includes(l.state))).map(l=>[nameKey(l.company),{company:l.company,website:l.company_website||'',city:'',state:''}])).values()];
@@ -513,7 +616,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
           for(let i=0;i<ids.length;i+=100)await client.query('INSERT INTO lab_tasks(id,run_id,task_key,source,payload) VALUES($1,$2,$3,$4,$5::jsonb)',[randomUUID(),id,`inventory:${i}`,'inventory',JSON.stringify({ids:ids.slice(i,i+100)})]);
           if(!ids.length)return (await client.query("UPDATE lab_runs SET status='completed',completed_at=now(),message='No saved leads to assess.' WHERE id=$1 RETURNING *",[id])).rows[0];
         } else {
-          for(const employer of employers)for(const source of config.sources)await client.query('INSERT INTO lab_tasks(id,run_id,task_key,source,payload) VALUES($1,$2,$3,$4,$5::jsonb) ON CONFLICT(run_id,task_key) DO NOTHING',[randomUUID(),id,hash(`${source}:${nameKey(employer.company)}`),source,JSON.stringify(employer)]);
+          for(const employer of employers)for(const source of config.sources)await client.query('INSERT INTO lab_tasks(id,run_id,task_key,source,payload) VALUES($1,$2,$3,$4,$5::jsonb) ON CONFLICT(run_id,task_key) DO NOTHING',[randomUUID(),id,hash(`${source}:${nameKey(employer.company)}`),source,JSON.stringify({...employer,discovery_focus:config.playbook})]);
           if(config.location)await client.query("INSERT INTO lab_tasks(id,run_id,task_key,source,payload) VALUES($1,$2,'market','market',$3::jsonb)",[randomUUID(),id,JSON.stringify({location:config.location,radius_miles:config.radius_miles,industries:config.industries})]);
         }
         return row;
@@ -606,7 +709,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
          JSON.stringify((company.industries||[]).slice(0,10)),String(company.source||'Business directory').slice(0,100),String(company.source_url||'').slice(0,500),!reason,reason]);
       if(reason)continue;
       queued++;existing.add(key);
-      const employer={company:String(company.name).slice(0,200),company_key:key,website,city:'',state:config.states.length===1?config.states[0]:'',location:String(company.location||'').slice(0,240)};
+      const employer={company:String(company.name).slice(0,200),company_key:key,website,city:'',state:config.states.length===1?config.states[0]:'',location:String(company.location||'').slice(0,240),discovery_focus:config.playbook};
       for(const source of config.sources)await client.query('INSERT INTO lab_tasks(id,run_id,task_key,source,payload) VALUES($1,$2,$3,$4,$5::jsonb) ON CONFLICT(run_id,task_key) DO NOTHING',[randomUUID(),task.run_id,hash(`${source}:${key}`),source,JSON.stringify(employer)]);
     }
     const errors=[...(result.errors||[])];
@@ -634,19 +737,12 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
       const kept=result.candidates.filter(c=>titleMatches(c.current_title||c.title,config.titles));
       offTarget=result.candidates.length-kept.length;result={...result,candidates:kept};
     }
-    // A playbook's age floor drops only people whose reported age is below it.
-    let belowAge=0;
-    if(config.minimum_age&&result.candidates?.length){
-      const kept=result.candidates.filter(c=>!belowAgeFloor(c.estimated_age_range??c.age,config.minimum_age));
-      belowAge=result.candidates.length-kept.length;result={...result,candidates:kept};
-    }
     await transaction(pool,async client=>{
       const owned=(await client.query('SELECT id FROM lab_tasks WHERE id=$1 AND lease_token=$2 AND status=\'running\' FOR UPDATE',[task.id,task.lease_token])).rows[0];
       if(!owned)return;
       if(task.source==='market'){await expandMarket(client,task,user,config,result);return;}
       const counts=await saveCandidates(client,user,result.candidates||[],{id:task.run_id},task.source);
       if(offTarget)counts.off_target=offTarget;
-      if(belowAge)counts.below_age=belowAge;
       const {candidates,...summary}=result;
       const status=['completed','no_match'].includes(result.status)?'completed':result.status==='partial'?'partial':'failed';
       await client.query('UPDATE lab_tasks SET status=$1,result=$2::jsonb,completed_at=now(),lease_until=NULL,lease_token=NULL WHERE id=$3',[status,JSON.stringify({...summary,...counts,discovered:candidates?.length||0,duration_ms:Math.round(performance.now()-started)}),task.id]);
@@ -687,20 +783,25 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     await pool.query("INSERT INTO lab_costs(id,run_id,user_id,category,amount_micros,basis,note) VALUES($1,$2,$3,$4,$5,'self_reported',$6) ON CONFLICT(id) DO NOTHING",[`${user.uid}:${id}`,input.run_id,user.uid,input.category,amount,String(input.note||'').slice(0,500)]);
     return {saved:true};
   }
-  async function metrics(user,days=14) {
-    const target=await targetFor(user);
-    days=integer(days,1,90,14);
-    // Revalidate previously verified rows against live identity and expiry before reporting totals.
+  async function refreshVerified(user,target) {
+    const at=now();
     let cursor='';
     for(;;) {
-      const rows=(await pool.query(`SELECT d.id,d.payload,q.evaluated_at::text AS assessment_version FROM discovery_leads d JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2 AND q.rule_version='${qualificationVersion(target)}'
+      const rows=(await pool.query(`SELECT d.id,d.payload,q.evaluated_at::text AS assessment_version,${linkedContacts} FROM discovery_leads d JOIN lab_qualification q ON q.lead_id=d.id AND q.user_id=$2 AND q.rule_version='${qualificationVersion(target)}'
         WHERE ${visibleSQL} AND q.status='verified' AND d.id>$3 ORDER BY d.id LIMIT 100`,[TEAM,user.uid,cursor])).rows;
       if(!rows.length)break;
       const ids=rows.map(r=>r.id),obs=(await pool.query('SELECT lead_id,payload FROM lab_observations WHERE user_id=$1 AND lead_id=ANY($2::text[])',[user.uid,ids])).rows;
       // Preserve timestamp precision and only downgrade the exact assessment we read.
-      for(const row of rows){const quality=assessLead({...parse(row.payload),id:row.id},obs.filter(o=>o.lead_id===row.id).map(o=>parse(o.payload)),{now:now(),target});if(quality.status!=='verified')await pool.query('UPDATE lab_qualification SET status=$1,score=$2,evaluated_at=now() WHERE lead_id=$3 AND user_id=$4 AND evaluated_at=$5::timestamptz AND status=\'verified\'',[quality.status,quality.score,row.id,user.uid,row.assessment_version]);}
+      for(const row of rows){const lead=withDirectoryRestrictions({...parse(row.payload),id:row.id},row.linked_contacts);
+        const quality=assessLead(lead,obs.filter(o=>o.lead_id===row.id).map(o=>parse(o.payload)),{now:at,target});
+        if(quality.status!=='verified')await pool.query('UPDATE lab_qualification SET status=$1,score=$2,evaluated_at=now() WHERE lead_id=$3 AND user_id=$4 AND evaluated_at=$5::timestamptz AND status=\'verified\'',[quality.status,quality.score,row.id,user.uid,row.assessment_version]);}
       cursor=ids.at(-1);
     }
+  }
+  async function metrics(user,days=14) {
+    const target=await targetFor(user);
+    days=integer(days,1,90,14);
+    await refreshVerified(user,target);
     const daily=(await pool.query(`WITH days AS (SELECT generate_series((now() AT TIME ZONE 'UTC')::date-($2::int-1),(now() AT TIME ZONE 'UTC')::date,'1 day'::interval)::date AS day),
       people AS (SELECT (r.created_at AT TIME ZONE 'UTC')::date AS day,count(DISTINCT l.lead_id) FILTER(WHERE r.kind='discovery' AND l.is_new)::int AS sourced,count(DISTINCT l.lead_id) FILTER(WHERE r.kind='import' AND l.is_new)::int AS imported FROM lab_runs r JOIN lab_run_leads l ON l.run_id=r.id WHERE r.user_id=$1 GROUP BY 1),
       verified AS (SELECT (first_verified_at AT TIME ZONE 'UTC')::date AS day,count(*)::int AS n FROM lab_qualification WHERE user_id=$1 AND status='verified' AND rule_version='${qualificationVersion(target)}' AND first_verified_at IS NOT NULL GROUP BY 1),
@@ -726,7 +827,7 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     const sum=(k)=>daily.reduce((s,r)=>s+Number(r[k]),0),verified=sum('newly_verified'),costs=sum('cost_micros');
     const catalog=await catalogSummary(pool);
     return {daily,inventory,sources:sourceRows,catalog,period_days:days,totals:{new_sourced:sum('new_sourced'),imported:sum('imported'),newly_verified:verified,cost_usd:costs/1000000,cost_per_verified:verified?costs/1000000/verified:null,verified_per_calendar_day:verified/days},
-      notes:['Newly verified counts each currently qualified person once under the current five-criterion rule. Expired, corrected and deleted records are excluded.','Source qualified yield measures the current qualification of new people acquired in this period; repeated lookups do not create new people. It is not a predictive accuracy estimate.','Imported records are separate from newly sourced people.','Costs include only recorded provider, labor, infrastructure and subscription amounts; unrecorded costs are unknown. Source costs show reserved provider charges only.','Nonverified inventory totals reflect the last assessment; run Assess saved leads to refresh all evidence. UTC calendar days.']};
+      notes:['Newly verified counts each currently qualified person once under the current advice-decision rule: reviewed planning decision, residence and contact. Expired, corrected and deleted records are excluded.','Source qualified yield measures the current qualification of new people acquired in this period; repeated lookups do not create new people. It is not a predictive accuracy estimate.','Imported records are separate from newly sourced people.','Costs include only recorded provider, labor, infrastructure and subscription amounts; unrecorded costs are unknown. Source costs show reserved provider charges only.','Nonverified inventory totals reflect the last assessment; run Assess saved leads to refresh all evidence. UTC calendar days.']};
   }
   async function importContacts(user,input) {
     if(!Array.isArray(input.ids)||!input.ids.length||input.ids.length>100||input.ids.some(id=>typeof id!=='string'||id.length>100))throw fail(422,'Select 1–100 directory contacts at a time.');
@@ -798,8 +899,11 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     if(path==='/api/lab/export'&&request.method==='POST') {
       const input=await body(),ids=cleanList(input.ids,1000);if(!ids.length)throw fail(422,'Select records to export (maximum 1,000).');
       const rows=[];for(const id of ids){const row=await detail(user,id);if(row.quality.status!=='excluded'&&(!input.verified_only||row.quality.status==='verified'))rows.push(row);}
-      return new Response(researchCSV(rows),{headers:{'content-type':'text/csv; charset=utf-8','content-disposition':'attachment; filename="prospectpilot-research.csv"'}});
+      return new Response(researchCSV(rows,ADVICE_TARGET),{headers:{'content-type':'text/csv; charset=utf-8','content-disposition':'attachment; filename="prospectpilot-research.csv"'}});
     }
+    if(path==='/api/lab/historical-identity-reviews'&&request.method==='GET')return historicalIdentityReviews(user);
+    const historical=path.match(/^\/api\/lab\/historical-identity-reviews\/([^/]+)$/);
+    if(historical&&request.method==='POST')return resolveHistoricalIdentity(user,decodeURIComponent(historical[1]),await body());
     if(path==='/api/lab/identity-reviews'&&request.method==='GET')return identityReviews(user);
     const identityMatch=path.match(/^\/api\/lab\/identity-reviews\/([^/]+)$/);
     if(identityMatch&&request.method==='POST')return resolveIdentityReview(user,decodeURIComponent(identityMatch[1]),await body());
@@ -811,5 +915,5 @@ export function createResearchLab({pool,sources,dispatch=async()=>false,now=()=>
     if(runMatch&&request.method==='GET')return runDetail(user,decodeURIComponent(runMatch[1]));
     throw fail(404,'Research endpoint not found.');
   }
-  return {relatedPeople,importContacts,advisor,route,identityReviews,resolveIdentityReview,tick,scheduleDue,enqueue,importCSV,detail,list,review,metrics,settings,cost,runDetail};
+  return {historicalIdentityReviews,resolveHistoricalIdentity,relatedPeople,importContacts,advisor,route,identityReviews,resolveIdentityReview,tick,scheduleDue,enqueue,importCSV,detail,list,review,metrics,settings,cost,runDetail};
 }

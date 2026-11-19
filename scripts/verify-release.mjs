@@ -18,7 +18,7 @@
 import {pathToFileURL} from 'node:url';
 import {resolve} from 'node:path';
 
-const EXPECTED = {feature_set: 'research-lab-v1', quality_version: 'retirement-evidence-3', cadence_version: 'outreach-cadence-1',
+const EXPECTED = {feature_set: 'research-lab-v1', quality_version: 'advice-decision-1', cadence_version: 'outreach-cadence-2',
   advisor_workspace_version: 'advisor-workflow-1', contact_workspace_version: 'professional-contacts-1'};
 
 // Health is required on every host unless explicitly overridden. Cloud Run

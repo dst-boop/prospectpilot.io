@@ -57,16 +57,32 @@ test('synthetic staging exercises signed-in HTTP networking and lead pipeline wi
     const reviewed=await json('/api/lab/leads/'+leadId,{cookie});assert.notEqual(reviewed.quality.status,'verified','one reviewed field cannot qualify a lead');
     const unqualifiedExport=await request('/api/lab/export',{method:'POST',cookie,body:{ids:[leadId],verified_only:true}});
     assert.equal(unqualifiedExport.status,200);assert.ok(!(await unqualifiedExport.text()).includes('Jordan'));
-    const evidence={residence:{country:'US',scope:'residence'},retirement:{account_type:'401k',route:'separated',assets_confirmed:true,individual:true,eligible_distribution:true,evidence_basis:'participant_disclosure',consent_confirmed:true},contact:{channel:'email',address:'jordan@example.com',identity_confirmed:true},net_worth:{lower_bound_usd:250000,excludes_home:true,net_of_liabilities:true,evidence_basis:'authorized_document',consent_confirmed:true}};
+    const evidence={residence:{country:'US',scope:'residence',state:'NY'},planning_decision:{origin:'accepted_introduction',topic:'retirement_income',identity_confirmed:true,prospect_confirmed:true},contact:{channel:'email',address:'jordan@example.com',identity_confirmed:true,outreach_basis:'person_requested'}};
     for(const [field,value] of Object.entries(evidence))await json('/api/lab/leads/'+leadId+'/review',{method:'POST',cookie,body:{field,value,verdict:'confirmed',source:'Synthetic evidence only',note:'Fictional fixture, not a real disclosure or document.',observed_at:new Date().toISOString(),identity_signature:detail.quality.identity_signature}});
     const qualified=await json('/api/lab/leads/'+leadId,{cookie});assert.equal(qualified.quality.status,'verified');
-    assert.equal((await database.pool.query('SELECT count(*)::int AS n FROM lab_observations WHERE lead_id=$1 AND user_id=$2',[leadId,'synthetic-advisor'])).rows[0].n,5);
+    assert.equal((await database.pool.query('SELECT count(*)::int AS n FROM lab_observations WHERE lead_id=$1 AND user_id=$2',[leadId,'synthetic-advisor'])).rows[0].n,4);
     const qualifiedExport=await request('/api/lab/export',{method:'POST',cookie,body:{ids:[leadId],verified_only:true}});
     assert.equal(qualifiedExport.status,200);const leadCSV=await qualifiedExport.text();assert.match(leadCSV,/Jordan/);assert.ok(!leadCSV.includes(capture.note));
     assert.equal((await request('/api/lab/export',{method:'POST',cookie:other,body:{ids:[leadId],verified_only:true}})).status,404);
-    const worklist=await json('/api/lab/worklist?view=all',{cookie});assert.equal(worklist.total,1);assert.equal(worklist.items[0].lead.id,leadId);
+    const worklist=await json('/api/lab/worklist?view=all',{cookie});assert.equal(worklist.total,1);assert.equal(worklist.items[0].lead.id,leadId);assert.equal(worklist.items[0].action.label,'Follow up on the accepted introduction');
     assert.equal((await json('/api/lab/worklist?view=all',{cookie:other})).total,0);
     assert.equal((await request('/api/lab/leads/'+leadId,{cookie:other})).status,404);
+
+    // Complete the advisor loop through real HTTP handlers, with synthetic identity/data only.
+    const activityPath='/api/lab/leads/'+leadId+'/activity';
+    const activityDetail=await json(activityPath,{cookie});
+    const nextAt=new Date(Date.now()+86400000).toISOString();
+    const followUp={outcome:'follow_up',note:'Synthetic prospect asked for a discussion tomorrow.',next_at:nextAt,signature:activityDetail.action.signature,idempotency_key:'pilot-followup-1'};
+    await json(activityPath,{method:'POST',cookie,body:followUp});
+    assert.equal((await json(activityPath,{method:'POST',cookie,body:followUp})).replayed,true);
+    const afterFollowUp=await json(activityPath,{cookie});
+    const savedLead=(await json('/api/lab/leads/'+leadId,{cookie})).lead;
+    assert.equal(savedLead.follow_up_status,'Follow-up');
+    assert.equal(savedLead.follow_up_date,nextAt);
+    assert.equal(afterFollowUp.action.bucket,'scheduled');
+    assert.equal(afterFollowUp.activities.length,1);
+    assert.equal((await request(activityPath,{method:'POST',cookie:other,body:followUp})).status,404);
+    assert.equal((await request(activityPath,{method:'POST',cookie,body:{...followUp,idempotency_key:'pilot-stale'}})).status,409);
 
     // Same durable jobs, task state machine, lists and export; adapters and cost are synthetic.
     const list=await json('/api/prospect/lists',{method:'POST',cookie,body:{name:'Synthetic provider journey'}});

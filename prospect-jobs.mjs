@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {hash,nameKey,linkedinURL} from './lead-quality.mjs';
 import {normalizeContact,contactIdentities,identityLookupKeys,searchFilters,retainSourceHistory} from './prospect-workspace.mjs';
 import {CONTACT_ALIASES,contactEmail} from './prospect-data-quality.mjs';
+import {captureIdentityEvidence,holdHistoricalArrival,historicalCandidateHash} from './historical-identities.mjs';
 import {forgottenKeys} from './forget.mjs';
 import {PAYING_STATUSES} from './billing.mjs';
 import {DOMAIN_CHECK_STATUSES,DOMAIN_CHECK_LABELS,recentDomainFailure,isNonPublicMailDomain} from './prospect-domain-check.mjs';
@@ -186,6 +187,8 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
   for(const raw of result.contacts){let contact;try{contact=normalizeContact(raw,'People Data Labs');}catch{rejected++;continue;}const keys=contactIdentities(contact);if(!keys.length){rejected++;continue;}
    // Someone this user deleted is not brought back by a paid search.
    if((await forgottenKeys(c,task.user_id,identityLookupKeys(contact))).size){rejected++;continue;}
+   const reviewInput={source:'People Data Labs',list_id:listId||'',csv:[Object.keys(raw),Object.values(raw)].map(row=>row.map(v=>'"'+String(v??'').replaceAll('"','""')+'"').join(',')).join('\n')};
+   if(await holdHistoricalArrival(c,task.user_id,'contact',normalizeContact(raw,'People Data Labs',{importing:true}),{input:reviewInput,networking:null})){conflicts++;continue;}
    const matches=(await c.query('SELECT id,payload FROM prospect_contacts WHERE user_id=$1 AND identity_keys ?| $2::text[] FOR UPDATE',[task.user_id,identityLookupKeys(contact)])).rows;
    if(matches.length>1||matches.some(r=>['first_name','last_name'].some(k=>nameKey(r.payload[k])!==nameKey(contact[k]))||['email','linkedin_url'].some(k=>r.payload[k]&&contact[k]&&r.payload[k]!==contact[k]))){conflicts++;continue;}
    if(matches.length){
@@ -202,10 +205,15 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
     const updated={...old,last_seen_at:evidence.imported_at,source_history:retainSourceHistory([...(old.source_history||[]),{...evidence,differing_fields:differing,...differing.length?{proposed_values:Object.fromEntries(differing.map(key=>[key,contact[key]]))}:{}}])};
     await c.query('UPDATE prospect_contacts SET payload=$1::jsonb,updated_at=now() WHERE id=$2 AND user_id=$3',[JSON.stringify(updated),id,task.user_id]);
    }else{id=randomUUID();contact={...contact,source_kind:'provider',provider_id:raw.provider_id,source_observed_at:null,last_seen_at:evidence.imported_at,source_history:[evidence],field_sources:Object.fromEntries(Object.keys(CONTACT_ALIASES).filter(key=>contact[key]).map(key=>[key,evidence]))};await c.query('INSERT INTO prospect_contacts(id,user_id,payload,identity_keys) VALUES($1,$2,$3::jsonb,$4::jsonb)',[id,task.user_id,JSON.stringify(contact),JSON.stringify(keys)]);added++;}
+   await captureIdentityEvidence(c,task.user_id,'contact',id,contact);
    contact_ids.push(id);if(listId)await c.query('INSERT INTO prospect_list_members(list_id,contact_id) VALUES($1,$2) ON CONFLICT DO NOTHING',[listId,id]);
   }return {added,duplicates,conflicts,rejected,contact_ids,total:result.total,retrieved:result.retrieved,scroll_token:result.scroll_token||'',filters:task.payload.filters,message:result.errors?.join(' ')||''};
  }
  async function apply(task,result){return tx(pool,async c=>{
+  // Imports take list then owner; deletion takes owner then task/contact.
+  // Never hold a task/contact row while waiting for the owner's lock.
+  if(task.action==='search'&&task.payload.list_id)await c.query('SELECT id FROM prospect_lists WHERE id=$1 AND user_id=$2 FOR SHARE',[task.payload.list_id,task.user_id]);
+  await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`prospect:${task.user_id}`]);
   const live=(await c.query('SELECT status,lease_token FROM prospect_tasks WHERE id=$1 FOR UPDATE',[task.id])).rows[0];if(live?.status!=='running'||live.lease_token!==task.lease_token)return;
   if(result.pending){if(task.attempts>=5)return finish(c,task,'needs_attention',{message:'Verification is still pending after five polls. No further automatic requests will be made.'});await c.query("UPDATE prospect_tasks SET status='waiting',lease_token=NULL,lease_until=NULL,next_attempt_at=now()+interval '30 seconds',result=jsonb_build_object('message','Provider acknowledged verification; awaiting its result.') WHERE id=$1",[task.id]);return;}
   if(task.action==='search'){const saved=await saveSearch(c,task,result);await finish(c,task,saved.conflicts||saved.rejected?'failed':'completed',saved);return;}
@@ -256,6 +264,11 @@ export function createProspectJobs({pool,providers,config={dailyBudgetMicros:0,p
    prospective.field_sources={...(contact.field_sources||{})};for(const key of Object.keys(CONTACT_ALIASES))if(!contact[key]&&candidate[key])prospective.field_sources[key]=evidence;
    prospective.source_history=retainSourceHistory([...(contact.source_history||[]),{...evidence,differing_fields:differing,...differing.length?{proposed_values:Object.fromEntries(differing.map(key=>[key,candidate[key]]))}:{}}]);prospective.last_seen_at=evidence.imported_at;
    Object.assign(contact,prospective);if(!row.payload.email&&contact.email)contact.email_status='unverified';if(!row.payload.phone&&contact.phone)contact.phone_status='unverified';contact.enrichment={provider:'pdl',checked_at:result.checked_at,match_likelihood:result.match_likelihood||null};
+  }
+  if(task.action==='enrich'){
+   if((await forgottenKeys(c,task.user_id,identityLookupKeys(contact))).size){await finish(c,task,'skipped',{message:'Deleted identity restriction; enrichment was not applied.'});return;}
+   if(await holdHistoricalArrival(c,task.user_id,'contact',contact,{existing_contact_id:task.contact_id,source_revision:historicalCandidateHash(row.payload),source:'Provider enrichment',changed_fields:[...Object.keys(CONTACT_ALIASES),'email_status','phone_status'].filter(k=>contact[k]!==row.payload[k])})){await finish(c,task,'skipped',{message:'A former identifier needs owner review in Research Lab. Enrichment was not applied.'});return;}
+   await captureIdentityEvidence(c,task.user_id,'contact',task.contact_id,row.payload,contact);
   }
   await c.query('UPDATE prospect_contacts SET payload=$1::jsonb,identity_keys=$2::jsonb,updated_at=now() WHERE id=$3',[JSON.stringify(contact),JSON.stringify(contactIdentities(contact)),task.contact_id]);
   await finish(c,task,'completed',{message:task.action==='check_domain'?`Domain check: ${DOMAIN_CHECK_LABELS[result.status]}. This does not verify the individual mailbox.`:task.action==='verify'?(contact.email_status!==result.status?'Verification saved as historical evidence; a newer domain check found no mail route. Email remains unverified.':`Email verification: ${result.status}.`):'Provider enrichment saved; imported phone information remains unverified.'});

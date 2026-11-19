@@ -13,7 +13,7 @@ import {forgottenKeys} from '../../forget.mjs';
 const read = file => readFileSync(new URL('../../' + file, import.meta.url), 'utf8');
 const owner = {uid: 'rollback-owner', email: 'owner@example.test'};
 const other = {uid: 'rollback-other', email: 'other@example.test'};
-const originalCSV = 'First Name,Last Name,Company,Email\nJordan,Example,Original Synthetic Company,jordan@example.test';
+const originalPerson = {first_name:'Jordan',last_name:'Example',company:'Original Synthetic Company',email:'jordan@example.test'};
 const alias = {first_name: 'Jordan', last_name: 'Example', company: 'New Synthetic Company',
   email: 'JORDAN@example.test', linkedin_url: 'https://www.linkedin.com/in/Jordan-Synthetic/?trk=fixture',
   country: 'United States', state: 'Massachusetts'};
@@ -110,8 +110,13 @@ async function probeWorkspace(pool, run) {
 export async function verifyNetworkingRollback(pool, forget, {legacyNegativeControl = false, contactKeys = identityLookupKeys} = {}) {
   await preCaptureSchema(pool);
   const app = createProspectWorkspace({pool});
-  await app.importCSV(owner, {source: 'Synthetic pre-upgrade import', csv: originalCSV});
-  await app.importCSV(other, {source: 'Synthetic other owner', csv: originalCSV});
+  // Seed the genuine 031 fixture directly. Current application writers require
+  // later relations and must never be made permissive on an old schema.
+  for (const user of [owner, other]) {
+    const person = normalizeContact(originalPerson, 'Synthetic pre-upgrade fixture', {importing:true});
+    await pool.query('INSERT INTO prospect_contacts(id,user_id,payload,identity_keys) VALUES($1,$2,$3::jsonb,$4::jsonb)',
+      [randomUUID(),user.uid,JSON.stringify(person),JSON.stringify(identityLookupKeys(person))]);
+  }
   const beforeContacts = await rows(pool, 'prospect_contacts');
   const beforeMigrations = await rows(pool, 'prospectpilot_migrations');
   const id = beforeContacts.find(row => row.user_id === owner.uid).id;

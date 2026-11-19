@@ -24,17 +24,16 @@ const lead=name=>({lead:{id:name,first_name:name,last_name:'Example',evidence:[]
 const run=name=>({run:{status:name,created_at:'2026-09-10'},tasks:[],costs:[]});
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 
-test('changing qualification target preserves saved budgets and closes stale evidence',async()=>{
-  const c=client();c.element('qualificationTarget').value='rollover_100k';c.element('detail').open=true;
-  const save=c.element('saveTarget').onclick();
-  assert.equal(c.pending[0].url,'/api/lab/settings');
-  const saved={daily_enabled:true,daily_hour:16,daily_budget_micros:12000000,configuration:{daily_budget_micros:12000000,sources:['sec'],qualification_target:'legacy',score_weights:{qualification:7}}};
-  c.pending.shift().respond(saved);await settle();
-  const payload=JSON.parse(c.pending[0].options.body);
-  assert.deepEqual(payload,{...saved,configuration:{...saved.configuration,qualification_target:'rollover_100k'}});
-  c.pending.shift().respond(payload);await save;
-  assert.match(c.element('qualificationTargetStatus').textContent,/Active: \$100,000/);
-  assert.equal(c.element('detail').open,false);assert.equal(c.element('saveTarget').disabled,false);
+test('saved campaign budgets remain available without a qualification-target picker',()=>{
+  const c=client();
+  c.run("readSettings({daily_enabled:true,daily_hour:16,daily_budget_micros:12000000,configuration:{sources:['sec'],qualification_target:'legacy',score_weights:{qualification:7}}})");
+  assert.equal(c.element('budget').value,12);
+  assert.equal(c.element('weightQualification').value,7);
+  assert.equal(c.element('dailyHour').value,16);
+  assert.equal(c.run('Object.hasOwn(config(),\"qualification_target\")'),false);
+  const html=readFileSync(new URL('../lab.html',import.meta.url),'utf8');
+  assert.match(html,/value="planning_decision"/);
+  assert.doesNotMatch(html,/id="qualificationTarget"/);
 });
 
 test('movable amount review shares account evidence fields without showing legacy net-worth fields',()=>{
@@ -546,4 +545,78 @@ test('daily summary clears on loading and errors and ignores an old response',as
  c.pending[0].respond({...emptyQueue,daily:{...dailySummary,due:99}});await old;assert.match(c.element('dailyDueSummary').textContent,/^3 follow-ups/);
  const failed=c.run('loadWorklist()');c.pending[2].respond({detail:'Unavailable'},503);await assert.rejects(failed);
  assert.equal(c.element('dailyDueSummary').textContent,'Due follow-up summary unavailable.');assert.equal(c.element('dailyScope').textContent,'');assert.equal(c.element('startNext').disabled,true);
+});
+
+test('outcome draft guard compares values rather than counting input events',()=>{
+  const c=client();c.run('activityDraftBaseline=activityDraftSnapshot()');
+  assert.equal(c.run('hasActivityDraft()'),false);
+  for(const id of ['activityOutcome','activityChannel','activityNext','activityNote']){
+    c.element(id).value='changed';assert.equal(c.run('hasActivityDraft()'),true);
+    c.element(id).value='';assert.equal(c.run('hasActivityDraft()'),false);
+  }
+  c.element('activityInbound').checked=true;assert.equal(c.run('hasActivityDraft()'),true);
+  c.element('activityInbound').checked=false;assert.equal(c.run('hasActivityDraft()'),false);
+  c.element('continueNext').checked=true;assert.equal(c.run('hasActivityDraft()'),false);
+});
+
+test('cancelled close and prospect navigation retain unsaved outcome without a request',async()=>{
+  const c=client();c.run('activityDraftBaseline=activityDraftSnapshot();globalThis.confirm=()=>false');
+  c.element('activityNote').value='Synthetic agreed next step';
+  let prevented=0;c.element('detail').cancelHandler({preventDefault(){prevented++;}});
+  assert.equal(prevented,1);await c.run('openLead("different")');
+  assert.equal(c.pending.length,0);assert.equal(c.element('activityNote').value,'Synthetic agreed next step');
+  assert.equal(c.run('hasActivityDraft()'),true);
+});
+
+test('explicit discard allows one navigation and clears old draft tracking',async()=>{
+  const c=client();c.run('activityDraftBaseline=activityDraftSnapshot();globalThis.confirm=()=>true');
+  c.element('activityNote').value='Unsaved synthetic note';
+  const opened=c.run('openLead("new")');assert.equal(c.pending.length,1);
+  assert.equal(c.run('hasActivityDraft()'),false);c.pending[0].respond(lead('new'));await opened;
+});
+
+test('saving blocks Escape and newer prospect navigation without asking to discard',async()=>{
+  const c=client();c.run('activitySaving=true;globalThis.confirm=()=>{throw Error("must not confirm")};');
+  let prevented=0;c.element('detail').cancelHandler({preventDefault(){prevented++;}});
+  await c.run('openLead("new")');assert.equal(prevented,1);assert.equal(c.pending.length,0);
+  assert.match(c.element('activityError').textContent,/Wait for the save result/);
+});
+
+test('closed prospect clears draft state; policy guidance does not require age',()=>{
+  const c=client();c.run('activityDraftBaseline=activityDraftSnapshot()');c.element('activityNote').value='draft';
+  c.element('detail').close();assert.equal(c.run('hasActivityDraft()'),false);
+  assert.match(c.run('emptyMessages.ready[1]'),/planning decision/);
+  assert.doesNotMatch(c.run('emptyMessages.ready[1]'),/Review age/);
+  const source=readFileSync(new URL('../lab-client.js',import.meta.url),'utf8');
+  assert.match(source,/Age does not qualify a lead or set priority/);
+});
+
+test('successful save clears dirty state and can advance without a discard prompt',async()=>{
+ const c=client();c.run("current={lead:{id:'A'}};currentWorkflow={action:{signature:'A'}};activityKey='save';leadDetailVersion=1;activityDraftBaseline=activityDraftSnapshot();globalThis.confirm=()=>{throw Error('unexpected discard prompt')};document.querySelectorAll=()=>[{dataset:{workOpen:'B'},click(){openLead('B')}}]");
+ c.element('activityOutcome').value='connected';c.element('activityNote').value='Synthetic note';c.element('detail').open=true;c.element('continueNext').checked=true;
+ const save=c.element('activityForm').onsubmit({preventDefault(){}});
+ assert.equal(c.element('activityEntryFields').disabled,true);
+ assert.equal(JSON.parse(c.pending[0].options.body).note,'Synthetic note');
+ c.pending[0].respond({saved:true});await save;
+ assert.equal(c.pending.length,2);assert.equal(c.pending[1].url,'/api/lab/leads/B');
+ assert.equal(c.element('activityEntryFields').disabled,false);assert.equal(c.run('hasActivityDraft()'),false);
+ c.pending[1].respond(lead('B'));await settle();
+});
+
+test('failed outcome save unlocks fields and retains draft for a deliberate retry',async()=>{
+ const c=client();c.run("current={lead:{id:'A'}};currentWorkflow={action:{signature:'A'}};activityKey='save';activityDraftBaseline=activityDraftSnapshot()");
+ c.element('activityOutcome').value='connected';c.element('activityNote').value='Keep this synthetic note';c.element('detail').open=true;
+ const save=c.element('activityForm').onsubmit({preventDefault(){}});
+ c.pending[0].respond({detail:'Temporary failure'},503);await save;
+ assert.equal(c.element('activityEntryFields').disabled,false);assert.equal(c.run('hasActivityDraft()'),true);
+ assert.equal(c.element('activityNote').value,'Keep this synthetic note');assert.equal(c.element('detail').open,true);
+});
+
+
+test('pending outcome save blocks evidence mutation and deletion',async()=>{
+  const c=client();c.run('activitySaving=true;');
+  await c.element('reviewForm').onsubmit({preventDefault(){}});
+  await c.element('forgetLead').onclick();
+  assert.equal(c.pending.length,0);
+  assert.match(c.element('activityError').textContent,/Wait for the save result/);
 });

@@ -10,7 +10,7 @@ const csv=name=>'First Name,Last Name,Company,Email\n'+name+',Example,Fixture,'+
 async function fixture(fn){
  const db=new PGlite();
  try{
-  for(const migration of ['008-prospect-workspace','017-forget','020-list-sharing'])await db.exec(readFileSync(new URL('../migrations/'+migration+'.sql',import.meta.url),'utf8'));
+  for(const migration of ['008-prospect-workspace','017-forget','034-historical-identities','020-list-sharing'])await db.exec(readFileSync(new URL('../migrations/'+migration+'.sql',import.meta.url),'utf8'));
   const pool={query:(...args)=>db.query(...args),connect:async()=>({query:(...args)=>db.query(...args),release(){}})};
   const app=createProspectWorkspace({pool,resolveRecipient:async email=>{const u=Object.values(users).find(u=>u.email===email);return u&&{...u,emailVerified:true};},checkDomain:async()=>null});
   const handler=createHandler({auth:{verifySessionCookie:async uid=>users[uid]},ownerEmail:users.owner.email,origins:[origin],prospect:app});

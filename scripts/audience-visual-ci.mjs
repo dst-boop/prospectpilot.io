@@ -1,0 +1,96 @@
+// Synthetic browser QA only: no Firebase, database, provider or external site access.
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {createRequire} from 'node:module';
+import {createHandler} from '../handler.mjs';
+const require=createRequire(import.meta.url);
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'/tmp/pp-browser/node_modules/playwright');
+const files={'/audience':'audience.html','/audience-client.js':'audience-client.js','/audience-catalog.mjs':'audience-catalog.mjs','/audience.css':'audience.css'};
+const audienceAssets=Object.fromEntries(Object.entries(files).map(([path,file])=>[path,readFileSync(new URL('../'+file,import.meta.url),'utf8')]));
+const handler=createHandler({auth:{verifySessionCookie:async()=>({uid:'synthetic-guide-advisor',email:'advisor@example.test',email_verified:true,firebase:{sign_in_provider:'google.com'}})},origins:['https://guide.test'],prospect:{},audienceAssets,worker:{fetch:async()=>new Response('Not found',{status:404})}});
+const browser=await chromium.launch({headless:true});
+try{
+ const context=await browser.newContext({viewport:{width:1440,height:1000}}),errors=[],requests=[];
+ await context.route('**/*',async route=>{
+  const req=route.request(),url=new URL(req.url());requests.push({origin:url.origin,path:url.pathname,method:req.method()});
+  if(url.origin!=='https://guide.test'||req.method()!=='GET')return route.abort();
+  if(url.pathname==='/favicon.ico')return route.fulfill({status:204,body:''});
+  if(!files[url.pathname])return route.abort();
+  const response=await handler(new Request(url.href,{headers:{cookie:'__session=synthetic-guide-session'}}));
+  await route.fulfill({status:response.status,headers:Object.fromEntries(response.headers),body:Buffer.from(await response.arrayBuffer())});
+ });
+ const page=await context.newPage();const downloads=[];page.on('download',download=>downloads.push(download));page.on('pageerror',error=>errors.push(String(error)));
+ // Deliberately synthetic clipboard. This tests asynchronous UI state, not OS permission.
+ await page.addInitScript(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:value=>new Promise((resolve,reject)=>{window.guideCopy={value,resolve,reject};})}}));
+ await page.goto('https://guide.test/audience');
+ await page.locator('#audience option').first().waitFor({state:'attached'});
+ await page.locator('#setupForm button[type=submit]').click();
+ assert.match(await page.locator('#filterList').innerText(),/starting screen/);
+ assert.equal(await page.locator('#plan').isVisible(),true);
+ assert.equal(downloads.length,0,'building a plan must not download');
+ const downloadReady=page.waitForEvent('download');await page.locator('#download').click();
+ const download=await downloadReady;assert.equal(download.suggestedFilename(),'prospectpilot-search-plan.txt');
+ await download.saveAs('/tmp/audience-search-plan.txt');
+ const downloadedText=readFileSync('/tmp/audience-search-plan.txt','utf8');
+ assert.match(downloadedText,/DNC unknown is not cleared/);assert.match(downloadedText,/starting screen/);
+ assert.match(await page.locator('#copyStatus').innerText(),/Download requested/);
+ const secondReady=page.waitForEvent('download');await page.locator('#download').focus();await page.keyboard.press('Enter');
+ const secondDownload=await secondReady;await secondDownload.saveAs('/tmp/audience-search-plan-repeat.txt');
+ assert.equal(readFileSync('/tmp/audience-search-plan-repeat.txt','utf8'),downloadedText);
+ assert.equal(downloads.length,2);
+ await page.screenshot({path:'/tmp/audience-desktop-plan.png',fullPage:true});
+ await page.locator('#copy').click();await page.locator('#back').click();
+ await page.evaluate(()=>window.guideCopy.reject(Error('synthetic clipboard denial')));
+ assert.equal(await page.locator('#setup').isVisible(),true);
+ assert.equal(await page.locator('#copyStatus').textContent(),'');
+ assert.equal(await page.evaluate(()=>document.activeElement.id),'audience');
+ for(const [audience,focus] of [['workplace','Engineer'],['local','Designer'],['employer','Synthetic Works'],['industry','Manufacturing']]){
+  await page.locator('#audience').selectOption(audience);await page.locator('#focus').fill(focus);
+  await page.locator('#setupForm button[type=submit]').click();
+  assert.match(await page.locator('#filterList').innerText(),new RegExp(focus));
+  await page.locator('#filterList button').first().click();
+  await page.evaluate(()=>window.guideCopy.reject(Error('synthetic clipboard denial')));
+  await page.locator('#valueFallback').waitFor({state:'visible'});
+  assert.equal(await page.locator('#valueText').inputValue(),focus);
+  await page.locator('#refine').click();assert.equal(await page.locator('#focus').inputValue(),focus);
+ }
+ // A small professional firm must not require the old-workplace-plan recipe.
+ await page.locator('#audience').selectOption('local');
+ assert.equal(await page.locator('#employeeCount').isVisible(),true);
+ assert.equal(await page.locator('#occupation').isVisible(),false);
+ await page.locator('#focus').fill('Partner');await page.locator('#employeeCount').fill('10–20');
+ await page.locator('#setupForm button[type=submit]').click();
+ const partnerPlan=await page.locator('#filterList').innerText();
+ assert.match(partnerPlan,/Partner/);assert.match(partnerPlan,/10–20/);assert.doesNotMatch(partnerPlan,/Seniority|Management/);
+ const partnerReady=page.waitForEvent('download');await page.locator('#download').click();
+ await (await partnerReady).saveAs('/tmp/audience-partner-size.txt');
+ const partnerText=readFileSync('/tmp/audience-partner-size.txt','utf8');
+ assert.match(partnerText,/Job Title: Partner/);assert.match(partnerText,/Employee Count: 10–20/);assert.match(partnerText,/No live connection/);
+ await page.locator('#back').click();await page.locator('#employeeCount').fill('');
+ await page.locator('#setupForm button[type=submit]').click();
+ assert.doesNotMatch(await page.locator('#filterList').innerText(),/Employee Count/);
+ const broadPartnerReady=page.waitForEvent('download');await page.locator('#download').click();
+ await (await broadPartnerReady).saveAs('/tmp/audience-partner-broad.txt');
+ const broadPartnerText=readFileSync('/tmp/audience-partner-broad.txt','utf8');
+ assert.match(broadPartnerText,/Job Title: Partner/);assert.doesNotMatch(broadPartnerText,/Employee Count|10–20/);
+ await page.locator('#back').click();
+ await page.setViewportSize({width:390,height:844});
+ await page.screenshot({path:'/tmp/audience-mobile-setup.png',fullPage:true});
+ assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'setup mobile overflow');
+ await page.locator('#setupForm button[type=submit]').click();
+ await page.screenshot({path:'/tmp/audience-mobile-plan.png',fullPage:true});
+ assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'plan mobile overflow');
+ assert.equal(await page.locator('#eventTools').getAttribute('open'),null);
+ assert.equal(await page.locator('#exclusionTools').getAttribute('open'),null);
+ await page.locator('#eventTools > summary').focus();await page.keyboard.press('Enter');
+ await page.locator('#eventDescription').waitFor({state:'visible'});
+ await page.locator('#eventDescription').fill('a synthetic professional update');await page.locator('#eventDate').fill('2026-11-16');await page.locator('#eventSource').fill('https://example.test/event');await page.locator('#eventReviewed').check();await page.locator('#eventForm button').click();
+ assert.match(await page.locator('#eventOutput').innerText(),/Optional draft/);
+ await page.locator('#eventDescription').fill('a different synthetic update');
+ assert.equal(await page.locator('#eventReviewed').isChecked(),false);assert.equal(await page.locator('#eventOutput').textContent(),'');
+ await page.locator('#eventTools > summary').focus();await page.keyboard.press('Enter');
+ assert.equal(await page.locator('#eventDescription').isVisible(),false);
+ assert.equal(await page.locator('#uploadLink').getAttribute('href'),'/prospect?import=1');
+ assert.deepEqual(errors,[]);assert.ok(requests.every(r=>r.origin==='https://guide.test'&&r.method==='GET'&&(files[r.path]||r.path==='/favicon.ico')),'only synthetic asset requests permitted');
+ console.log('PASS: synthetic audience browser, four recipes, edit/refine, delayed-copy dismissal, fallback, event reset, mobile overflow; no external/provider requests. Native clipboard and actual ZoomInfo behavior untested.');
+}finally{await browser.close();}
