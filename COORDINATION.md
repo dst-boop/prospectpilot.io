@@ -21,7 +21,7 @@ thread.
 | Work | Owner | Notes |
 |---|---|---|
 | Staging, rollback and rehearsal drafts (`codex/*`) | Codex | Stacked drafts; Codex states the chain order and which are superseded |
-| MERGE-PLAN PR F: per-firm compliance settings | Claude Code | Not started; waits on Codex's list of active files and migrations |
+| MERGE-PLAN PR F: per-firm compliance settings | Claude Code | Own-firm exclusion done on this branch, with no migration. Touches `lead-quality.mjs`, `research-lab.mjs`, `advisor-workflow.mjs`, `lab-client.js`, `lab.html`, `prospect.html` |
 | MERGE-PLAN PR F: daily 8 a.m. leads as a per-advisor queue job | Claude Code | Not started; check overlap with `codex/minimal-daily-release` first |
 | MERGE-PLAN PR E: redirect and Lead Qualifier retirement | Owner | Needs DNS and the other repository |
 

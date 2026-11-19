@@ -105,7 +105,24 @@ export function validateObservation(input, {userId, identity, now = new Date()} 
   return {field: input.field, verdict: input.verdict, value, source, url, note, observed_at: observed.toISOString(), reviewed_at: now.toISOString(), reviewer: userId, identity_signature: identity};
 }
 
-export function assessLead(lead, observations = [], {now = new Date(), plans = [], target = 'legacy'} = {}) {
+// Whose employees an advisor may not prospect: their own firm and its
+// affiliates. This is a setting per advisor (lab_settings.configuration.
+// compliance), not code. An advisor who has never saved one keeps the original
+// Equitable rule, so no existing exclusion is lifted by default.
+export const DEFAULT_COMPLIANCE = Object.freeze({firm_name: 'Equitable Advisors', excluded_employers: Object.freeze(['Equitable'])});
+export function complianceProfile(input) {
+  if (!input || typeof input !== 'object') return DEFAULT_COMPLIANCE;
+  const text = v => clean(v).replace(/\s+/g, ' ').slice(0, 120);
+  const names = (Array.isArray(input.excluded_employers) ? input.excluded_employers : []).map(text).filter(v => nameKey(v));
+  return {firm_name: text(input.firm_name), excluded_employers: [...new Map(names.reverse().map(v => [nameKey(v), v])).values()].reverse().slice(0, 50)};
+}
+// Whole words, so "Equitable Holdings" is excluded and "Axalta" is not caught
+// by "AXA". Returns the configured name that matched, or ''.
+export function excludedEmployer(company, compliance = DEFAULT_COMPLIANCE) {
+  const key = ` ${nameKey(company)} `;
+  return (compliance?.excluded_employers || []).find(name => { const k = nameKey(name); return k && key.includes(` ${k} `); }) || '';
+}
+export function assessLead(lead, observations = [], {now = new Date(), plans = [], target = 'legacy', compliance = DEFAULT_COMPLIANCE} = {}) {
   if (!['legacy','rollover_100k'].includes(target)) throw new Error('Unsupported qualification target.');
   const required = target === 'rollover_100k' ? ROLLOVER_FIELDS : QUALITY_FIELDS;
   const identity = leadIdentity(lead), ageCandidate = clean(lead.estimated_age_range || lead.qualifier?.age_estimate || ''), warnings = [];
@@ -169,11 +186,12 @@ export function assessLead(lead, observations = [], {now = new Date(), plans = [
   if(confirmedContact?.channel==='phone'&&(lead.imported_dnc||[]).some(p=>phoneNumber(p)===confirmedContact.address))gates.contact=gate('failed','This phone has an existing do-not-call restriction.');
   const suppressed = lead.suppressed === true || /^(do not contact|do not call|opted out|deceased|suppressed)$/i.test(clean(lead.follow_up_status)) || lead.qualifier?.dnc_status === 'BLOCKED';
   if (suppressed) { gates.contact = gate('failed', 'An existing suppression or contact restriction is active.'); warnings.push('Research does not authorize outreach or remove suppression.'); }
-  if (nameKey(lead.company).includes('equitable')) warnings.push('Equitable employees are excluded from lead output.');
+  const ownFirm = excludedEmployer(lead.company, compliance);
+  if (ownFirm) warnings.push(`${ownFirm} employees are excluded from lead output.`);
   const identityConflict = lead.identity_status === 'review';
   const confirmed = required.filter(f => gates[f].state === 'confirmed').length;
   const candidates = required.filter(f => gates[f].state === 'candidate').length;
-  const excluded = lead.identity_status === 'excluded' || required.some(f => gates[f].state === 'failed') || nameKey(lead.company).includes('equitable');
+  const excluded = lead.identity_status === 'excluded' || required.some(f => gates[f].state === 'failed') || Boolean(ownFirm);
   const status = excluded ? 'excluded' : identityConflict ? 'identity_review' : confirmed === required.length ? 'verified' : confirmed + candidates >= 3 ? 'promising' : 'incomplete';
   const gaps = required.filter(f => gates[f].state !== 'confirmed');
   // Offer the combined review first instead of making users enter it twice.
@@ -205,7 +223,7 @@ const total=factors=>Math.max(0,Math.min(100,Math.round(factors.reduce((sum,f)=>
 const DAY=86400000;
 export function leadScores(lead,quality,{now=new Date(),weights=DEFAULT_SCORE_WEIGHTS}={}){
   const g=quality.gates,excluded=quality.status==='excluded';
-  const exclusion=excluded?(quality.warnings.find(w=>/Equitable/.test(w))||Object.values(g).find(x=>x.state==='failed')?.reason||'Excluded.'):'';
+  const exclusion=excluded?(quality.warnings.find(w=>/employees are excluded from lead output/.test(w))||Object.values(g).find(x=>x.state==='failed')?.reason||'Excluded.'):'';
   // Qualification: how far the five gates have got.
   const required=quality.required_fields||QUALITY_FIELDS, max=100/required.length;
   const qualification=required.map(field=>factor(GATE_LABELS[field],g[field].state==='confirmed'?max:g[field].state==='candidate'?max/4:0,max,`${g[field].state}: ${g[field].reason}`));
