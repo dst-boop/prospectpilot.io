@@ -1,11 +1,12 @@
 // Manual-search guidance only. Never map connector/API keys into invented UI labels.
-export const catalogVersion='2026-11-18.2';
+export const catalogVersion='2026-11-20.1';
 export const searchSource='https://gtm.ai/docs/gtm-one/advanced-search/run-an-advanced-search';
 export const broadStart='Broad starting plan: no additional constraints proposed. GTM One shows a starting screen until at least one filter is set. Choose one useful supported filter in your account, then review a small baseline sample. No location, employer size or seniority is required. Your edition may differ.';
 export const filterSource='https://gtm.ai/docs/gtm-one/advanced-search/overview-of-the-filters-available-in-advanced-search';
 export const exportSource='https://gtm.ai/docs/gtm-one/advanced-search/export-advanced-search-results';
+export const locationGuidance='For a place, use Country, State, or City. For a ZIP and distance, use Radius Around Postal Code. Long Island is not a verified selectable value; if unavailable, choose a city or ZIP and radius that match your intended area. A radius is not a county boundary. Location of is a separate scope control: choose Contact’s Office rather than Company Headquarters if you mean where the contact works. Neither establishes residence.';
 export const catalog=Object.freeze({
- location:{label:'Locations → Location of',source:filterSource,edition:'GTM One',verifiedOn:'2026-11-17',meaning:'Inspect the Contact’s Office option. An office location does not establish residence.'},
+ location:{label:'Locations → Country, State, or City / Radius Around Postal Code',source:filterSource,edition:'GTM One',verifiedOn:'2026-11-17',meaning:locationGuidance},
  jobFunction:{label:'Job Title & Role → Departments & Job Functions',source:filterSource,edition:'GTM One',verifiedOn:'2026-11-17',meaning:'Choose this proposed job function only if your account offers it. It narrows to this group, not all office or hands-on workers; no plan ownership is established.'},
  title:{label:'Job Title & Role → Job Title',source:filterSource,edition:'GTM One',verifiedOn:'2026-11-17',meaning:'Choose the professional roles you understand and can serve.'},
  company:{label:'Company Name',source:filterSource,edition:'GTM One',verifiedOn:'2026-11-17',meaning:'Use an employer you have a genuine reason to understand.'},
@@ -21,10 +22,9 @@ export const roleFamilies=Object.freeze([
  {id:'facilities',name:'Facilities Management',occupation:'hands-on'}
 ].map(Object.freeze));
 export function roleFamilyOptions(occupation='both'){return roleFamilies.filter(f=>occupation==='both'||f.occupation===occupation);}
-export const locationGuidance='Use a supported city/state or postal-code radius in your account. A region name such as Long Island is not a verified selectable value here. If it is unavailable, choose a city or ZIP and an available radius; do not silently substitute a wider metro. A radius is not a county boundary. Select contact-office scope, not company headquarters, when that is your intent; neither establishes residence.';
 export const audiences=Object.freeze([
  {id:'workplace',name:'Potential old workplace plans',why:'Research people who may have prior workplace plans. Around age 40+ is a planning hypothesis, not a verified ZoomInfo age filter or evidence that someone has an old 401(k). Keep occupations broad; confirm relevance with the person.',field:'role',prompt:'Optional occupational focus',placeholder:'Leave blank to keep occupations broad',filters:['location','title','employeeCount','industry']},
- {id:'local',name:'Professionals in your area',why:'Start with a place and a professional community you know.',field:'role',prompt:'Which role or profession do you understand?',placeholder:'For example, engineers',filters:['location','title','employeeCount']},
+ {id:'local',name:'Professionals in your area',why:'Start with a place and a professional community you know.',field:'role',prompt:'Which role or profession do you understand?',placeholder:'For example, Partner',filters:['location','title','industry','employeeCount']},
  {id:'employer',name:'People at employers you know',why:'Build familiarity with an employer before approaching individuals.',field:'company',prompt:'Which employer do you want to understand?',placeholder:'Enter a company name',filters:['location','company','employeeCount']},
  {id:'industry',name:'A professional industry',why:'Focus your learning on a specific business community.',field:'industry',prompt:'Which industry can you speak about credibly?',placeholder:'For example, manufacturing',filters:['location','industry','employeeCount']}
 ]);
@@ -32,7 +32,7 @@ const clean=value=>String(value??'').trim().slice(0,160);
 export function buildPlan(input={}){
  const audience=audiences.find(a=>a.id===input.audience);if(!audience)return {errors:['Choose an audience.']};
  const location=clean(input.location),value=clean(input[audience.field]),size=clean(input.employeeCount);
- const values={location,title:value,company:value,industry:audience.id==='workplace'?clean(input.industry):value,employeeCount:size};
+ const values={location,title:value,company:value,industry:audience.field==='industry'?value:clean(input.industry),employeeCount:size};
  const occupation=audience.id==='workplace'&&['both','hands-on','office'].includes(input.occupation)?input.occupation:'both';
  const roleFamily=audience.id==='workplace'?roleFamilyOptions(occupation).find(f=>f.id===input.roleFamily):null;
  const filters=audience.filters.filter(id=>values[id]).map(id=>({id,...catalog[id],value:values[id]}));

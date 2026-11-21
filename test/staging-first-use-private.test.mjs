@@ -42,3 +42,21 @@ test('adapter refuses changed first-use source instead of silently retaining liv
  assert.throws(()=>stagingAudienceScript(read('audience-client.js').replace('Plan built · Next: use it in ZoomInfo','changed')),/needs review/);
  assert.throws(()=>stagingPage(read('audience.html').replace('Next: open your own ZoomInfo account and try the filters below.','changed')),/needs review/);
 });
+test('local professionals compare one plan across screen, copy and download without a real search',async()=>{
+ const request=fixture(),html=await (await request('/audience')).text(),source=await (await request('/audience-client.js')).text();
+ assert.match(html,/id="optionalIndustryFields"/);
+ const els=new Map(),copies=[],blobs=[];const get=id=>{if(!els.has(id))els.set(id,{value:id==='audience'?'workplace':'',textContent:'',innerHTML:'',focus(){},select(){}});return els.get(id);};
+ const document={getElementById:get,body:{dataset:{fictionalExercise:'true'},appendChild(){}},createElement:()=>({click(){},remove(){}})};
+ vm.runInNewContext(source.replace(/^import[^\n]+\n/,''),{...model,document,navigator:{clipboard:{writeText:async v=>copies.push(v)}},URL:{createObjectURL:b=>{blobs.push(b);return 'blob:synthetic';},revokeObjectURL(){}},Blob,Date,setTimeout:fn=>fn()});
+ get('audience').value='local';get('audience').onchange();assert.equal(get('optionalIndustryFields').hidden,false);
+ get('focus').value='Partner';get('industry').value='Offices of Lawyers';get('employeeCount').value='10–20';get('location').value='Long Island';
+ const submit=()=>get('setupForm').onsubmit({preventDefault(){}});submit();
+ const plan=get('planText').value,screen=get('filterList').innerHTML;
+ for(const match of [/Country, State, or City \/ Radius Around Postal Code[^\n]*Long Island/,/Job Title: Partner/,/Company Industry: Offices of Lawyers/,/Employee Count: 10–20/])assert.match(plan,match);
+ for(const value of ['Long Island','Partner','Offices of Lawyers','10–20'])assert.ok(screen.includes(value));
+ assert.doesNotMatch(plan,/Location of: Long Island|Management Level|Next: in your own|Export’s arrow/);
+ await get('copy').onclick();get('download').onclick();assert.equal(copies[0],plan);assert.equal(await blobs[0].text(),plan);
+ get('back').onclick();assert.equal(get('industry').value,'Offices of Lawyers');
+ for(const area of ['Melville, NY','11747 + 10 miles']){get('location').value=area;submit();assert.ok(get('planText').value.includes(area));get('back').onclick();}
+ get('audience').value='employer';get('audience').onchange();assert.equal(get('optionalIndustryFields').hidden,true);assert.equal(get('industry').value,'');
+});

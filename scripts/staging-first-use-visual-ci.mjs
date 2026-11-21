@@ -47,7 +47,11 @@ try {
   manual=true;
   await page.locator('#buildSearchPlan').click();await page.waitForURL('**/audience');await page.waitForLoadState('networkidle');
   assert.equal(await page.locator('#stepLabel').count(),1);
-  await page.locator('#location').fill('Long Island');await page.locator('#occupation').selectOption('office');
+  await page.locator('#audience').selectOption('local');
+  await page.locator('#location').fill('Long Island');
+  await page.locator('#focus').fill('Partner');
+  await page.locator('#industry').fill('Offices of Lawyers');
+  await page.locator('#employeeCount').fill('10–20');
   await page.locator('#setupForm button[type=submit]').click();
   assert.match(await page.locator('#planOutcome').innerText(),/No search was run and no contacts were saved/);
   assert.match(await page.locator('#planNext').innerText(),/fictional|supplied/i);
@@ -59,6 +63,11 @@ try {
   const copied=await page.evaluate(()=>window.syntheticClipboard);
   assert.match(copied,/Fictional practice plan only/);assert.match(copied,/fixed|unchanged|supplied/i);assert.doesNotMatch(copied,forbidden);
   assert.equal(copied,await page.locator('#planText').inputValue());
+  const filterText=await page.locator('#filterList').innerText();
+  for(const value of ['Long Island','Partner','Offices of Lawyers','10–20']){
+   assert.ok(filterText.includes(value));assert.ok(copied.includes(value));
+  }
+  assert.doesNotMatch(copied,/Location of: Long Island|Management Level/);
   const pending=page.waitForEvent('download');await page.locator('#download').click();const download=await pending;
   const filename=output+'/plan-'+width+'.txt';await download.saveAs(filename);assert.equal(readFileSync(filename,'utf8'),copied);
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
