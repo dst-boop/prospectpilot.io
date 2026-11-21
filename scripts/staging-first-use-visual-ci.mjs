@@ -48,7 +48,15 @@ try {
   await page.locator('#buildSearchPlan').click();await page.waitForURL('**/audience');await page.waitForLoadState('networkidle');
   assert.equal(await page.locator('#stepLabel').count(),1);
   await page.locator('#audience').selectOption('local');
-  await page.locator('#location').fill('Long Island');
+  const area=width===1440?'Austin, TX':'02108 + 25 miles';
+  const location=page.locator('#location');
+  assert.equal(await location.inputValue(),'');
+  await page.locator('#focus').fill('Partner');
+  await page.locator('#setupForm button[type=submit]').click();
+  assert.doesNotMatch(await page.locator('#planText').inputValue(),/Locations →|Long Island/);
+  await page.locator('#back').click();
+  assert.equal(await location.inputValue(),'');
+  await location.fill(area);
   await page.locator('#focus').fill('Partner');
   await page.locator('#industry').fill('Offices of Lawyers');
   await page.locator('#employeeCount').fill('10–20');
@@ -64,10 +72,10 @@ try {
   assert.match(copied,/Fictional practice plan only/);assert.match(copied,/fixed|unchanged|supplied/i);assert.doesNotMatch(copied,forbidden);
   assert.equal(copied,await page.locator('#planText').inputValue());
   const filterText=await page.locator('#filterList').innerText();
-  for(const value of ['Long Island','Partner','Offices of Lawyers','10–20']){
+  for(const value of [area,'Partner','Offices of Lawyers','10–20']){
    assert.ok(filterText.includes(value));assert.ok(copied.includes(value));
   }
-  assert.doesNotMatch(copied,/Location of: Long Island|Management Level/);
+  assert.doesNotMatch(copied,/Long Island|Location of:|Management Level/);
   const pending=page.waitForEvent('download');await page.locator('#download').click();const download=await pending;
   const filename=output+'/plan-'+width+'.txt';await download.saveAs(filename);assert.equal(readFileSync(filename,'utf8'),copied);
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);

@@ -19,12 +19,12 @@ test('actual authenticated staging handler serves fixture-only first-use pages a
  const response=await request('/audience');assert.equal(response.status,200);const html=await response.text();
  assert.match(html,/id="planNext"><strong>Next: preview a supplied unchanged fictional CSV/);
  assert.doesNotMatch(html,/Next: open your own ZoomInfo|In Advanced Search, choose Contacts|Use the arrow beside Export|After your ZoomInfo review|Use a range your ZoomInfo account offers/);
- assert.match(html,/id="roleFamily"/);assert.match(html,/City and state, or ZIP plus radius/);
+ assert.doesNotMatch(html,/Long Island/);assert.match(html,/id="roleFamily"/);assert.match(html,/City and state, or ZIP plus radius/);
  assert.match(html,/Preview first; nothing is saved until you choose Import contacts/);
  const script=await (await request('/audience-client.js')).text();
  assert.equal(script,stagingAudienceScript(read('audience-client.js')));
  assert.doesNotMatch(script,/Next: use it in ZoomInfo|Enter individual values in matching filters|Paste only if the matching field/);
- const lab=await (await request('/lab')).text();assert.match(lab,/id="buildSearchPlan"/);assert.ok(blockedStagingControls.includes('findProspects'));
+ const lab=await (await request('/lab')).text();assert.match(lab,/id="buildSearchPlan"/);assert.doesNotMatch(lab,/Long Island|Huntington, NY|11747/);assert.ok(blockedStagingControls.includes('findProspects'));
  const contact=await (await request('/prospect')).text();assert.match(contact,/Only the supplied, unchanged fictional CSV fixtures are accepted/);assert.match(contact,/Preview does not save contacts/);
 });
 test('served script displays, copies and downloads the same safe fictional plan, preserving groups',async()=>{
@@ -49,14 +49,22 @@ test('local professionals compare one plan across screen, copy and download with
  const document={getElementById:get,body:{dataset:{fictionalExercise:'true'},appendChild(){}},createElement:()=>({click(){},remove(){}})};
  vm.runInNewContext(source.replace(/^import[^\n]+\n/,''),{...model,document,navigator:{clipboard:{writeText:async v=>copies.push(v)}},URL:{createObjectURL:b=>{blobs.push(b);return 'blob:synthetic';},revokeObjectURL(){}},Blob,Date,setTimeout:fn=>fn()});
  get('audience').value='local';get('audience').onchange();assert.equal(get('optionalIndustryFields').hidden,false);
- get('focus').value='Partner';get('industry').value='Offices of Lawyers';get('employeeCount').value='10–20';get('location').value='Long Island';
+ get('focus').value='Partner';get('industry').value='Offices of Lawyers';get('employeeCount').value='10–20';get('location').value='Austin, TX';
  const submit=()=>get('setupForm').onsubmit({preventDefault(){}});submit();
  const plan=get('planText').value,screen=get('filterList').innerHTML;
- for(const match of [/Country, State, or City \/ Radius Around Postal Code[^\n]*Long Island/,/Job Title: Partner/,/Company Industry: Offices of Lawyers/,/Employee Count: 10–20/])assert.match(plan,match);
- for(const value of ['Long Island','Partner','Offices of Lawyers','10–20'])assert.ok(screen.includes(value));
- assert.doesNotMatch(plan,/Location of: Long Island|Management Level|Next: in your own|Export’s arrow/);
+ for(const match of [/Country, State, or City \/ Radius Around Postal Code[^\n]*Austin, TX/,/Job Title: Partner/,/Company Industry: Offices of Lawyers/,/Employee Count: 10–20/])assert.match(plan,match);
+ for(const value of ['Austin, TX','Partner','Offices of Lawyers','10–20'])assert.ok(screen.includes(value));
+ assert.doesNotMatch(plan,/Long Island|Location of:|Management Level|Next: in your own|Export’s arrow/);
  await get('copy').onclick();get('download').onclick();assert.equal(copies[0],plan);assert.equal(await blobs[0].text(),plan);
  get('back').onclick();assert.equal(get('industry').value,'Offices of Lawyers');
- for(const area of ['Melville, NY','11747 + 10 miles']){get('location').value=area;submit();assert.ok(get('planText').value.includes(area));get('back').onclick();}
+ for(const area of ['', '02108 + 25 miles']){
+  get('location').value=area;submit();
+  const next=get('planText').value,rendered=get('filterList').innerHTML;
+  assert.doesNotMatch(next,/Long Island|Austin, TX/);
+  if(area){assert.ok(next.includes(area));assert.ok(rendered.includes(area));}
+  else {assert.doesNotMatch(next,/Locations →|Radius Around Postal Code/);assert.doesNotMatch(rendered,/Locations →/);}
+  await get('copy').onclick();get('download').onclick();assert.equal(copies.at(-1),next);assert.equal(await blobs.at(-1).text(),next);
+  get('back').onclick();assert.equal(get('location').value,area);
+ }
  get('audience').value='employer';get('audience').onchange();assert.equal(get('optionalIndustryFields').hidden,true);assert.equal(get('industry').value,'');
 });
