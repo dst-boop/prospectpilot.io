@@ -47,6 +47,8 @@ try {
  await page.setViewportSize({width:390,height:844});await page.screenshot({path:'/tmp/pilot-mobile.png',fullPage:true});
  // Exercise the sponsor-state dialog on mobile and desktop with synthetic auth.
  await page.evaluate(()=>{document.getElementById('states').value='NY';});
+ if(!await page.locator('#researchTools').evaluate(el=>el.open)) await page.locator('#researchTools > summary').click();
+ assert.equal(await page.locator('#researchTools').evaluate(el=>el.open),true);
  await page.locator('#findProspects').click();
  await page.locator('input[name=playbook][value=former_employees]').check();
  assert.equal(await page.getByLabel('Plan sponsor mailing states', {exact:false}).inputValue(),'NY');
@@ -74,6 +76,8 @@ try {
  await page.screenshot({path:'/tmp/pilot-desktop-sponsor-states.png',fullPage:true});
  await page.locator('[data-close=playbookDialog]').click();
  assert.equal(discoveryRequests.length,0,'Closing must not launch work');
+ if(!await page.locator('#researchTools').evaluate(el=>el.open)) await page.locator('#researchTools > summary').click();
+ assert.equal(await page.locator('#researchTools').evaluate(el=>el.open),true);
  await page.locator('#findProspects').click();
  assert.equal(await page.locator('#playbookStates').inputValue(),'NY','Reopening restores the saved proposal');
  await page.locator('#playbookAllStates').click();

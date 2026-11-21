@@ -31,7 +31,7 @@ test('external anchors and server-disabled forms blocked, allowed local actions 
  for(const id of ['runForm','shareListForm','costForm'])assert.equal(f.dispatch('submit',f.element(id)).stopped,true);
  for(const id of ['draftCopy','saveActivity','saveReview','profileForm','quickImport'])assert.equal(f.dispatch('click',f.element(id)).stopped,false);
  for(const url of ['/prospect?import=1','/lab','/audience','blob:http://127.0.0.1:1234/local'])assert.equal(f.dispatch('click',f.element('',url)).stopped,false);
- assert.equal(f.dispatch('click',f.element('findProspects')).stopped,true);assert.deepEqual(f.nav,['/audience']);
+ const discovery=f.element('findProspects');assert.equal(f.dispatch('click',discovery).stopped,true);assert.deepEqual(f.nav,[]);assert.equal(f.dispatch('click',f.element('buildSearchPlan')).stopped,false);f.apply();assert.equal(discovery.disabled,true);assert.equal(discovery.getAttribute('data-staging-unavailable'),'true');
  const contacts=fixture('/prospect');for(const id of ['importOpen','export','prepareContact','sendToWorklist','newListOpen'])assert.equal(contacts.dispatch('click',contacts.element(id)).stopped,false);
 });
 test('only staging-served Contacts script skips provider jobs and identifies unsupported list control',()=>{

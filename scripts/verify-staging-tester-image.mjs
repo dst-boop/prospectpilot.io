@@ -57,15 +57,17 @@ try{
  await assertStagingDatabase(pool,config);
  await runTesterAuthorityScenarios({pool,seedPool:owner});
  assert.equal(external,0);
- console.log(JSON.stringify({verified:true,database:'PostgreSQL 16 actual restricted LOGIN; exact existing grant manifest',scope:'two admitted synthetic identities; same fixture both arrival orders; cross-user objects; historical create/update collisions; binding removal; admin/share denials; no observed external fetch',auth:'injected synthetic adapter only, no real Google/IAP or tester access'}));
  }catch(error){proofError=error;throw error;}
  finally{
   globalThis.fetch=originalFetch;const cleanupErrors=[];
   const clean=async(action)=>{try{await action();}catch(error){cleanupErrors.push(error);}};
   if(server)await clean(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
   await clean(()=>pool?.end());if(owner!==pool)await clean(()=>owner?.end());
-  await clean(()=>admin.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`));
+  // Pool end starts closing idle sockets; a forced drop can terminate them mid-close.
+  // Do not kill connections: a genuine leak must fail the proof, not be hidden.
+  await clean(()=>admin.query(`DROP DATABASE IF EXISTS ${database}`));
   await clean(()=>admin.query(`DROP ROLE IF EXISTS ${runtime}`));
   await clean(()=>admin.query(`DROP ROLE IF EXISTS ${initializer}`));await clean(()=>admin.end());
   if(cleanupErrors.length){console.error(JSON.stringify({cleanup_failed:true,count:cleanupErrors.length}));if(!proofError)throw new AggregateError(cleanupErrors,'Synthetic proof cleanup failed');}
  }
+console.log(JSON.stringify({verified:true,database:'PostgreSQL 16 actual restricted LOGIN; exact existing grant manifest',scope:'two admitted synthetic identities; same fixture both arrival orders; cross-user objects; historical create/update collisions; binding removal; admin/share denials; no observed external fetch',auth:'injected synthetic adapter only, no real Google/IAP or tester access'}));

@@ -51,3 +51,13 @@ test('native tester proof preserves exact existing restricted-role grants and re
  assert.equal(grants(current),grants(prior));
  assert.match(current,/Only disposable loopback synthetic CI PostgreSQL is permitted/);assert.match(current,/Disposable PostgreSQL 16 required/);assert.match(current,/runTesterAuthorityScenarios\(\{pool,seedPool:owner\}\)/);
 });
+
+test('native proof closes its pools before non-forced cleanup and reports success only afterward',()=>{
+ const source=readFileSync(new URL('../scripts/verify-staging-tester-image.mjs',import.meta.url),'utf8');
+ const poolClose=source.indexOf('await clean(()=>pool?.end())');
+ const drop=source.indexOf('DROP DATABASE IF EXISTS');
+ const cleanupFailure=source.indexOf('Synthetic proof cleanup failed');
+ const success=source.indexOf('console.log(JSON.stringify({verified:true');
+ assert.ok(poolClose>=0&&poolClose<drop&&drop<cleanupFailure&&cleanupFailure<success);
+ assert.doesNotMatch(source,/DROP DATABASE[^\n]*FORCE/);
+});
