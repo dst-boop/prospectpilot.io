@@ -1,10 +1,10 @@
 // Manual-search guidance only. Never map connector/API keys into invented UI labels.
-export const catalogVersion='2026-11-21.1';
+export const catalogVersion='2026-11-21.2';
 export const searchSource='https://gtm.ai/docs/gtm-one/advanced-search/run-an-advanced-search';
 export const broadStart='Broad starting plan: no additional constraints proposed. GTM One shows a starting screen until at least one filter is set. Choose one useful supported filter in your account, then review a small baseline sample. No location, employer size or seniority is required. Your edition may differ.';
 export const filterSource='https://gtm.ai/docs/gtm-one/advanced-search/overview-of-the-filters-available-in-advanced-search';
 export const exportSource='https://gtm.ai/docs/gtm-one/advanced-search/export-advanced-search-results';
-export const locationGuidance='For a place, use Country, State, or City. For a ZIP and distance, use Radius Around Postal Code. Long Island is not a verified selectable value; if unavailable, choose a city or ZIP and radius that match your intended area. A radius is not a county boundary. Location of is a separate scope control: choose Contact’s Office rather than Company Headquarters if you mean where the contact works. Neither establishes residence.';
+export const locationGuidance='For a place, use Country, State, or City. For a ZIP and distance, use Radius Around Postal Code. If your region is not listed, choose a supported city or ZIP and radius. Do not substitute a broader market without checking the results. A radius is not a county boundary. Location of is a separate scope control: choose Contact’s Office rather than Company Headquarters if you mean where the contact works. Neither establishes residence.';
 export const catalog=Object.freeze({
  location:{label:'Locations → Country, State, or City / Radius Around Postal Code',source:filterSource,edition:'GTM One',verifiedOn:'2026-11-17',meaning:locationGuidance},
  title:{label:'Job Title & Role → Job Title',source:filterSource,edition:'GTM One',verifiedOn:'2026-11-17',meaning:'Choose the professional roles you understand and can serve.'},

@@ -39,11 +39,25 @@ test('local professionals can propose title, industry, employee count and geogra
  const plan=h.get('planText').value;
  for(const value of ['Long Island','Partner','Offices of Lawyers','10–20','Country, State, or City','Radius Around Postal Code','Location of is a separate scope control'])assert.ok(plan.includes(value),value);
  assert.doesNotMatch(plan,/Location of: Long Island|Management Level/);
- assert.match(plan,/not a verified selectable value/);
+ assert.match(plan,/If your region is not listed/);
  assert.equal(h.requests(),0);
  h.get('back').onclick();h.get('audience').value='employer';h.get('audience').onchange();
  assert.equal(h.get('optionalIndustryFields').hidden,true);
  assert.equal(h.get('industry').value,'');
  h.get('focus').value='Example Employer';h.submit();
  assert.doesNotMatch(h.get('planText').value,/Offices of Lawyers/);
+});
+
+test('advisor geography is optional, market-neutral, and comes only from the chosen input',()=>{
+ const lab=readFileSync(new URL('../lab.html',import.meta.url),'utf8');
+ assert.doesNotMatch([html,lab,model.locationGuidance].join(' '),/Long Island|Huntington, NY|11747/i);
+ const h=setup();h.get('audience').value='local';h.get('audience').onchange();
+ h.get('focus').value='Partner';h.submit();
+ assert.equal(h.get('location').value,'');assert.doesNotMatch(h.get('planText').value,/Radius Around Postal Code/);
+ for(const [place,other] of [['Austin, TX','98101 + 25 miles'],['98101 + 25 miles','Austin, TX']]){
+  h.get('back').onclick();h.get('location').value=place;h.submit();
+  const plan=h.get('planText').value;
+  assert.ok(plan.includes(place));assert.ok(!plan.includes(other));assert.match(plan,/Location of is a separate scope control/);
+ }
+ assert.equal(h.requests(),0);
 });
