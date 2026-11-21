@@ -30,3 +30,20 @@ test('valid build announces exact outcome, focuses result, and edit clears succe
  h.get('back').onclick();assert.equal(h.get('planOutcome').textContent,'');assert.equal(h.get('plan').hidden,true);
  h.submit();assert.match(h.get('planOutcome').textContent,/No search was run/);assert.equal(h.requests(),0);
 });
+
+test('local professionals can propose title, industry, employee count and geography without assuming seniority',()=>{
+ const h=setup();h.get('audience').value='local';h.get('audience').onchange();
+ assert.equal(h.get('optionalIndustryFields').hidden,false);
+ for(const [id,value] of [['location','Long Island'],['focus','Partner'],['industry','Offices of Lawyers'],['employeeCount','10–20']])h.get(id).value=value;
+ h.submit();
+ const plan=h.get('planText').value;
+ for(const value of ['Long Island','Partner','Offices of Lawyers','10–20','Country, State, or City','Radius Around Postal Code','Location of is a separate scope control'])assert.ok(plan.includes(value),value);
+ assert.doesNotMatch(plan,/Location of: Long Island|Management Level/);
+ assert.match(plan,/not a verified selectable value/);
+ assert.equal(h.requests(),0);
+ h.get('back').onclick();h.get('audience').value='employer';h.get('audience').onchange();
+ assert.equal(h.get('optionalIndustryFields').hidden,true);
+ assert.equal(h.get('industry').value,'');
+ h.get('focus').value='Example Employer';h.submit();
+ assert.doesNotMatch(h.get('planText').value,/Offices of Lawyers/);
+});
