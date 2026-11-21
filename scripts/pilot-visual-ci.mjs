@@ -1,3 +1,4 @@
+import {readFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
 import assert from 'node:assert/strict';
 const require=createRequire(import.meta.url);const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'/tmp/pp-browser/node_modules/playwright');
@@ -12,11 +13,15 @@ try {
  const handoff=await json('/api/lab/contact-import',{ids:[captured.capture.contact_id]});
  const leadId=handoff.lead_ids[0];const detail=await (await staging.request('/api/lab/leads/'+leadId,{cookie})).json();
  for(const [field,value] of Object.entries({residence:{country:'US',scope:'residence',state:'NY'},planning_decision:{origin:'accepted_introduction',topic:'retirement_income',identity_confirmed:true,prospect_confirmed:true},contact:{channel:'email',address:'jordan@example.com',identity_confirmed:true,outreach_basis:'person_requested'}})) await json('/api/lab/leads/'+leadId+'/review',{field,value,verdict:'confirmed',source:'Synthetic fixture',note:'Fictional evidence',observed_at:new Date().toISOString(),identity_signature:detail.quality.identity_signature});
- const discoveryRequests=[];
+ const discoveryRequests=[],manualRequests=[];let manualPhase=false;
+ const audienceFiles={'/audience':'audience.html','/audience-client.js':'audience-client.js','/audience-catalog.mjs':'audience-catalog.mjs','/audience.css':'audience.css'};
  const context=await browser.newContext({viewport:{width:1440,height:1000}});
  await context.route('**/*',async route=>{
   const req=route.request(),url=new URL(req.url());
+  if(manualPhase)manualRequests.push({origin:url.origin,path:url.pathname,method:req.method()});
   if(url.origin!=='https://pilot.test')return route.abort();
+  if(manualPhase&&url.pathname==='/favicon.ico')return route.fulfill({status:204,body:''});
+  if(audienceFiles[url.pathname]){const file=audienceFiles[url.pathname];return route.fulfill({status:200,contentType:file.endsWith('.html')?'text/html':file.endsWith('.css')?'text/css':'text/javascript',body:readFileSync(new URL('../'+file,import.meta.url))});}
   // Capture explicit UI submissions without enqueueing work or contacting providers.
   if(url.pathname==='/api/lab/runs'&&req.method()==='POST'){
    discoveryRequests.push(req.postDataJSON());
@@ -26,7 +31,36 @@ try {
   await route.fulfill({status:response.status,headers:Object.fromEntries(response.headers),body:Buffer.from(await response.arrayBuffer())});
  });
  const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(String(e)));
- await page.goto('https://pilot.test/lab');await page.waitForTimeout(1500);
+ // First-use paths: actual Worklist handlers, fictional app; no real sign-in.
+ for(const width of [1440,390]){
+  await page.setViewportSize({width,height:900});
+  await page.goto('https://pilot.test/lab');await page.waitForLoadState('networkidle');
+  assert.equal(await page.locator('#quickImport').innerText(),'Import a CSV');
+  assert.equal(await page.locator('#buildSearchPlan').innerText(),'Build a search plan');
+  assert.equal(await page.locator('#researchTools').evaluate(el=>el.open),false);
+  await page.locator('#quickImport').click();await page.waitForURL('**/prospect?import=1');
+  await page.locator('#importDialog[open]').waitFor();
+  assert.match(await page.locator('#importDialog').innerText(),/Preview does not save contacts/);
+  assert.equal(discoveryRequests.length,0,'Import navigation must not queue discovery');
+  await page.goto('https://pilot.test/lab');await page.waitForLoadState('networkidle');
+  manualPhase=true;
+  await page.locator('#buildSearchPlan').click();await page.waitForURL('**/audience');
+  await page.locator('#setupForm button[type=submit]').click();
+  assert.equal(await page.locator('#planOutcome').innerText(),'Search plan ready. No search was run and no contacts were saved.');
+  assert.equal(await page.locator('#planTitle').evaluate(el=>el===document.activeElement),true);
+  assert.match(await page.locator('#planNext').innerText(),/Next: open your own ZoomInfo account/);
+  assert.equal(await page.locator('#uploadLink').getAttribute('href'),'/prospect?import=1');
+  assert.match(await page.locator('#plan').innerText(),/Preview the file first; that preview does not save contacts/);
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+  await page.screenshot({path:'/tmp/pilot-first-use-plan-'+width+'.png',fullPage:true});
+  manualPhase=false;
+ }
+ assert.ok(manualRequests.length>0);
+ assert.ok(manualRequests.every(r=>r.origin==='https://pilot.test'&&r.method==='GET'&&(audienceFiles[r.path]||r.path==='/favicon.ico')),'Manual path must load static assets only, with no API requests or writes');
+ assert.equal(discoveryRequests.length,0);
+ assert.equal(staging.providerCalls.length,0,'First-use navigation must not call synthetic providers');
+ await page.setViewportSize({width:1440,height:1000});
+ await page.goto('https://pilot.test/lab');await page.waitForLoadState('networkidle');
  await page.locator('#startNext').click();await page.locator('#detail[open]').waitFor();
  await page.locator('[data-close=detail]').click();await page.locator('#startNext').click();
  await page.locator('#outcomeDetails > summary').click();
@@ -47,6 +81,8 @@ try {
  await page.setViewportSize({width:390,height:844});await page.screenshot({path:'/tmp/pilot-mobile.png',fullPage:true});
  // Exercise the sponsor-state dialog on mobile and desktop with synthetic auth.
  await page.evaluate(()=>{document.getElementById('states').value='NY';});
+ if(!await page.locator('#researchTools').evaluate(el=>el.open)) await page.locator('#researchTools > summary').click();
+ assert.equal(await page.locator('#researchTools').evaluate(el=>el.open),true);
  await page.locator('#findProspects').click();
  await page.locator('input[name=playbook][value=former_employees]').check();
  assert.equal(await page.getByLabel('Plan sponsor mailing states', {exact:false}).inputValue(),'NY');
@@ -74,6 +110,8 @@ try {
  await page.screenshot({path:'/tmp/pilot-desktop-sponsor-states.png',fullPage:true});
  await page.locator('[data-close=playbookDialog]').click();
  assert.equal(discoveryRequests.length,0,'Closing must not launch work');
+ if(!await page.locator('#researchTools').evaluate(el=>el.open)) await page.locator('#researchTools > summary').click();
+ assert.equal(await page.locator('#researchTools').evaluate(el=>el.open),true);
  await page.locator('#findProspects').click();
  assert.equal(await page.locator('#playbookStates').inputValue(),'NY','Reopening restores the saved proposal');
  await page.locator('#playbookAllStates').click();
